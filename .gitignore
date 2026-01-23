@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# venv
+venv/
+.venv/
+
+# runtime artifacts
+runs/
+outputs/
+_logs/
+_queue/
+_last_*.json
+_last_*.txt
+server.log
+server.err.log
+
+# backups / trash
+_TRASH_*/
+*.bak*
+*.zip
+
+# secrets
+openai_key.txt
+*.env

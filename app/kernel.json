@@ -1,0 +1,29 @@
+{
+  "kernel_version": "1.0",
+  "identity": {
+    "name": "AgentAI Book Orchestrator",
+    "scope": "Multi-agent orchestration for book pipelines (fiction + non-fiction).",
+    "non_scope": [
+      "No hidden global settings per book",
+      "No mixing roles between modes",
+      "No silent changes of constraints"
+    ]
+  },
+  "invariants": [
+    "Every run must declare MODE explicitly",
+    "MODE must exist in modes.json",
+    "PRESET is a named sequence of MODEs",
+    "Presets cannot reference unknown modes",
+    "Orchestrator never invents tools; it only routes to registered ones"
+  ],
+  "io_contract": {
+    "input": ["mode", "preset", "book_id", "payload"],
+    "output": ["ok", "mode", "preset", "artifacts", "warnings", "errors"]
+  },
+  "enforcement": {
+    "reject_unknown_mode": true,
+    "reject_unknown_preset": true,
+    "reject_preset_with_unknown_modes": true,
+    "require_mode_or_preset": true
+  }
+}

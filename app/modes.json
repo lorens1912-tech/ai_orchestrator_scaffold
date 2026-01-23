@@ -1,0 +1,128 @@
+{
+  "modes": [
+    {
+      "id": "PLAN",
+      "purpose": "High-level intent, scope, constraints",
+      "writes": [
+        "plan.md"
+      ],
+      "forbidden": [
+        "writing prose",
+        "stylistic edits"
+      ]
+    },
+    {
+      "id": "OUTLINE",
+      "purpose": "Structural outline (acts, chapters, beats)",
+      "writes": [
+        "outline.md"
+      ],
+      "forbidden": [
+        "full prose",
+        "styling"
+      ]
+    },
+    {
+      "id": "WRITE",
+      "purpose": "Primary prose generation",
+      "writes": [
+        "chapter_*.md"
+      ],
+      "forbidden": [
+        "editing previous text",
+        "fact judgment"
+      ]
+    },
+    {
+      "id": "EXPAND",
+      "purpose": "Lengthen or deepen existing prose",
+      "writes": [
+        "chapter_*.md"
+      ],
+      "forbidden": [
+        "changing meaning",
+        "new plot"
+      ]
+    },
+    {
+      "id": "EDIT",
+      "purpose": "Clarity, grammar, flow",
+      "writes": [
+        "chapter_*.md"
+      ],
+      "forbidden": [
+        "adding new content"
+      ]
+    },
+    {
+      "id": "STYLE",
+      "purpose": "Voice, tone, linguistic consistency",
+      "writes": [
+        "chapter_*.md"
+      ],
+      "forbidden": [
+        "plot changes",
+        "fact checking"
+      ]
+    },
+    {
+      "id": "CONTINUITY",
+      "purpose": "Canon, timeline, internal consistency",
+      "writes": [
+        "continuity_report.json"
+      ],
+      "forbidden": [
+        "rewriting prose"
+      ]
+    },
+    {
+      "id": "FACTCHECK",
+      "purpose": "Verify factual correctness and claims",
+      "writes": [
+        "factcheck_report.json"
+      ],
+      "forbidden": [
+        "stylistic edits",
+        "plot invention"
+      ]
+    },
+    {
+      "id": "CRITIC",
+      "purpose": "Quality assessment and weak-point detection",
+      "writes": [
+        "critic_report.json"
+      ],
+      "forbidden": [
+        "rewriting text"
+      ]
+    },
+    {
+      "id": "ADAPT",
+      "purpose": "Adapt text to screenplay/series format",
+      "writes": [
+        "adaptation.md"
+      ],
+      "forbidden": [
+        "changing core story"
+      ]
+    },
+    {
+      "id": "EXPORT",
+      "purpose": "Prepare final outputs (ebook, script, etc.)",
+      "writes": [
+        "export/*"
+      ],
+      "forbidden": [
+        "content changes"
+      ]
+    },
+    {
+      "id": "QUALITY",
+      "name": "QUALITY",
+      "description": "Quality gate: ACCEPT|REVISE|REJECT (Phase C stub)"
+    },
+    {
+      "id": "UNIQUENESS"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "job_id": "e4c154c343a14a8ebc2262ba408781b6",
+  "status": "RUNNING",
+  "kind": "AGENT_RUN",
+  "book": "test5",
+  "created_at": 1768016562.2749472,
+  "paths": {
+    "book_dir": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5",
+    "current": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\current.txt",
+    "draft": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\draft.txt",
+    "tail": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\tail.txt",
+    "state": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\state.json",
+    "log": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\agent_log.txt",
+    "prompts_dir": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\prompts"
+  },
+  "started_at": 1768016562.2789466,
+  "finished_at": null,
+  "exit_code": null,
+  "error": null,
+  "stdout_tail": "",
+  "stderr_tail": "",
+  "meta": {
+    "topic": "Pisz kolejny fragment ksiki (thriller/tech) po polsku. Tylko tre ksiki, bez komentarzy.",
+    "target_words": 3000,
+    "chunk_words": 1500,
+    "model": "gpt-4.1-mini",
+    "tail_chars": 3000,
+    "job_timeout_sec": 3600,
+    "max_parallel_calls": 2,
+    "retries_done": 0
+  }
+}

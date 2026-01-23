@@ -1,0 +1,20 @@
+﻿[PAMIÄÄ†_KSIÄ„Ĺ»KI book_bible.json]
+{"schema_version":"1.0","book":{"book_id":"BOOK_001","title":"CHANGE_ME","language":"pl","premise":""},"characters":[],"world":{"facts":[],"locations":[],"rules":[]},"timeline":[],"plot":{"acts":[],"threads":[],"open_questions":[]}}
+
+
+[PROFIL_STYLU style_profile.json]
+{"schema_version":"1.0","global_principles":["konkret > ogĂłlnik","krĂłtkie akapity w napiciu"],"do_dont":{"do":["czasowniki","cicia"],"dont":["lanie wody","meta-gadanie"]}}
+
+
+[PROMPT_BAZOWY]
+[ROLE: WRITER]
+Piszesz kolejn scen ksiki w jzyku polskim.
+
+TWARDY ZAKAZ:
+- Nie uywaj adnych nazw wasnych, postaci, miejsc ani tytuĂłw, ktĂłre NIE wystpuj w [PAMI_KSIKI].
+- Jeli w pamici brak danych (np. imion postaci)  uyj neutralnych placeholderĂłw typu: [POSTA_A], [MIASTO_A] i zgo brak w 1 zdaniu na kocu: "BRAK_DANYCH: ..."
+
+WYJCIE:
+- ZwrĂł wycznie tekst sceny (bez meta-komentarzy).
+
+

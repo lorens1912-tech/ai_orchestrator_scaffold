@@ -1,0 +1,32 @@
+{
+  "job_id": "2e32237b4f994668aa4d26d5765d1c71",
+  "status": "ERROR",
+  "kind": "AGENT_RUN",
+  "book": "test2",
+  "created_at": 1768013453.5192544,
+  "paths": {
+    "book_dir": "C:\\AI\\ai_orchestrator_scaffold\\books\\test2",
+    "current": "C:\\AI\\ai_orchestrator_scaffold\\books\\test2\\current.txt",
+    "draft": "C:\\AI\\ai_orchestrator_scaffold\\books\\test2\\draft.txt",
+    "tail": "C:\\AI\\ai_orchestrator_scaffold\\books\\test2\\tail.txt",
+    "state": "C:\\AI\\ai_orchestrator_scaffold\\books\\test2\\state.json",
+    "log": "C:\\AI\\ai_orchestrator_scaffold\\books\\test2\\agent_log.txt",
+    "prompts_dir": "C:\\AI\\ai_orchestrator_scaffold\\books\\test2\\prompts"
+  },
+  "started_at": 1768013453.523255,
+  "finished_at": 1768014354.1814034,
+  "exit_code": -1,
+  "error": "PS_TIMEOUT",
+  "stdout_tail": "",
+  "stderr_tail": "",
+  "meta": {
+    "topic": "Pisz kolejny fragment ksiki (thriller/tech) po polsku. Zachowuj cigo z dotychczasowym draftem. Tylko tre ksiki  bez komentarzy, bez nagówków, bez metatekstu.",
+    "target_words": 12000,
+    "chunk_words": 3000,
+    "model": "gpt-4.1-mini",
+    "tail_chars": 6000,
+    "job_timeout_sec": 3600,
+    "max_parallel_calls": 2,
+    "retries_done": 0
+  }
+}

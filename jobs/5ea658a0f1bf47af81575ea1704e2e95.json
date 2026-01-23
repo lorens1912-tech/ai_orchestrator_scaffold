@@ -1,0 +1,32 @@
+{
+  "job_id": "5ea658a0f1bf47af81575ea1704e2e95",
+  "status": "ERROR",
+  "kind": "AGENT_RUN",
+  "book": "ChangeReality",
+  "created_at": 1768067564.699614,
+  "paths": {
+    "book_dir": "C:\\AI\\ai_orchestrator_scaffold\\books\\ChangeReality",
+    "current": "C:\\AI\\ai_orchestrator_scaffold\\books\\ChangeReality\\current.txt",
+    "draft": "C:\\AI\\ai_orchestrator_scaffold\\books\\ChangeReality\\draft.txt",
+    "tail": "C:\\AI\\ai_orchestrator_scaffold\\books\\ChangeReality\\tail.txt",
+    "state": "C:\\AI\\ai_orchestrator_scaffold\\books\\ChangeReality\\state.json",
+    "log": "C:\\AI\\ai_orchestrator_scaffold\\books\\ChangeReality\\agent_log.txt",
+    "prompts_dir": "C:\\AI\\ai_orchestrator_scaffold\\books\\ChangeReality\\prompts"
+  },
+  "started_at": 1768067564.7136147,
+  "finished_at": 1768067564.7446144,
+  "exit_code": null,
+  "error": "NotImplementedError: ",
+  "stdout_tail": "",
+  "stderr_tail": "",
+  "meta": {
+    "topic": "TYTU: BOOK_TITLE_HERE — test stabilnoci\r\nCEL: wygeneruj 3000+ sów po polsku, spójnie, bez meta.\r\nSTYL: thriller techno-finansowy, tempo, konkret, dialogi.\r\nPOSTACIE: Adam Kruk, Damian Cross, Lena Kowalska, Sterling.\r\nSCENA: noc, deszcz, neon za oknem; Adam dostaje dowód manipulacji rynkiem.\r\nKONIEC: cliffhanger.\r\n\r\nLINIA 1: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 2: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 3: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 4: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 5: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 6: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 7: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 8: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 9: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 10: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 11: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 12: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 13: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 14: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 15: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 16: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 17: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 18: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 19: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 20: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 21: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 22: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 23: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 24: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 25: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 26: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 27: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 28: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 29: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 30: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 31: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 32: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 33: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 34: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 35: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\n",
+    "target_words": 1200,
+    "chunk_words": 300,
+    "model": "gpt-4.1-mini",
+    "tail_chars": 6000,
+    "job_timeout_sec": 3600,
+    "max_parallel_calls": 2,
+    "retries_done": 0
+  }
+}

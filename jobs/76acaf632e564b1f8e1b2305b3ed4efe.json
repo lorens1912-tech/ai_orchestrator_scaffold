@@ -1,0 +1,32 @@
+{
+  "job_id": "76acaf632e564b1f8e1b2305b3ed4efe",
+  "status": "ERROR",
+  "kind": "AGENT_RUN",
+  "book": "test5",
+  "created_at": 1768040264.897508,
+  "paths": {
+    "book_dir": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5",
+    "current": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\current.txt",
+    "draft": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\draft.txt",
+    "tail": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\tail.txt",
+    "state": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\state.json",
+    "log": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\agent_log.txt",
+    "prompts_dir": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\prompts"
+  },
+  "started_at": 1768040264.901507,
+  "finished_at": 1768040908.8095074,
+  "exit_code": 1,
+  "error": "PS_EXIT_1",
+  "stdout_tail": "",
+  "stderr_tail": "",
+  "meta": {
+    "topic": "W pierwszej linii wypisz dokadnie: ó Ó. Potem dopisz 3 zdania po polsku. Tylko tre.",
+    "target_words": 140,
+    "chunk_words": 90,
+    "model": "gpt-4.1-mini",
+    "tail_chars": 1000,
+    "job_timeout_sec": 3600,
+    "max_parallel_calls": 2,
+    "retries_done": 0
+  }
+}

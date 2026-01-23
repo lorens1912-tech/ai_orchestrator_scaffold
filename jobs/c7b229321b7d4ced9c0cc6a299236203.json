@@ -1,0 +1,32 @@
+{
+  "job_id": "c7b229321b7d4ced9c0cc6a299236203",
+  "status": "ERROR",
+  "kind": "AGENT_RUN",
+  "book": "test5",
+  "created_at": 1768041157.5289068,
+  "paths": {
+    "book_dir": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5",
+    "current": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\current.txt",
+    "draft": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\draft.txt",
+    "tail": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\tail.txt",
+    "state": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\state.json",
+    "log": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\agent_log.txt",
+    "prompts_dir": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\prompts"
+  },
+  "started_at": 1768041157.5319018,
+  "finished_at": 1768041158.2259047,
+  "exit_code": 1,
+  "error": "PS_EXIT_1",
+  "stdout_tail": "\n=============================\nRUN_BOOK_V2 WRAPPER CAUGHT ERROR\n=============================\n\nEXCEPTION:\nAt C:\\AI\\ai_orchestrator_scaffold\\run_book_v2_impl.ps1:49 char:19\r\n+     [int]$Delta = 3000,\r\n+                   ~~~~\r\nThe assignment expression is not valid. The input to an assignment operator must be an object that is able\r\n to accept assignments, such as a variable or a property.\r\n\r\nAt C:\\AI\\ai_orchestrator_scaffold\\run_book_v2_impl.ps1:50 char:22\r\n+     [string]$Model = \"gpt-4.1-mini\",\r\n+                      ~~~~~~~~~~~~~~\r\nThe assignment expression is not valid. The input to an assignment operator must be an object that is able\r\n to accept assignments, such as a variable or a property.\r\n\r\nAt C:\\AI\\ai_orchestrator_scaffold\\run_book_v2_impl.ps1:51 char:29\r\n+     [int]$MaxOutputTokens = 1200,\r\n+                             ~~~~\r\nThe assignment expression is not valid. The input to an assignment operator must be an object that is able\r\n to accept assignments, such as a variable or a property.\r\n\r\nAt C:\\AI\\ai_orchestrator_scaffold\\run_book_v2_impl.ps1:53 char:27\r\n+     [string]$PromptFile = \"\",\r\n+                           ~~\r\nThe assignment expression is not valid. The input to an assignment operator must be an object that is able\r\n to accept assignments, such as a variable or a property.\r\n\r\nAt C:\\AI\\ai_orchestrator_scaffold\\run_book_v2_impl.ps1:54 char:27\r\n+     [string]$PromptText = \"\",\r\n+                           ~~\r\nThe assignment expression is not valid. The input to an assignment operator must be an object that is able\r\n to accept assignments, such as a variable or a property.\r\n    + CategoryInfo          : ParserError: (:) [], ParseException\r\n    + FullyQualifiedErrorId : InvalidLeftHandSide\r\n \r\n\n",
+  "stderr_tail": "",
+  "meta": {
+    "topic": "W pierwszej linii wypisz dokadnie: ó Ó. Potem dopisz 3 zdania po polsku. Tylko tre.",
+    "target_words": 140,
+    "chunk_words": 90,
+    "model": "gpt-4.1-mini",
+    "tail_chars": 1000,
+    "job_timeout_sec": 3600,
+    "max_parallel_calls": 2,
+    "retries_done": 0
+  }
+}

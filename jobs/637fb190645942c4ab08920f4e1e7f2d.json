@@ -1,0 +1,31 @@
+{
+  "job_id": "637fb190645942c4ab08920f4e1e7f2d",
+  "status": "RUNNING",
+  "kind": "AGENT_RUN",
+  "book": "test5",
+  "created_at": 1768016970.818934,
+  "paths": {
+    "book_dir": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5",
+    "current": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\current.txt",
+    "draft": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\draft.txt",
+    "tail": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\tail.txt",
+    "state": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\state.json",
+    "log": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\agent_log.txt",
+    "prompts_dir": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\prompts"
+  },
+  "started_at": 1768016970.8229346,
+  "finished_at": 1768017163.047356,
+  "exit_code": null,
+  "error": null,
+  "stdout_tail": "",
+  "stderr_tail": "",
+  "meta": {
+    "topic": "Pisz kolejny fragment ksiki po polsku. Tylko tre ksiki, bez komentarzy.",
+    "target_words": 600,
+    "chunk_words": 200,
+    "model": "gpt-4.1-mini",
+    "tail_chars": 1500,
+    "job_timeout_sec": 3600,
+    "max_parallel_calls": 2
+  }
+}

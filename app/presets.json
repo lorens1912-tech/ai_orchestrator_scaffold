@@ -1,0 +1,51 @@
+{
+  "presets": [
+    {
+      "id": "PIPELINE_DRAFT",
+      "purpose": "Szybki szkic: plan -> outline -> write -> critic -> edit",
+      "modes": [
+        "PLAN",
+        "OUTLINE",
+        "WRITE",
+        "CRITIC",
+        "EDIT"
+      ]
+    },
+    {
+      "id": "PIPELINE_FULL",
+      "purpose": "Pełna kontrola: plan -> outline -> write -> critic -> edit -> style -> continuity -> factcheck -> export",
+      "modes": [
+        "PLAN",
+        "OUTLINE",
+        "WRITE",
+        "CRITIC",
+        "EDIT",
+        "STYLE",
+        "CONTINUITY",
+        "FACTCHECK",
+        "EXPORT"
+      ]
+    },
+    {
+      "id": "PIPELINE_SCREEN",
+      "purpose": "Adaptacja: plan -> outline -> adapt -> critic -> edit -> export",
+      "modes": [
+        "PLAN",
+        "OUTLINE",
+        "ADAPT",
+        "CRITIC",
+        "EDIT",
+        "EXPORT"
+      ]
+    },
+    {
+      "id": "WRITING_STANDARD",
+      "modes": [
+        "PLAN",
+        "WRITE",
+        "UNIQUENESS",
+        "QUALITY"
+      ]
+    }
+  ]
+}

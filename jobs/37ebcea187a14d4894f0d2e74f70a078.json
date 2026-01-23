@@ -1,0 +1,34 @@
+{
+  "job_id": "37ebcea187a14d4894f0d2e74f70a078",
+  "status": "ERROR",
+  "kind": "AGENT_RUN",
+  "book": "test5",
+  "created_at": 1768080346.8816612,
+  "paths": {
+    "book_dir": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5",
+    "current": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\current.txt",
+    "draft": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\draft.txt",
+    "tail": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\tail.txt",
+    "state": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\state.json",
+    "log": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\agent_log.txt",
+    "ps_out": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\ps_out.txt",
+    "ps_err": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\ps_err.txt",
+    "prompts_dir": "C:\\AI\\ai_orchestrator_scaffold\\books\\test5\\prompts"
+  },
+  "started_at": 1768080346.8856606,
+  "finished_at": 1768080347.9333994,
+  "exit_code": 64,
+  "error": "PS_EXIT_64",
+  "stdout_tail": "\r\nUsage: pwsh[.exe] [-Login] [[-File] <filePath> [args]]\r\n                  [-Command { - | <script-block> [-args <arg-array>]\r\n                                | <string> [<CommandParameters>] } ]\r\n                  [-CommandWithArgs <string> [<CommandParameters>]\r\n                  [-ConfigurationName <string>] [-ConfigurationFile <filePath>]\r\n                  [-CustomPipeName <string>] [-EncodedCommand <Base64EncodedCommand>]\r\n                  [-ExecutionPolicy <ExecutionPolicy>] [-InputFormat {Text | XML}]\r\n                  [-Interactive] [-MTA] [-NoExit] [-NoLogo] [-NonInteractive] [-NoProfile]\r\n                  [-NoProfileLoadTime] [-OutputFormat {Text | XML}] \r\n                  [-SettingsFile <filePath>] [-SSHServerMode] [-STA] \r\n                  [-Version] [-WindowStyle <style>] \r\n                  [-WorkingDirectory <directoryPath>]\r\n\r\n       pwsh[.exe] -h | -Help | -? | /?\r\n\r\nPowerShell Online Help https://aka.ms/powershell-docs\r\n\r\nAll parameters are case-insensitive.\r\n",
+  "stderr_tail": "The argument '-Book' is not recognized as the name of a script file. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.\r\n",
+  "meta": {
+    "topic": "TYTU: BOOK_TITLE_HERE — test stabilnoci\r\nCEL: wygeneruj 3000+ sów po polsku, spójnie, bez meta.\r\nSTYL: thriller techno-finansowy, tempo, konkret, dialogi.\r\nPOSTACIE: Adam Kruk, Damian Cross, Lena Kowalska, Sterling.\r\nSCENA: noc, deszcz, neon za oknem; Adam dostaje dowód manipulacji rynkiem.\r\nKONIEC: cliffhanger.\r\n\r\nLINIA 1: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 2: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 3: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 4: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 5: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 6: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 7: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 8: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 9: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 10: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 11: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 12: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 13: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 14: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 15: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 16: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 17: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 18: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 19: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 20: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 21: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 22: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 23: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 24: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 25: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 26: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 27: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 28: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 29: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 30: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 31: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 32: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 33: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 34: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\nLINIA 35: rozwi scen, dodaj szczegó, utrzymaj napicie.\r\n",
+    "target_words": 1200,
+    "chunk_words": 300,
+    "model": "gpt-4.1-mini",
+    "tail_chars": 6000,
+    "job_timeout_sec": 3600,
+    "max_parallel_calls": 2,
+    "retries_done": 0
+  }
+}

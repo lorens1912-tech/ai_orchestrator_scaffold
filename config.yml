@@ -1,0 +1,14 @@
+﻿models:
+  primary: gpt-5
+  editor: gpt-4
+  verifier: o3
+  trends: grok-4
+safety:
+  health:
+    enabled: true
+    risk_terms:
+      - 'diagnosis'
+      - 'prescribe'
+      - 'dose'
+    disclaimer: 'TreĹ›ci majÄ… charakter informacyjny. Skonsultuj siÄ™ z lekarzem.'
+

@@ -1,0 +1,33 @@
+{
+  "job_id": "5615ddf6c6ed4ad4af2d88811ff1c12d",
+  "status": "DONE",
+  "kind": "AGENT_RUN",
+  "book": "test",
+  "created_at": 1768050433.2792313,
+  "paths": {
+    "book_dir": "C:\\AI\\ai_orchestrator_scaffold\\books\\test",
+    "current": "C:\\AI\\ai_orchestrator_scaffold\\books\\test\\current.txt",
+    "draft": "C:\\AI\\ai_orchestrator_scaffold\\books\\test\\draft.txt",
+    "tail": "C:\\AI\\ai_orchestrator_scaffold\\books\\test\\tail.txt",
+    "state": "C:\\AI\\ai_orchestrator_scaffold\\books\\test\\state.json",
+    "log": "C:\\AI\\ai_orchestrator_scaffold\\books\\test\\agent_log.txt",
+    "prompts_dir": "C:\\AI\\ai_orchestrator_scaffold\\books\\test\\prompts"
+  },
+  "started_at": 1768050433.2822254,
+  "finished_at": 1768050433.3112223,
+  "exit_code": null,
+  "error": null,
+  "stdout_tail": "",
+  "stderr_tail": "",
+  "meta": {
+    "topic": "TEST",
+    "target_words": 1200,
+    "chunk_words": 300,
+    "model": "gpt-4.1-mini",
+    "tail_chars": 6000,
+    "job_timeout_sec": 3600,
+    "max_parallel_calls": 2,
+    "retries_done": 0,
+    "words_total": 1202
+  }
+}

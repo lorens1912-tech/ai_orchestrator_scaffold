@@ -60,3 +60,7 @@ PS
 SNAPSHOT*.zip
 *.lnk
 Thumbs.db
+
+# More generated artifacts (nested paths)
+books/**/draft/buffer.txt
+books/**/prompts/api_prompt*.txt

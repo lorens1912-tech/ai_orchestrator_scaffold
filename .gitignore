@@ -27,3 +27,36 @@ _TRASH_*/
 # secrets
 openai_key.txt
 *.env
+
+# Test artifacts, temporary books, generated prompts/jobs
+books/test_*
+books/*_test*
+books/*_parallel_*
+books/*/test_*
+books/*/jobs_done/
+books/*/_backup_*/
+books/*/_backup_*
+books/*/prompts/prompt_*.txt
+books/*/last_openai_response.json
+books/*/state.json
+books/*/payload.json
+books/*/agent_log.txt
+books/*/tail.txt
+books/*/ps_*.txt
+books/*/current.txt
+books/*/buffer.txt
+books/*/draft.txt
+
+# Generated / runtime files
+openapi.json
+out_book.json
+book_text*.txt
+_last_*.json
+_last_*.txt
+
+# Misc local artifacts
+PS
+*.zip
+SNAPSHOT*.zip
+*.lnk
+Thumbs.db

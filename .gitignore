@@ -1,66 +1,36 @@
-# Python
+# --- Python ---
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
+.mypy_cache/
+ruff_cache/
 *.log
 
-# venv
-venv/
-.venv/
-
-# runtime artifacts
-runs/
-outputs/
-_logs/
-_queue/
-_last_*.json
-_last_*.txt
-server.log
-server.err.log
-
-# backups / trash
-_TRASH_*/
-*.bak*
-*.zip
-
-# secrets
-openai_key.txt
-*.env
-
-# Test artifacts, temporary books, generated prompts/jobs
-books/test_*
-books/*_test*
-books/*_parallel_*
-books/*/test_*
-books/*/jobs_done/
-books/*/_backup_*/
-books/*/_backup_*
-books/*/prompts/prompt_*.txt
-books/*/last_openai_response.json
-books/*/state.json
-books/*/payload.json
-books/*/agent_log.txt
-books/*/tail.txt
-books/*/ps_*.txt
-books/*/current.txt
-books/*/buffer.txt
-books/*/draft.txt
-
-# Generated / runtime files
-openapi.json
-out_book.json
-book_text*.txt
-_last_*.json
-_last_*.txt
-
-# Misc local artifacts
-PS
-*.zip
-SNAPSHOT*.zip
-*.lnk
+# --- OS / IDE ---
+.DS_Store
 Thumbs.db
+.vscode/
+.idea/
 
-# More generated artifacts (nested paths)
-books/**/draft/buffer.txt
-books/**/prompts/api_prompt*.txt
+# --- Runtime / data (projektowe) ---
+runs/
+books/**/draft/
+books/**/memory/
+books/**/latest.json
+books/**/chapters_index.json
+books/**/book_bible.json
+books/**/project_profile.json
+books/**/style_profile.json
+
+# jeśli chcesz trzymać szablonowe book_bible/profile w repo, przenieś je do config/templates/
+# i usuń powyższe ignore dla konkretnych plików.
+
+memory/*.jsonl
+memory/*.log
+memory/_tmp/
+
+# --- Local scripts / scratch ---
+_final_tool_repair.py
+_fix_all*.py

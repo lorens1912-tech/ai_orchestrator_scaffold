@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "team_context_access": {
+    "AUTHOR": ["kernel","project_profile","book_bible","topic","constraints","last_text"],
+    "CRITIC": ["kernel","project_profile","book_bible","last_text"],
+    "EDITOR": ["kernel","project_profile","last_text","issues"],
+    "QA": ["kernel","project_profile","last_text","issues"],
+    "MARKET": ["kernel","project_profile","last_text"],
+    "RESEARCH": ["kernel","project_profile","book_bible","claims"],
+    "ORCHESTRATOR": ["kernel","project_profile","book_bible","task"],
+    "CONTINUITY": ["kernel","project_profile","book_bible","last_text"],
+    "SERIES": ["kernel","project_profile","series_bible","book_bible"],
+    "ADAPTATION": ["kernel","project_profile","book_bible","scene_list"]
+  }
+}

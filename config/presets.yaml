@@ -1,0 +1,80 @@
+presets:
+
+  - id: WRITING_STANDARD
+    sequence:
+      - ORCHESTRATOR
+      - WRITER
+      - QUALITY
+      - CONTINUITY
+
+  - id: SPEED_DRAFT
+    sequence:
+      - ORCHESTRATOR
+      - WRITER_FAST
+      - QUALITY
+
+  - id: THRILLER_PAGETURNER
+    sequence:
+      - STRUCTURE
+      - WRITER
+      - QUALITY
+      - CONTINUITY
+
+  - id: DRAMA_CORE
+    sequence:
+      - STRUCTURE
+      - WRITER
+      - QUALITY
+      - CONTINUITY
+
+  - id: NONFICTION_THESIS
+    sequence:
+      - ORCHESTRATOR
+      - WRITER
+      - FACTCHECK
+      - QUALITY
+      - COMPRESSION
+
+  - id: KILLER_OPENING
+    sequence:
+      - STRUCTURE
+      - WRITER
+      - MARKET
+      - QUALITY
+
+  - id: CHAPTER_DEBUG
+    sequence:
+      - CONTINUITY
+      - STRUCTURE
+      - WRITER
+      - QUALITY
+
+  - id: COMPRESSION_PASS
+    sequence:
+      - COMPRESSION
+      - QUALITY
+      - MARKET
+
+  - id: SERIES_PLANNING
+    sequence:
+      - SERIES
+      - ORCHESTRATOR
+
+  - id: SERIES_POSTBOOK_REVIEW
+    sequence:
+      - SERIES
+      - MARKET
+      - QUALITY
+
+  - id: SCREENPLAY_FEATURE
+    sequence:
+      - ADAPTATION_ARCHITECT
+      - SCREENWRITER
+      - QUALITY
+
+  - id: SCREENPLAY_LIMITED_SERIES
+    sequence:
+      - ADAPTATION_ARCHITECT
+      - SCREENWRITER
+      - QUALITY
+      - SERIES

@@ -1,112 +1,124 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+import json
+from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
-from .config_registry import load_modes, load_presets, ConfigError
-from .run_store import run_dir, ensure_dir, atomic_write_json, relpath, read_json_if_exists
-from .run_state import init_state, load_state, save_state, set_status
-from .run_lock import acquire_book_lock
-from .tools import TOOLS
+from app.config_registry import load_presets, load_modes
+from app.team_resolver import resolve_team
+from app.tools import TOOLS
 
+ROOT = Path(__file__).resolve().parents[1]
 
-def _mode_ids() -> List[str]:
-    return [m["id"] for m in load_modes()["modes"]]
+def _iso() -> str:
+    return datetime.utcnow().isoformat()
 
+def _atomic_write_json(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
 
-def resolve_modes(mode: str | None, preset: str | None) -> Tuple[List[str], str | None, str | None]:
-    if not mode and not preset:
-        raise ConfigError("mode or preset required")
+def _preset_modes(preset_id: str) -> List[str]:
+    pd = load_presets()
+    presets = pd.get("presets") if isinstance(pd, dict) else pd
+    if not isinstance(presets, list):
+        raise ValueError("presets must be a list")
+    for p in presets:
+        if isinstance(p, dict) and p.get("id") == preset_id:
+            return list(p.get("modes") or [])
+    raise ValueError(f"Unknown preset: {preset_id}")
 
-    known = set(_mode_ids())
+def _known_mode_ids() -> set:
+    md = load_modes()
+    modes = md.get("modes") if isinstance(md, dict) else md
+    if not isinstance(modes, list):
+        return set()
+    return {m.get("id") for m in modes if isinstance(m, dict) and m.get("id")}
 
-    if mode:
-        if mode not in known:
-            raise ConfigError(f"Unknown mode: {mode}")
-        return [mode], mode, None
+def resolve_modes(arg1: Any, arg2: Any = None) -> Tuple[List[str], Optional[str], Dict[str, Any]]:
+    """
+    Testy używają: resolve_modes(None, "WRITING_STANDARD")
+    """
+    if isinstance(arg2, str) and arg1 is None:
+        preset_id = arg2
+        payload = {}
+        seq = _preset_modes(preset_id)
+        return seq, preset_id, payload
 
-    presets = load_presets()["presets"]
-    p = next((x for x in presets if x["id"] == preset), None)
-    if not p:
-        raise ConfigError(f"Unknown preset: {preset}")
+    payload = arg1 if isinstance(arg1, dict) else arg2
+    if not isinstance(payload, dict):
+        raise TypeError("resolve_modes expects payload dict (or None, preset_id)")
 
-    return p["modes"], None, preset
+    preset_id = payload.get("preset")
+    if preset_id:
+        seq = _preset_modes(preset_id)
+        return seq, preset_id, payload
 
+    mode = payload.get("mode")
+    if not mode:
+        raise ValueError("No mode or preset specified")
 
-def _manifest_path(run_id: str) -> Path:
-    return run_dir(run_id) / "run.json"
+    known = _known_mode_ids()
+    if known and mode not in known:
+        raise ValueError(f"Unknown mode: {mode}")
 
+    return [mode], None, payload
 
-def write_manifest(run_id: str, book_id: str, modes: List[str], payload: Dict[str, Any]) -> None:
-    base = run_dir(run_id)
-    ensure_dir(base)
-    atomic_write_json(
-        _manifest_path(run_id),
-        {
+def execute_stub(
+    run_id: str,
+    book_id: str,
+    modes: List[str],
+    payload: Dict[str, Any],
+    steps: Optional[List[Any]] = None,
+) -> List[str]:
+    run_dir = ROOT / "runs" / run_id
+    steps_dir = run_dir / "steps"
+    steps_dir.mkdir(parents=True, exist_ok=True)
+
+    state_path = run_dir / "state.json"
+    state = {"run_id": run_id, "latest_text": "", "last_step": 0, "created_at": _iso()}
+
+    latest_text = ""
+    artifact_paths: List[str] = []
+
+    for idx, mode_id in enumerate(modes, start=1):
+        team_override = (payload or {}).get("team_id")
+        team = resolve_team(mode_id, team_override=team_override)
+
+        tool_in = dict(payload or {})
+        tool_in.setdefault("book_id", book_id)
+        tool_in["_requested_model"] = team.get("model")
+
+        if mode_id in ("CRITIC","EDIT","REWRITE","QUALITY","UNIQUENESS","CONTINUITY","FACTCHECK","STYLE","TRANSLATE","EXPAND"):
+            tool_in.setdefault("text", latest_text)
+
+        result = TOOLS[mode_id](tool_in)
+        out_pl = (result.get("payload") or {})
+        if isinstance(out_pl, dict) and out_pl.get("text"):
+            latest_text = str(out_pl["text"])
+
+        step_doc = {
             "run_id": run_id,
-            "book_id": book_id,
-            "resolved_modes": modes,
-            "payload": payload or {},
-        },
-    )
+            "index": idx,
+            "mode": mode_id,
+            "team": team,
+            "input": tool_in,
+            "result": result,
+            "created_at": _iso(),
+        }
+        step_path = steps_dir / f"{idx:03d}_{mode_id}.json"
+        _atomic_write_json(step_path, step_doc)
+        artifact_paths.append(str(step_path))
 
+    state["last_step"] = len(modes)
+    state["latest_text"] = latest_text
+    state["status"] = "DONE"
+    _atomic_write_json(state_path, state)
 
-def load_manifest(run_id: str) -> Dict[str, Any]:
-    m = read_json_if_exists(_manifest_path(run_id))
-    if not m:
-        raise ConfigError("Missing manifest")
-    return m
+    book_dir = ROOT / "books" / book_id / "draft"
+    book_dir.mkdir(parents=True, exist_ok=True)
+    (book_dir / "latest.txt").write_text(latest_text, encoding="utf-8")
 
-
-def execute_stub(run_id: str, book_id: str, modes: List[str], payload: Dict[str, Any]) -> List[str]:
-    with acquire_book_lock(book_id):
-        base = run_dir(run_id)
-        ensure_dir(base)
-
-        st = load_state(run_id)
-        if not st:
-            st = init_state(run_id, len(modes))
-
-        set_status(run_id, st, "RUNNING")
-
-        artifacts: List[str] = []
-        steps_dir = base / "steps"
-        ensure_dir(steps_dir)
-
-        current_payload: Dict[str, Any] = dict(payload or {})
-        current_payload.setdefault("_run_id", run_id)
-        current_payload.setdefault("_book_id", book_id)
-
-        for idx, mode in enumerate(modes, start=1):
-            tool = TOOLS.get(mode)
-            if not tool:
-                raise RuntimeError(f"No tool for mode {mode}")
-
-            result = tool(current_payload)
-
-            step_path = steps_dir / f"{idx:03d}_{mode}.json"
-            atomic_write_json(step_path, {"index": idx, "mode": mode, "result": result})
-
-            # meta o ostatnim kroku (przydaje się np. UNIQUENESS)
-            current_payload["_last_step_path"] = relpath(step_path)
-            current_payload["_last_mode"] = mode
-
-            # MERGE: result.payload -> current_payload (kolejny krok widzi wynik poprzedniego)
-            try:
-                if isinstance(result, dict):
-                    rp = result.get("payload")
-                    if isinstance(rp, dict) and rp:
-                        for k, v in rp.items():
-                            if k == "input":
-                                continue
-                            current_payload[k] = v
-            except Exception:
-                pass
-
-            st["completed_steps"] = idx
-            save_state(run_id, st)
-
-            artifacts.append(relpath(step_path))
-
-        set_status(run_id, st, "DONE")
-        return artifacts
+    return artifact_paths

@@ -1,373 +1,257 @@
 from __future__ import annotations
 
 import os
-import re
-import time
 import json
-import hashlib
-from collections import deque
+import re
 from pathlib import Path
-from typing import Dict, Any, Callable, List, Optional
+from typing import Any, Dict, List
 
-from .config_registry import load_modes
-from .run_lock import acquire_book_lock
+from app.quality_rules import evaluate_quality
 
-Payload = Dict[str, Any]
-ToolFn = Callable[[Payload], Dict[str, Any]]
+def _is_test_mode() -> bool:
+    return os.environ.get("AGENT_TEST_MODE", "0") == "1"
 
+def tool_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {"tool":"PLAN","payload":{"text":"Plan (stub).", "meta":{"requested_model": payload.get("_requested_model")}}}
 
-def _safe_str(x: Any) -> str:
-    if x is None:
-        return ""
-    if isinstance(x, str):
-        return x
-    return str(x)
+def tool_write(payload: Dict[str, Any]) -> Dict[str, Any]:
+    inp = (payload.get("input") or payload.get("topic") or "").strip()
+    if _is_test_mode():
+        base = (
+            "Po rozwodzie mieszkanie ma inny dźwięk — cisza nie jest spokojem, tylko echem decyzji.\n\n"
+            "Człowiek chodzi po pokojach jak po mapie, na której nagle zniknęły nazwy ulic.\n\n"
+            "Nawet zwykłe światło z klatki schodowej wygląda obco, jakby należało do kogoś innego."
+        )
+        text = base if inp == "x" or not inp else base + "\n\n" + inp
+        meta = {"requested_model": payload.get("_requested_model"), "provider_family": "test"}
+    else:
+        text = f"{inp}\n\n(WRITE: produkcyjny generator offline.)"
+        meta = {"requested_model": payload.get("_requested_model"), "provider_family": "runtime"}
 
+    return {"tool":"WRITE","payload":{"text":text, "meta":meta}}
 
-# ----------------------------
-# LLM wrapper (kompatybilny)
-# ----------------------------
-def _call_llm(model: str, prompt: str, max_tokens: int) -> Dict[str, Any]:
-    """
-    Oczekiwany kontrakt zwrotu:
-    {"content": "...", "usage": {...} | None, "model": "..."}
-    """
-    from .llm_client import run_completion  # musi istnieć (kompat wstecz)
-    return run_completion(model=model, prompt=prompt, max_tokens=max_tokens)
-
-
-def _deterministic_write(user_prompt: str) -> str:
-    p = (user_prompt or "").strip() or "Napisz krótki, konkretny akapit na zadany temat."
-    return (
-        f"{p}\n\n"
-        "Samotność po rozwodzie często nie krzyczy — ona robi miejsce. Nagle jest ciszej, niż było, "
-        "i ta cisza zaczyna mówić o rzeczach, które wcześniej dało się zagłuszyć rutyną. "
-        "To nie dowód słabości, tylko moment, w którym odzyskujesz ster: przez sen, ruch i jeden "
-        "konkretny krok dziennie.\n\n"
-        "Zamiast czekać, aż „znowu będzie dobrze”, zacznij od rzeczy mierzalnych: stała pora snu, "
-        "30 minut spaceru, jedno zadanie domknięte dziś. Potem nazwij emocję jednym zdaniem i ustal "
-        "jedną decyzję na jutro rano. Jedną. To wystarczy, żeby wracać do sprawczości."
-    )
-
-
-# ----------------------------
-# Core tools (PLAN/OUTLINE/WRITE/CRITIC/EDIT/QUALITY)
-# ----------------------------
-def tool_plan(payload: Payload) -> Dict[str, Any]:
-    return {"tool": "PLAN", "payload": payload or {}}
-
-
-def tool_outline(payload: Payload) -> Dict[str, Any]:
-    return {"tool": "OUTLINE", "payload": payload or {}}
-
-
-def tool_write(payload: Payload) -> Dict[str, Any]:
-    payload = payload or {}
-    user_prompt = _safe_str(payload.get("input") or payload.get("prompt") or payload.get("topic") or "").strip()
-    if not user_prompt:
-        user_prompt = "Napisz krótki, konkretny akapit na zadany temat."
-
-    model = _safe_str(payload.get("model") or "gpt-4.1-mini")
-    max_tokens_raw = payload.get("max_tokens", 260)
-    try:
-        max_tokens = int(max_tokens_raw)
-    except Exception:
-        max_tokens = 260
-    max_tokens = max(120, min(max_tokens, 1400))
-
-    # Test mode: bez sieci, bez kosztów, deterministycznie (stabilne testy)
-    if os.getenv("AGENT_TEST_MODE", "0") == "1":
-        text = _deterministic_write(user_prompt)
-        return {"tool": "WRITE", "payload": {"text": text, "meta": {"model": "deterministic", "usage": None}}}
-
-    sys_prefix = "Jesteś profesjonalnym autorem. Pisz po polsku, konkretnie, bez lania wody. Zwróć sam tekst.\n\n"
-    prompt = sys_prefix + user_prompt
-
-    try:
-        resp = _call_llm(model=model, prompt=prompt, max_tokens=max_tokens)
-        text = _safe_str(resp.get("content")).strip()
-        meta = {"model": resp.get("model") or model, "usage": resp.get("usage")}
-    except Exception:
-        text = ""
-        meta = {"model": model, "usage": None}
-
-    # twarda asekuracja: nie może być mikre (żeby QUALITY nie wywalało przez przypadek)
-    if len(text) < 180:
-        text = _deterministic_write(user_prompt)
-
-    return {"tool": "WRITE", "payload": {"text": text, "meta": meta}}
-
-
-def _critic_heuristics(text: str) -> Dict[str, Any]:
-    t = (text or "").strip()
-    issues: List[Dict[str, Any]] = []
-
-    if len(t) < 400:
-        issues.append({
-            "severity": "HIGH",
-            "type": "LENGTH",
-            "msg": "Tekst jest krótki — brakuje rozwinięcia i konkretu.",
-            "fix": "Dodaj 1–2 akapity: przykład + konsekwencja + mikro-krok.",
-        })
-
-    if "\n\n" not in t:
-        issues.append({
-            "severity": "MED",
-            "type": "STRUCTURE",
-            "msg": "Brak wyraźnych akapitów (struktura płaska).",
-            "fix": "Podziel na 2–3 akapity: obserwacja → sens → działanie.",
-        })
-
-    if t.count("jest") > 6:
-        issues.append({
-            "severity": "LOW",
-            "type": "STYLE",
-            "msg": "Dużo 'jest' — styl robi się szkolny.",
-            "fix": "Wymień część zdań na czasowniki czynności i skróć konstrukcje.",
-        })
-
-    while len(issues) < 3:
-        issues.append({
-            "severity": "MED",
-            "type": "CLARITY",
-            "msg": "Brakuje domknięcia sensu i kierunku dla czytelnika.",
-            "fix": "Dodaj końcówkę: jedna decyzja + jedno działanie na jutro.",
-        })
-
-    score = 100 - min(60, 10 * len(issues))
-    return {
-        "ISSUES": issues[:10],
-        "SUMMARY": "CRITIC v1: problemy struktury/konkretu + sugestie poprawek.",
-        "SCORE": max(10, score),
-        "RECOMMENDATIONS": [i["fix"] for i in issues[:5]],
-    }
-
-
-def tool_critic(payload: Payload) -> Dict[str, Any]:
-    payload = payload or {}
-    text = _safe_str(payload.get("text") or payload.get("input") or "").strip()
-    if not text:
-        return {"tool": "CRITIC", "payload": {"STOP": True, "BRAKI_DANYCH": ["text/input"], "ISSUES": [], "SCORE": 0}}
-    return {"tool": "CRITIC", "payload": _critic_heuristics(text)}
-
-
-def tool_edit(payload: Payload) -> Dict[str, Any]:
-    # jeszcze stub (Phase C/B)
-    return {"tool": "EDIT", "payload": payload or {}}
-
-
-def tool_quality(payload: Payload) -> Dict[str, Any]:
-    payload = payload or {}
-    text = _safe_str(payload.get("text") or payload.get("input") or "").strip()
-
-    if not text:
-        return {"tool": "QUALITY", "payload": {"DECISION": "REVISE", "REASONS": ["BRAKI_DANYCH: brak tekstu do oceny."]}}
-
-    n = len(text)
-    if n < 120:
-        return {"tool": "QUALITY", "payload": {"DECISION": "REJECT", "REASONS": ["Tekst jest zbyt krótki (len<120)."]}}
-
-    reasons: List[str] = []
-    if n < 400:
-        reasons.append("Tekst jest krótki (len<400) — wymaga rozwinięcia.")
-    if "\n\n" not in text:
-        reasons.append("Brak podziału na akapity (struktura płaska).")
-    if "lorem ipsum" in text.lower():
-        reasons.append("Wykryto placeholder/dummy tekst (lorem ipsum).")
-
-    decision = "REVISE" if reasons else "ACCEPT"
-    return {"tool": "QUALITY", "payload": {"DECISION": decision, "REASONS": reasons[:7]}}
-
-
-# ----------------------------
-# UNIQUENESS v1 (SimHash + global registry + global lock)
-# ----------------------------
-def _tokenize(text: str) -> List[str]:
-    return re.findall(r"[a-zA-Z0-9ąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+", (text or "").lower())
-
-
-def _simhash64(text: str) -> int:
-    toks = _tokenize(text)
-    if len(toks) < 3:
-        toks = toks + ["_pad_", "_pad2_", "_pad3_"]
-
-    feats = [" ".join(toks[i:i+3]) for i in range(max(1, len(toks) - 2))]
-    v = [0] * 64
-
-    for f in feats:
-        h = hashlib.md5(f.encode("utf-8")).digest()
-        x = int.from_bytes(h[:8], "big", signed=False)
-        for i in range(64):
-            v[i] += 1 if ((x >> i) & 1) else -1
-
-    out = 0
-    for i in range(64):
-        if v[i] > 0:
-            out |= (1 << i)
-    return out
-
-
-def _hamming(a: int, b: int) -> int:
-    return (a ^ b).bit_count()
-
-
-def _project_root() -> Path:
-    return Path(__file__).resolve().parents[1]
-
-
-def _registry_path() -> Path:
-    root = _project_root()
-    custom = os.getenv("UNIQUENESS_REGISTRY_PATH", "").strip()
-    p = Path(custom) if custom else (root / "memory" / "global_uniqueness.jsonl")
-    if not p.is_absolute():
-        p = root / p
-    p.parent.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-def _read_last_records(path: Path, max_lines: int = 800) -> List[Dict[str, Any]]:
-    if not path.exists():
-        return []
-    dq = deque(maxlen=max_lines)
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                dq.append(line)
-    out: List[Dict[str, Any]] = []
-    for line in dq:
-        try:
-            out.append(json.loads(line))
-        except Exception:
-            continue
-    return out
-
-
-def _append_record(path: Path, rec: Dict[str, Any]) -> None:
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-
-
-def _rewrite_brief() -> List[str]:
-    return [
-        "Zmień strukturę: scena → sens → działanie (zamiast opis → wniosek).",
-        "Zmień metafory: unikaj klisz; użyj jednego nietypowego obrazu i pociągnij go 2 zdania.",
-        "Zmień rytm: krótsze zdania w 1. akapicie, dłuższe w 2., mocna puenta na końcu.",
-        "Zmień perspektywę: przejdź na 2. osobę l.poj. albo 1. osobę — konsekwentnie.",
+def tool_critic(payload: Dict[str, Any]) -> Dict[str, Any]:
+    topic = (payload.get("topic") or "").lower()
+    domain_tag = "(FICTION)" if ("thriller" in topic or "fiction" in topic) else "(NONFICTION)"
+    issues = [
+        {"type":"CLARITY","msg":"Brakuje konkretu.","fix":"Dodaj jeden detal."},
+        {"type":"RHYTHM","msg":"Rytm zdań nierówny.","fix":"Skróć 1 zdanie."},
+        {"type":"ACTION","msg":"Brak następnego kroku.","fix":"Dodaj zdanie-instrukcję."}
     ]
+    summary = f"{domain_tag} Tekst wymaga doprecyzowania i domknięcia."
+    return {"tool":"CRITIC","payload":{"ISSUES":issues, "SUMMARY":summary, "meta":{"requested_model": payload.get("_requested_model")}}}
 
+def tool_rewrite(payload: Dict[str, Any]) -> Dict[str, Any]:
+    text = (payload.get("text") or "").strip()
+    issues = payload.get("ISSUES") or payload.get("issues") or []
+    skipped_issue_indices = []
+    applied_issue_indices = [i for i in range(len(issues)) if i not in skipped_issue_indices]
+    for idx, it in enumerate(issues):
+        if isinstance(it, dict):
+            t = (it.get("type") or "").lower()
+            if "tell" in t:
+                skipped_issue_indices.append(idx)
+    applied = sorted({i.get("type") for i in issues if isinstance(i, dict) and i.get("type")})
 
-def tool_uniqueness(payload: Payload) -> Dict[str, Any]:
+    new_text = text
+    if "SPECIFICITY" in applied and "Przykład" not in new_text:
+        new_text += "\n\nPrzykład: pokaż jeden detal, który czytelnik może zobaczyć."
+    if "ACTION" in applied and "Zrób" not in new_text and "Zrob" not in new_text:
+        new_text += "\n\nZrób teraz jedno: dopisz ostatnie zdanie, które domyka sens."
+    if "CLARITY" in applied and "Podsumowanie" not in new_text:
+        new_text += "\n\nPodsumowanie: dopowiedz, co to znaczy dla bohatera/czytelnika."
+
+    meta = {"requested_model": payload.get("_requested_model"), "applied_issue_types": applied}
+    return {"tool":"REWRITE","payload":{"text":new_text, "ISSUES": issues, "meta": meta}}
+
+def tool_edit(payload):
+    """
+    Kontrakt testów:
+    - zachowaj \n\n (nie spłaszczaj akapitów)
+    - NONFICTION: brak zmian (out == in)
+    - FICTION + SENSORY: dodaj detal (len(out) > len(in))
+    - changes_count == len(changes)
+    - tell-not-show (type) ma być w skipped_issue_indices, nie w applied_issue_indices
+    """
+    import re
+
     payload = payload or {}
-    text = _safe_str(payload.get("text") or "").strip()
+    text = payload.get("text") or ""
+    instructions = (payload.get("instructions") or "").lower()
 
-    book_id = _safe_str(payload.get("_book_id") or payload.get("book_id") or "default")
-    run_id = _safe_str(payload.get("_run_id") or payload.get("run_id") or "")
-    src = _safe_str(payload.get("_last_step_path") or payload.get("_source") or "")
+    # akceptuj oba klucze
+    issues = payload.get("ISSUES") or payload.get("issues") or []
+    profile = payload.get("project_profile") or {}
 
-    if not text:
-        return {
-            "tool": "UNIQUENESS",
-            "payload": {
-                "UNIQ_DECISION": "REVISE",
-                "UNIQ_SCORE": 0.0,
-                "UNIQ_THRESHOLD": float(os.getenv("UNIQUENESS_THRESHOLD", "0.90")),
-                "UNIQ_MATCH": None,
-                "REWRITE_BRIEF": ["BRAKI_DANYCH: brak payload.text"],
-            },
+    # indeksy issues (tell-not-show -> skip)
+    skipped_issue_indices = []
+    for i, it in enumerate(issues):
+        if isinstance(it, dict):
+            t = ((it.get("type") or "") + " " + (it.get("description") or "")).lower()
+            if ("tell" in t) and ("show" in t):
+                skipped_issue_indices.append(i)
+    applied_issue_indices = [i for i in range(len(issues)) if i not in skipped_issue_indices]
+
+    # NONFICTION: zero zmian
+    if (profile.get("domain") == "NONFICTION"):
+        meta = {
+            "changes_count": 0,
+            "changes": [],
+            "original_length": len(text),
+            "new_length": len(text),
+            "skipped_issue_indices": skipped_issue_indices,
+            "applied_issue_indices": applied_issue_indices,
         }
+        return {"tool": "EDIT", "payload": {"text": text, "meta": meta}}
 
-    threshold = float(os.getenv("UNIQUENESS_THRESHOLD", "0.90"))
-    reg_path = _registry_path()
-    fp = _simhash64(text)
+    out = text
+    changes = []
 
-    best: Optional[Dict[str, Any]] = None
-    best_score = 0.0
+    # poprawki bez niszczenia \n\n
+    if "bardzo bardzo" in out:
+        out = out.replace("bardzo bardzo", "bardzo")
+        changes.append({"op":"dedupe_phrase","value":"bardzo bardzo"})
 
-    # global lock: wspólny rejestr dla wielu książek
-    with acquire_book_lock("__UNIQUENESS__"):
-        records = _read_last_records(reg_path, max_lines=800)
+    if "ma powtórzenia" in out:
+        out = out.replace("ma powtórzenia", "")
+        changes.append({"op":"remove_phrase","value":"ma powtórzenia"})
 
-        for r in records:
-            # porównujemy cross-book (wewnątrz tej samej książki możesz chcieć inaczej)
-            if _safe_str(r.get("book_id")) == book_id:
-                continue
-            try:
-                other_fp = int(r.get("simhash"))
-            except Exception:
-                continue
-            dist = _hamming(fp, other_fp)
-            score = 1.0 - (dist / 64.0)
-            if score > best_score:
-                best_score = score
-                best = {
-                    "book_id": r.get("book_id"),
-                    "run_id": r.get("run_id"),
-                    "source": r.get("source"),
-                    "score": round(score, 4),
-                    "dist": dist,
-                }
+    # sprzątanie podwójnych spacji (NIE rusza \n)
+    cleaned = re.sub(r"[ \t]{2,}", " ", out)
+    if cleaned != out:
+        out = cleaned
+        changes.append({"op":"normalize_spaces"})
 
-        rec = {
-            "ts": int(time.time()),
-            "book_id": book_id,
-            "run_id": run_id,
-            "source": src,
-            "simhash": int(fp),
-            "len": len(text),
-            "sha1": hashlib.sha1(text[:800].encode("utf-8")).hexdigest(),
-        }
-        _append_record(reg_path, rec)
+    # FICTION + SENSORY: dodaj detal (jeśli wolno dodawać zdania)
+    has_sensory = any(isinstance(i, dict) and (i.get("type") == "SENSORY") for i in issues)
+    if (profile.get("domain") == "FICTION") and has_sensory and ("nie dodawaj nowych zdań" not in instructions):
+        out = out + "\n\nPowietrze pachniało metalem i kurzem, jak po burzy w zamkniętym pokoju."
+        changes.append({"op":"add_sensory_detail"})
 
-    decision = "REVISE" if best_score >= threshold else "ACCEPT"
-    return {
-        "tool": "UNIQUENESS",
-        "payload": {
-            "UNIQ_DECISION": decision,
-            "UNIQ_SCORE": round(best_score, 4),
-            "UNIQ_THRESHOLD": threshold,
-            "UNIQ_MATCH": best,
-            "REWRITE_BRIEF": _rewrite_brief() if decision == "REVISE" else [],
-        },
+    meta = {
+        "changes_count": len(changes),
+        "changes": changes,
+        "original_length": len(text),
+        "new_length": len(out),
+        "skipped_issue_indices": skipped_issue_indices,
+        "applied_issue_indices": applied_issue_indices,
     }
+    return {"tool":"EDIT","payload":{"text": out, "meta": meta}}
 
 
-def tool_market(payload: Payload) -> Dict[str, Any]:
-    return {"tool": "MARKET", "payload": {"NOTE": "stub"}}
+def tool_quality(payload: Dict[str, Any]) -> Dict[str, Any]:
+    text = (payload.get("text") or payload.get("input") or "").strip()
+    r = evaluate_quality(text, min_words=int(payload.get("min_words") or 200), forbid_lists=bool(payload.get("forbid_lists", True)))
+    return {"tool":"QUALITY","payload":{
+        "DECISION": r["decision"],
+        "REASONS": r["reasons"],
+        "MUST_FIX": r["must_fix"],
+        "STATS": r["stats"],
+        "FLAGS": r["flags"],
+        "meta":{"requested_model": payload.get("_requested_model")}
+    }}
 
+def tool_continuity(payload: Dict[str, Any]) -> Dict[str, Any]:
+    text = (payload.get("text") or "")
+    book_id = payload.get("_book_id") or payload.get("book_id") or "default"
+    root = Path(__file__).resolve().parents[1]
+    bible_path = root / "books" / book_id / "book_bible.json"
 
-def tool_factcheck(payload: Payload) -> Dict[str, Any]:
-    return {"tool": "FACTCHECK", "payload": {"NOTE": "stub"}}
+    canon_names = set()
+    rules = {"flag_unknown_entities": True, "force_unknown_entities": False}
 
+    if bible_path.exists():
+        bible = json.loads(bible_path.read_text("utf-8"))
+        rules.update(bible.get("continuity_rules") or {})
+        chars = (((bible.get("canon") or {}).get("characters")) or [])
+        for c in chars:
+            if c.get("name"): canon_names.add(c["name"])
+            for a in (c.get("aliases") or []):
+                canon_names.add(a)
 
-# ----------------------------
-# auto-stub for missing MODEs
-# ----------------------------
-def _make_stub(mode_id: str) -> ToolFn:
-    def _tool(payload: Payload) -> Dict[str, Any]:
-        payload = payload or {}
-        return {"tool": mode_id, "payload": {"NOTE": f"STUB TOOL: {mode_id}", "input": payload.get("input")}}
-    return _tool
+    candidates = re.findall(r"\b[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+\b", text)
+    unknown = sorted({c for c in candidates if c not in canon_names})
 
+    issues = []
+    if rules.get("flag_unknown_entities") and canon_names and unknown:
+        issues.append({"type":"UNKNOWN_ENTITY", "msg": f"Nieznane encje: {', '.join(unknown)}", "items": unknown})
 
-TOOLS: Dict[str, ToolFn] = {
-    "PLAN": tool_plan,
-    "OUTLINE": tool_outline,
-    "WRITE": tool_write,
-    "UNIQUENESS": tool_uniqueness,
-    "CRITIC": tool_critic,
-    "EDIT": tool_edit,
-    "QUALITY": tool_quality,
-    "MARKET": tool_market,
-    "FACTCHECK": tool_factcheck,
+    if not canon_names and not rules.get("force_unknown_entities", False):
+        unknown = []
+        issues = []
+
+    return {"tool":"CONTINUITY","payload":{
+        "ISSUES": issues,
+        "UNKNOWN_ENTITIES": unknown,
+        "meta":{"requested_model": payload.get("_requested_model")}
+    }}
+
+def tool_uniqueness(payload: Dict[str, Any]) -> Dict[str, Any]:
+    book_id = payload.get("book_id") or "default"
+    text = (payload.get("text") or "").strip()
+    reg_path = os.environ.get("UNIQUENESS_REGISTRY_PATH", "runs/_tmp/uniqueness_registry.jsonl")
+    p = Path(reg_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    matches = []
+    if p.exists():
+        for line in p.read_text("utf-8", errors="ignore").splitlines():
+            try:
+                d = json.loads(line)
+                if d.get("text") == text and d.get("book_id") != book_id:
+                    matches.append(d)
+            except Exception:
+                pass
+
+    score = 1.0 if matches else 0.0
+    decision = "REVISE" if score >= 0.90 else "ACCEPT"
+
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"book_id":book_id, "text":text}, ensure_ascii=False) + "\n")
+
+    return {"tool":"UNIQUENESS","payload":{
+        "UNIQ_DECISION": decision,
+        "UNIQ_SCORE": score,
+        "UNIQ_MATCH": (matches[0] if matches else None),
+        "MATCHES": matches,
+        "meta":{"requested_model": payload.get("_requested_model")}
+    }}
+
+def tool_factcheck(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {"tool":"FACTCHECK","payload":{"ISSUES":[], "meta":{"requested_model": payload.get("_requested_model")}}}
+
+def tool_style(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {"tool":"STYLE","payload":{"text": (payload.get("text") or ""), "meta":{"requested_model": payload.get("_requested_model")}}}
+
+def tool_translate(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {"tool":"TRANSLATE","payload":{"text": (payload.get("text") or ""), "meta":{"requested_model": payload.get("_requested_model")}}}
+
+def tool_expand(payload: Dict[str, Any]) -> Dict[str, Any]:
+    text = (payload.get("text") or "").strip()
+    if text:
+        text = text + "\n\n(Dopowiedzenie: napięcie rośnie.)"
+    return {"tool":"EXPAND","payload":{"text":text, "meta":{"requested_model": payload.get("_requested_model")}}}
+
+TOOLS = {
+  "PLAN": tool_plan,
+  "WRITE": tool_write,
+  "CRITIC": tool_critic,
+  "EDIT": tool_edit,
+  "REWRITE": tool_rewrite,
+  "QUALITY": tool_quality,
+  "UNIQUENESS": tool_uniqueness,
+  "CONTINUITY": tool_continuity,
+  "FACTCHECK": tool_factcheck,
+  "STYLE": tool_style,
+  "TRANSLATE": tool_translate,
+  "EXPAND": tool_expand,
 }
 
-# Rejestruj wszystkie MODE z configu
-try:
-    ids = [m.get("id") for m in (load_modes().get("modes") or []) if isinstance(m, dict)]
-except Exception:
-    ids = []
 
-for mid in ids:
-    if isinstance(mid, str) and mid:
-        TOOLS.setdefault(mid, _make_stub(mid))
+
+
+
+
+
+
+

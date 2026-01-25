@@ -1,0 +1,12 @@
+{
+  "map": {
+    "PLAN": "AUTHOR",
+    "OUTLINE": "AUTHOR",
+    "WRITE": "AUTHOR",
+    "CRITIC": "CRITIC",
+    "EDIT": "EDITOR",
+    "QUALITY": "QA",
+    "CONTINUITY": "CONTINUITY_KEEPER",
+    "UNIQUENESS": "QA"
+  }
+}

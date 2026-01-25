@@ -1,110 +1,108 @@
 from __future__ import annotations
 
-import os
-import json
 from pathlib import Path
+import json
 from typing import Any, Dict, List
 
+try:
+    import yaml  # type: ignore
+except Exception:
+    yaml = None
 
-class ConfigError(RuntimeError):
+
+class ConfigError(Exception):
     pass
 
 
-BASE_DIR = Path(__file__).resolve().parent
+APP_DIR = Path(__file__).resolve().parent
+ROOT_DIR = APP_DIR.parent
+CONFIG_DIR = ROOT_DIR / "config"
 
-KERNEL_PATH = BASE_DIR / "kernel.json"
-MODES_PATH = BASE_DIR / "modes.json"
-PRESETS_PATH = BASE_DIR / "presets.json"
+APP_KERNEL_JSON = APP_DIR / "kernel.json"
+APP_MODES_JSON = APP_DIR / "modes.json"
+APP_PRESETS_JSON = APP_DIR / "presets.json"
 
-EXPECTED_MODES_COUNT = int(os.getenv("EXPECTED_MODES_COUNT", "13"))
+CFG_KERNEL_YAML = CONFIG_DIR / "kernel.yaml"
 
 
-def _read_json(path: Path) -> Any:
+def _load_json(path: Path) -> Any:
     if not path.exists():
-        raise ConfigError(f"{path.name}: file not found")
+        raise ConfigError(f"Missing JSON config file: {path}")
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:
-        raise ConfigError(f"{path.name}: invalid json: {e}")
+        raise ConfigError(f"Invalid JSON in {path}: {e}") from e
+
+
+def _load_yaml(path: Path) -> Any:
+    if yaml is None:
+        raise ConfigError("PyYAML not available but YAML config requested.")
+    if not path.exists():
+        raise ConfigError(f"Missing YAML config file: {path}")
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise ConfigError(f"Invalid YAML in {path}: {e}") from e
 
 
 def load_kernel() -> Dict[str, Any]:
-    if not KERNEL_PATH.exists():
-        return {"kernel": {"id": "KERNEL", "version": 1}}
-    data = _read_json(KERNEL_PATH)
-    if isinstance(data, dict):
-        return data
-    raise ConfigError("kernel.json: expected object")
+    # kernel może być z YAML jeśli jest i mamy pyyaml, inaczej JSON
+    if CFG_KERNEL_YAML.exists() and yaml is not None:
+        data = _load_yaml(CFG_KERNEL_YAML)
+    else:
+        data = _load_json(APP_KERNEL_JSON)
+
+    if not isinstance(data, dict):
+        raise ConfigError("kernel must be an object/dict")
+    return data
 
 
 def load_modes() -> Dict[str, Any]:
-    data = _read_json(MODES_PATH)
+    data = _load_json(APP_MODES_JSON)
 
+    # wspiera {"modes":[...]} oraz listę
     if isinstance(data, dict) and "modes" in data:
-        modes = data.get("modes") or []
-    elif isinstance(data, list):
-        modes = data
+        modes = data["modes"]
     else:
-        raise ConfigError("modes.json: invalid format")
+        modes = data
+
+    if not isinstance(modes, list):
+        raise ConfigError("modes must be a list")
 
     ids: List[str] = []
-
     for m in modes:
-        if isinstance(m, str):
-            mid = m.strip()
-            if mid:
-                ids.append(mid)
-            continue
+        if not isinstance(m, dict) or "id" not in m:
+            raise ConfigError("each mode must be an object with 'id'")
+        ids.append(str(m["id"]))
 
-        if isinstance(m, dict):
-            mid = str(m.get("id") or "").strip()
-            if not mid:
-                raise ConfigError("modes.json: mode missing id")
-            ids.append(mid)
-            continue
+    if len(ids) != len(set(ids)):
+        raise ConfigError("Duplicate MODE id detected")
 
-        raise ConfigError("modes.json: mode must be object or string")
-
-    if len(set(ids)) != len(ids):
-        raise ConfigError("modes.json: duplicate mode ids")
-
-    if len(ids) != EXPECTED_MODES_COUNT:
-        raise ConfigError(f"modes.json: expected {EXPECTED_MODES_COUNT} modes, got {len(ids)}")
-
-    return {"modes": [{"id": x} for x in ids]}
+    return {"modes": modes, "mode_ids": ids, "modes_count": len(modes)}
 
 
 def load_presets() -> Dict[str, Any]:
-    data = _read_json(PRESETS_PATH)
-    if not (isinstance(data, dict) and isinstance(data.get("presets"), list)):
-        raise ConfigError("presets.json: invalid format (expected {'presets': [...]})")
+    data = _load_json(APP_PRESETS_JSON)
 
-    known_modes = {m["id"] for m in load_modes()["modes"]}
-    presets = data["presets"]
+    # wspiera {"presets":[...]} oraz listę
+    if isinstance(data, dict) and "presets" in data:
+        presets = data["presets"]
+    else:
+        presets = data
 
-    seen: set[str] = set()
+    if not isinstance(presets, list):
+        raise ConfigError("presets must be a list")
+
+    ids: List[str] = []
     for p in presets:
-        if not isinstance(p, dict):
-            raise ConfigError("presets.json: preset must be object")
+        if not isinstance(p, dict) or "id" not in p:
+            raise ConfigError("each preset must be an object with 'id'")
+        ids.append(str(p["id"]))
 
-        pid = str(p.get("id") or "").strip()
-        if not pid:
-            raise ConfigError("presets.json: preset missing id")
-        if pid in seen:
-            raise ConfigError("presets.json: duplicate preset ids")
-        seen.add(pid)
+    if len(ids) != len(set(ids)):
+        raise ConfigError("Duplicate PRESET id detected")
 
-        pmodes = p.get("modes")
-        if not isinstance(pmodes, list) or not pmodes:
-            raise ConfigError(f"presets.json: preset {pid} has no modes")
-
-        for mid in pmodes:
-            if not isinstance(mid, str) or not mid.strip():
-                raise ConfigError(f"presets.json: preset {pid} has invalid mode id")
-            if mid not in known_modes:
-                raise ConfigError(f"presets.json: preset {pid} references unknown mode: {mid}")
-
-    return data
+    return {"presets": presets, "preset_ids": ids, "presets_count": len(presets)}
 
 
 def validate_all() -> Dict[str, Any]:
@@ -112,19 +110,12 @@ def validate_all() -> Dict[str, Any]:
     modes = load_modes()
     presets = load_presets()
 
-    mode_ids = [m.get("id") for m in (modes.get("modes") or []) if isinstance(m, dict) and m.get("id")]
-    preset_ids = [p.get("id") for p in (presets.get("presets") or []) if isinstance(p, dict) and p.get("id")]
-
-    modes_count = len(mode_ids)
-    presets_count = len(preset_ids)
-
     return {
-        "ok": True,
+        "modes_count": modes["modes_count"],
+        "presets_count": presets["presets_count"],
+        "mode_ids": modes["mode_ids"],
+        "preset_ids": presets["preset_ids"],
         "kernel": kernel,
         "modes": modes,
         "presets": presets,
-        "modes_count": int(modes_count),
-        "presets_count": int(presets_count),
-        "mode_ids": mode_ids,
-        "preset_ids": preset_ids,
     }

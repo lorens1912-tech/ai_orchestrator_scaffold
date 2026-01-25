@@ -1,0 +1,68 @@
+modes:
+
+  - id: ORCHESTRATOR
+    role: planowanie pipeline
+    writes_text: false
+    output: PLAN
+
+  - id: WRITER
+    role: pisanie treści
+    writes_text: true
+    output: TEXT
+
+  - id: WRITER_FAST
+    role: szybki szkic
+    writes_text: true
+    output: DRAFT
+
+  - id: CONTINUITY
+    role: spójność świata i kanonu
+    writes_text: false
+    requires_bible: true
+    output: ISSUES
+
+  - id: STRUCTURE
+    role: struktura i tempo
+    writes_text: false
+    params:
+      level: [GLOBAL, MICRO]
+    output: DIAGNOSIS
+
+  - id: QUALITY
+    role: bramka jakości
+    writes_text: false
+    decision: [ACCEPT, REVISE, REJECT]
+    output: DECISION
+
+  - id: MARKET
+    role: ryzyka czytelnicze i rynkowe
+    writes_text: false
+    output: RISKS
+
+  - id: COMPRESSION
+    role: skracanie bez zmiany sensu
+    writes_text: true
+    output: COMPRESSED_TEXT
+
+  - id: SERIES
+    role: strategia serii
+    writes_text: false
+    requires_bible: true
+    output: SERIES_MAP
+
+  - id: ADAPTATION_ARCHITECT
+    role: książka → ekran
+    writes_text: false
+    requires_bible: true
+    output: SCENE_LIST
+
+  - id: SCREENWRITER
+    role: pisanie scenariusza
+    writes_text: true
+    requires_scene_list: true
+    output: SCREENPLAY
+
+  - id: FACTCHECK
+    role: weryfikacja faktów zewnętrznych
+    writes_text: false
+    output: FACT_STATUS

@@ -1,15 +1,41 @@
 {
   "version": 1,
-  "team_policy": {
-    "AUTHOR":  { "model": "gpt-4.1-mini", "temperature": 0.7, "max_tokens": 1200 },
-    "CRITIC":  { "deterministic": true, "max_tokens": 0 },
-    "EDITOR":  { "deterministic": true, "max_tokens": 0 },
-    "QA":      { "deterministic": true, "max_tokens": 0 },
-    "MARKET":  { "deterministic": true, "max_tokens": 0 },
-    "RESEARCH":{ "model": "gpt-4.1-mini", "temperature": 0.2, "max_tokens": 800 },
-    "ORCHESTRATOR": { "deterministic": true, "max_tokens": 0 },
-    "CONTINUITY":   { "deterministic": true, "max_tokens": 0 },
-    "SERIES":       { "deterministic": true, "max_tokens": 0 },
-    "ADAPTATION":   { "model": "gpt-4.1-mini", "temperature": 0.4, "max_tokens": 1200 }
+  "teams": {
+    "WRITER": {
+      "policy_id": "POLICY_WRITER_v1",
+      "model": "gpt-4.1-mini",
+      "temperature": 0.7,
+      "max_tokens": 1200
+    },
+    "CRITIC": {
+      "policy_id": "POLICY_CRITIC_v1",
+      "model": "gpt-4.1-mini",
+      "temperature": 0.0,
+      "max_tokens": 900
+    },
+    "QA_GATE": {
+      "policy_id": "POLICY_QA_GATE_v1",
+      "model": "gpt-4.1-mini",
+      "temperature": 0.0,
+      "max_tokens": 600
+    },
+    "CONTINUITY": {
+      "policy_id": "POLICY_CONTINUITY_v1",
+      "model": "gpt-4.1-mini",
+      "temperature": 0.0,
+      "max_tokens": 900
+    },
+    "FACTCHECK": {
+      "policy_id": "POLICY_FACTCHECK_v1",
+      "model": "gpt-4.1-mini",
+      "temperature": 0.0,
+      "max_tokens": 900
+    },
+    "TRANSLATE": {
+      "policy_id": "POLICY_TRANSLATE_v1",
+      "model": "gpt-4.1-mini",
+      "temperature": 0.0,
+      "max_tokens": 1400
+    }
   }
 }

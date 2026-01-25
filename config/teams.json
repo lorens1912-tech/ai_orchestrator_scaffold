@@ -1,33 +1,10 @@
 {
-  "version": 1,
-  "mode_team_map": {
-    "PLAN": "ORCHESTRATOR",
-    "WRITE": "AUTHOR",
-    "CRITIC": "CRITIC",
-    "EDIT": "EDITOR",
-    "QUALITY": "QA",
-    "UNIQUENESS": "QA",
-    "MARKET": "MARKET",
-    "FACTCHECK": "RESEARCH",
-    "CONTINUITY": "CONTINUITY",
-    "SERIES": "SERIES",
-    "STRUCTURE": "ORCHESTRATOR",
-    "ADAPTATION_ARCHITECT": "ADAPTATION",
-    "SCREENWRITER": "AUTHOR",
-    "COMPRESSION": "EDITOR",
-    "EXPAND": "AUTHOR",
-    "REWRITE": "AUTHOR"
-  },
   "teams": [
-    { "id": "ORCHESTRATOR", "purpose": "Plan/pipeline, decyzje operacyjne" },
-    { "id": "AUTHOR", "purpose": "Generacja tekstu" },
-    { "id": "CRITIC", "purpose": "Diagnoza problemów (bez redakcji)" },
-    { "id": "EDITOR", "purpose": "Mikro-korekty / redakcja techniczna" },
-    { "id": "QA", "purpose": "Werdykty bramek jakości + mechaniczne kontrole" },
-    { "id": "MARKET", "purpose": "Ryzyka rynkowe/czytelnicze" },
-    { "id": "RESEARCH", "purpose": "Fakty / research / factcheck" },
-    { "id": "CONTINUITY", "purpose": "Kanon i spójność świata/serii" },
-    { "id": "SERIES", "purpose": "Long-arc serii, eskalacja, ujawnienia" },
-    { "id": "ADAPTATION", "purpose": "Książka->ekran, scena-listy" }
+    { "id": "WRITER", "model": "gpt-4.1-mini" },
+    { "id": "CRITIC", "model": "gpt-4.1-mini" },
+    { "id": "QA_GATE", "model": "gpt-4.1-mini" },
+    { "id": "CONTINUITY", "model": "gpt-4.1-mini" },
+    { "id": "FACTCHECK", "model": "gpt-4.1-mini" },
+    { "id": "TRANSLATE", "model": "gpt-4.1-mini" }
   ]
 }

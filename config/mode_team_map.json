@@ -1,12 +1,17 @@
 {
-  "map": {
-    "PLAN": "AUTHOR",
-    "OUTLINE": "AUTHOR",
-    "WRITE": "AUTHOR",
-    "CRITIC": "CRITIC",
-    "EDIT": "EDITOR",
-    "QUALITY": "QA",
-    "CONTINUITY": "CONTINUITY_KEEPER",
-    "UNIQUENESS": "QA"
-  }
+  "PLAN": "WRITER",
+  "OUTLINE": "WRITER",
+  "WRITE": "WRITER",
+  "EDIT": "WRITER",
+  "REWRITE": "WRITER",
+  "STYLE": "WRITER",
+  "EXPAND": "WRITER",
+
+  "CRITIC": "CRITIC",
+  "QUALITY": "QA_GATE",
+  "UNIQUENESS": "QA_GATE",
+
+  "CONTINUITY": "CONTINUITY",
+  "FACTCHECK": "FACTCHECK",
+  "TRANSLATE": "TRANSLATE"
 }

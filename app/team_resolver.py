@@ -35,23 +35,36 @@ def _load_agents() -> Dict[str, Dict[str, Any]]:
     return {t["id"]: t for t in agents if isinstance(t, dict) and t.get("id")}
 
 
-def resolve_team(mode_id: str, team_override: Optional[str] = None) -> Dict[str, Any]:
-    agents = _load_agents()
+def resolve_team(mode_id: str, team_override: str | None = None) -> dict:
+    """
+    Kontrakt:
+    - team_override jest dozwolony tylko jeśli pasuje do mode_team_map (czyli TEAM nie może uruchomić złego MODE)
+    - zwracamy: {id, policy_id, model, policy}
+    """
+    import json
+    from pathlib import Path
+    from app.team_layer import policy_for_team
 
-    md = load_modes()
-    modes = md.get("modes") if isinstance(md, dict) else md
-    if not isinstance(modes, list):
-        modes = []
-    modes_map = {m.get("id"): m for m in modes if isinstance(m, dict) and m.get("id")}
+    root = Path(__file__).resolve().parents[1]
+    map_path = root / "config" / "mode_team_map.json"
+    map_ = json.loads(map_path.read_text(encoding="utf-8")) if map_path.exists() else {}
 
-    default_team = (modes_map.get(mode_id) or {}).get("default_team") or "AUTHOR"
-    team_id = team_override or default_team
+    expected_team = map_.get(mode_id) or "WRITER"
 
-    if team_id not in agents:
-        raise ValueError(f"Unknown team: {team_id}")
+    if team_override and team_override != expected_team:
+        raise ValueError(f"TEAM_OVERRIDE_NOT_ALLOWED: mode={mode_id} override={team_override} expected={expected_team}")
 
-    allowed = set(agents[team_id].get("allowed_modes") or [])
-    if mode_id not in allowed:
-        raise ValueError(f"Team {team_id} cannot run mode {mode_id}")
+    team_id = team_override or expected_team
 
-    return {"id": team_id, "model": agents[team_id].get("model")}
+    pol = policy_for_team(team_id) or {}
+    model = pol.get("model") or "gpt-4.1-mini"
+    policy_id = pol.get("policy_id") or f"POLICY_{team_id}_v1"
+
+    return {
+        "id": team_id,
+        "policy_id": policy_id,
+        "model": model,
+        "policy": pol,
+    }
+
+

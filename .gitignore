@@ -1,36 +1,41 @@
 # --- Python ---
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 *.pyd
+*.egg-info/
 .pytest_cache/
-.mypy_cache/
-ruff_cache/
-*.log
+.coverage
+htmlcov/
+dist/
+build/
 
-# --- OS / IDE ---
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
+# --- Virtual envs ---
+venv/
+.venv/
 
-# --- Runtime / data (projektowe) ---
+# --- Secrets / local config ---
+.env
+openai_key.txt
+*.pem
+*.key
+*.pfx
+
+# --- Local/runtime junk ---
+_TRASH_*/
+_queue/
+outputs/
 runs/
-books/**/draft/
-books/**/memory/
-books/**/latest.json
-books/**/chapters_index.json
-books/**/book_bible.json
-books/**/project_profile.json
-books/**/style_profile.json
+*.bak
+*.BAK*
+_last_*.json
+_last_*.txt
+_audit_*.json
+_agent_*.json
+_agent_*.md
+_agent_*.py
+audit_status.py
+STATUS.md
+openapi.json
 
-# jeśli chcesz trzymać szablonowe book_bible/profile w repo, przenieś je do config/templates/
-# i usuń powyższe ignore dla konkretnych plików.
-
-memory/*.jsonl
-memory/*.log
-memory/_tmp/
-
-# --- Local scripts / scratch ---
-_final_tool_repair.py
-_fix_all*.py
+# --- Book workspace (recommended: keep out of git) ---
+books/

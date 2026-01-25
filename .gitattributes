@@ -1,12 +1,2 @@
-# Force LF in repository; working tree handled by core.autocrlf
 * text=auto eol=lf
-
-# Common file types
-*.py  text eol=lf
 *.ps1 text eol=crlf
-*.bat text eol=crlf
-*.cmd text eol=crlf
-*.yml text eol=lf
-*.yaml text eol=lf
-*.json text eol=lf
-*.md  text eol=lf

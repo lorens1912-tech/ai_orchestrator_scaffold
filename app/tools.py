@@ -247,12 +247,162 @@ TOOLS = {
   "EXPAND": tool_expand,
 }
 
+# === AUTOFIX_V1_BEGIN ===
+# AUTOFIX_V2: domyka test_031 (meta.applied_issue_types) + test_033 (UNKNOWN_ENTITIES=[]) + OUTLINE tool.
 
+def tool_outline(payload):
+    payload = payload or {}
+    text = str(payload.get("text") or payload.get("input") or "").strip()
+    if not text:
+        text = "Temat: (brak)"
+    out = f"OUTLINE\n\nTemat: {text}\n\n1) Wstęp\n2) Problem\n3) Rozwinięcie\n4) Przykład\n5) Krok dla czytelnika"
+    return {"tool": "OUTLINE", "payload": {"text": out}}
 
+def tool_rewrite(payload):
+    payload = payload or {}
+    text = str(payload.get("text") or payload.get("input") or "").strip()
+    issues = payload.get("ISSUES") or payload.get("issues") or []
+    if not isinstance(issues, list):
+        issues = []
 
+    applied = []
+    for i in issues:
+        if isinstance(i, dict) and i.get("type"):
+            t = str(i["type"]).strip().upper()
+            if t and t not in applied:
+                applied.append(t)
 
+    # tytuł + body
+    title, body = "", text
+    if "\n\n" in text:
+        parts = text.split("\n\n", 1)
+        title, body = parts[0].strip(), parts[1].strip()
 
+    out_parts = [body] if body else []
+    if "CLARITY" in applied:
+        out_parts.append("Sedno: dopóki to jest szkic bez domknięcia, czytelnik nie wie, co ma z tym zrobić.")
+    if "SPECIFICITY" in applied:
+        out_parts.append("Przykład: wybierz jedno zdanie i dopisz do niego konkret (kto/co/kiedy), żeby zamiast ogólnika była sytuacja.")
+    if "ACTION" in applied:
+        out_parts.append("Krok: dziś dopisz 3 zdania — (1) co jest problemem, (2) jaka jest konsekwencja, (3) jeden ruch do zrobienia teraz.")
 
+    out = "\n\n".join([p for p in out_parts if p]).strip()
+    if title:
+        out = title + "\n\n" + out
 
+    return {
+        "tool": "REWRITE",
+        "payload": {
+            "text": out,
+            "meta": {
+                "model": "rewrite_det_v2",
+                "issues_count": len(issues),
+                "applied_issue_types": applied,
+                "applied_issue_count": len(applied),
+            },
+        },
+    }
 
+def tool_continuity(payload):
+    payload = payload or {}
+    text = str(payload.get("text") or payload.get("input") or "").strip()
+    book_id = str(payload.get("_book_id") or payload.get("book_id") or "").strip()
 
+    base = {
+        "ISSUES": [],
+        "UNKNOWN_ENTITIES": [],
+        "CANDIDATES": [],
+        "SUMMARY": "CONTINUITY v1",
+        "SCORE": 100
+    }
+    if not text or not book_id:
+        return {"tool": "CONTINUITY", "payload": base}
+
+    from pathlib import Path
+    import json
+    import re
+
+    root = Path(__file__).resolve().parents[1]
+    bible_path = root / "books" / book_id / "book_bible.json"
+    if not bible_path.exists():
+        return {"tool": "CONTINUITY", "payload": base}
+
+    try:
+        bible = json.loads(bible_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"tool": "CONTINUITY", "payload": base}
+
+    rules = bible.get("continuity_rules") if isinstance(bible, dict) else {}
+    if not isinstance(rules, dict):
+        rules = {}
+    flag_unknown = bool(rules.get("flag_unknown_entities", False))
+    force_unknown = bool(rules.get("force_unknown_entities", False))
+
+    canon = bible.get("canon") if isinstance(bible, dict) else {}
+    if not isinstance(canon, dict):
+        canon = {}
+    chars = canon.get("characters")
+    if not isinstance(chars, list):
+        chars = []
+
+    known = set()
+    for ch in chars:
+        if not isinstance(ch, dict):
+            continue
+        n = str(ch.get("name") or "").strip()
+        if n:
+            known.add(n.lower())
+        aliases = ch.get("aliases")
+        if isinstance(aliases, list):
+            for a in aliases:
+                a = str(a or "").strip()
+                if a:
+                    known.add(a.lower())
+
+    # test_033: pusty kanon + force_unknown_entities=False => cisza i puste listy
+    if not known and not force_unknown:
+        return {"tool": "CONTINUITY", "payload": base}
+
+    candidates = re.findall(r"\b[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+(?:\s+[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)?\b", text)
+    dedup, seen = [], set()
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            dedup.append(c)
+    base["CANDIDATES"] = dedup
+
+    if flag_unknown:
+        unknown = []
+        issues = []
+        for c in dedup:
+            if c.lower() in known:
+                continue
+            unknown.append(c)
+            issues.append({
+                "severity": "MED",
+                "type": "UNKNOWN_ENTITY",
+                "msg": f"Nieznana encja spoza kanonu: {c}",
+                "fix": "Dodaj do book_bible.json albo zmień nazwę na istniejącą."
+            })
+        base["UNKNOWN_ENTITIES"] = unknown
+        base["ISSUES"] = issues
+        base["SCORE"] = 100 - min(60, 10 * len(issues))
+        base["SUMMARY"] = "CONTINUITY v1 (unknown entities)"
+
+    return {"tool": "CONTINUITY", "payload": base}
+
+# Dopnij TOOLS (żeby nie było KeyError i żeby handler był realny)
+try:
+    TOOLS["OUTLINE"] = tool_outline
+except Exception:
+    pass
+try:
+    TOOLS["REWRITE"] = tool_rewrite
+except Exception:
+    pass
+try:
+    TOOLS["CONTINUITY"] = tool_continuity
+except Exception:
+    pass
+
+# === AUTOFIX_V1_END ===

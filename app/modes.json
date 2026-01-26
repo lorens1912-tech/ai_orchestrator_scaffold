@@ -1,16 +1,57 @@
 {
   "modes": [
-    {"id":"PLAN","default_team":"AUTHOR"},
-    {"id":"WRITE","default_team":"AUTHOR"},
-    {"id":"CRITIC","default_team":"CRITIC"},
-    {"id":"EDIT","default_team":"EDITOR"},
-    {"id":"REWRITE","default_team":"AUTHOR"},
-    {"id":"QUALITY","default_team":"QA_GATE"},
-    {"id":"UNIQUENESS","default_team":"QA_GATE"},
-    {"id":"CONTINUITY","default_team":"CONTINUITY_KEEPER"},
-    {"id":"FACTCHECK","default_team":"RESEARCH_FACTCHECK"},
-    {"id":"STYLE","default_team":"STYLE_VOICE"},
-    {"id":"TRANSLATE","default_team":"EDITOR"},
-    {"id":"EXPAND","default_team":"AUTHOR"}
+    {
+      "id": "PLAN",
+      "default_team": "AUTHOR"
+    },
+    {
+      "default_team": "AUTHOR",
+      "id": "OUTLINE"
+    },
+    {
+      "id": "WRITE",
+      "default_team": "AUTHOR"
+    },
+    {
+      "id": "CRITIC",
+      "default_team": "CRITIC"
+    },
+    {
+      "id": "EDIT",
+      "default_team": "EDITOR"
+    },
+    {
+      "id": "REWRITE",
+      "default_team": "AUTHOR"
+    },
+    {
+      "id": "QUALITY",
+      "default_team": "QA_GATE"
+    },
+    {
+      "id": "UNIQUENESS",
+      "default_team": "QA_GATE"
+    },
+    {
+      "id": "CONTINUITY",
+      "default_team": "CONTINUITY_KEEPER"
+    },
+    {
+      "id": "FACTCHECK",
+      "default_team": "RESEARCH_FACTCHECK"
+    },
+    {
+      "id": "STYLE",
+      "default_team": "STYLE_VOICE"
+    },
+    {
+      "id": "TRANSLATE",
+      "default_team": "EDITOR"
+    },
+    {
+      "id": "EXPAND",
+      "default_team": "AUTHOR"
+    }
   ]
 }
+

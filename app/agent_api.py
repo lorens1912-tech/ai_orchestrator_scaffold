@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.resume_index import get_latest_run_id, set_latest_run_id
 
 import time
 from uuid import uuid4
@@ -44,7 +45,12 @@ class AgentStepRequest(BaseModel):
 @router.post("/agent/step")
 def agent_step(req: AgentStepRequest) -> Dict[str, Any]:
     try:
-        run_id = req.run_id or f"run_{time.strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:6]}"
+        run_id = None
+        if req.resume:
+            run_id = get_latest_run_id(req.book_id)
+        if not run_id:
+            run_id =  req.run_id or f"run_{time.strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:6]}"
+        set_latest_run_id(req.book_id, run_id)
 
         # ensure book scaffolding if book_id provided
         if req.book_id:

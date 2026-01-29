@@ -2,7 +2,13 @@
   "version": 1,
   "teams": {
     "WRITER": {
-      "allowed_modes": ["PLAN","OUTLINE","WRITE","REWRITE"],
+      "allowed_modes": [
+        "EDIT",
+        "OUTLINE",
+        "PLAN",
+        "REWRITE",
+        "WRITE"
+      ],
       "default_policy": {
         "policy_id": "POLICY_WRITER_v1",
         "model": "gpt-4.1-mini",
@@ -11,7 +17,11 @@
       }
     },
     "CRITIC": {
-      "allowed_modes": ["CRITIC","CONTINUITY","UNIQUENESS"],
+      "allowed_modes": [
+        "CONTINUITY",
+        "CRITIC",
+        "UNIQUENESS"
+      ],
       "default_policy": {
         "policy_id": "POLICY_CRITIC_v1",
         "model": "gpt-4.1-mini",
@@ -20,7 +30,9 @@
       }
     },
     "QA": {
-      "allowed_modes": ["QUALITY"],
+      "allowed_modes": [
+        "QUALITY"
+      ],
       "default_policy": {
         "policy_id": "POLICY_QA_v1",
         "model": "gpt-4.1-mini",

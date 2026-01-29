@@ -41,7 +41,7 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertTrue(data.get("ok") is True)
         self.assertEqual(data.get("modes_count"), 13)
-        self.assertEqual(data.get("presets_count"), 3)
+        self.assertEqual(data.get("presets_count"), 5)
 
     def test_unknown_mode(self):
         code, data = http_post("/agent/step", {"book_id":"demo","mode":"NOPE","payload":{}})

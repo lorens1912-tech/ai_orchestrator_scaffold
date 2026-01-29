@@ -18,23 +18,77 @@ from app.team_runtime import apply_team_runtime, TeamRuntimeError, InvalidTeamId
 from app.team_runtime import apply_team_runtime, InvalidTeamId, ModeNotAllowed, TeamRuntimeError
 
 # === ORCH_STOP_META_BEGIN ===
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+import json
+import re
+from pathlib import Path
+
+def _first_token_decision(s: str) -> str:
+    if not isinstance(s, str):
+        return ""
+    t = s.strip()
+    if not t:
+        return ""
+    tok = t.split(None, 1)[0].strip().upper()
+    return tok if tok in ("ACCEPT","REJECT","REVISE") else ""
 
 def _deep_quality_decision(x: Any) -> str:
     try:
+        if isinstance(x, str):
+            return _first_token_decision(x)
+
         if isinstance(x, dict):
+            # common keys
             for k in ("decision", "verdict", "status"):
                 v = x.get(k)
-                if isinstance(v, str) and v.strip():
-                    return v.strip().upper()
+                d = _deep_quality_decision(v)
+                if d:
+                    return d
+            # nested places
             for k in ("result", "output", "payload", "data", "meta"):
                 v = x.get(k)
                 d = _deep_quality_decision(v)
                 if d:
                     return d
+            # fallback: scan any strings
+            for _, v in x.items():
+                d = _deep_quality_decision(v)
+                if d:
+                    return d
+
+        if isinstance(x, list):
+            for v in x:
+                d = _deep_quality_decision(v)
+                if d:
+                    return d
+
         return ""
     except Exception:
         return ""
+
+def _find_preset(pd: Any, preset_id: str) -> Optional[dict]:
+    pid = str(preset_id).strip().upper()
+    if not pid:
+        return None
+
+    # wrapper {"presets": ...}
+    if isinstance(pd, dict) and isinstance(pd.get("presets"), (list, dict)):
+        pd = pd["presets"]
+
+    # dict keyed by id
+    if isinstance(pd, dict):
+        v = pd.get(pid)
+        return v if isinstance(v, dict) else None
+
+    # list of preset objects
+    if isinstance(pd, list):
+        for it in pd:
+            if not isinstance(it, dict):
+                continue
+            it_id = str(it.get("id") or it.get("preset_id") or "").strip().upper()
+            if it_id == pid:
+                return it
+    return None
 
 def _orch_apply_stop_meta(resp: Dict[str, Any], req: Any) -> Dict[str, Any]:
     try:
@@ -42,17 +96,16 @@ def _orch_apply_stop_meta(resp: Dict[str, Any], req: Any) -> Dict[str, Any]:
         if not preset_id:
             return resp
 
-        from app.config_registry import load_presets  # local import (avoid cycles)
+        from app.config_registry import load_presets  # local import
         pd = load_presets()
-        pid = str(preset_id).strip().upper()
-        preset = pd.get(pid)
-
+        preset = _find_preset(pd, preset_id)
         if not isinstance(preset, dict):
             return resp
         if preset.get("stop_on_quality_non_accept") is not True:
             return resp
 
         artifacts = resp.get("artifacts") or []
+        # find last QUALITY step
         for ap in reversed(artifacts):
             pp = Path(str(ap))
             if not (pp.exists() and pp.is_file()):
@@ -63,7 +116,15 @@ def _orch_apply_stop_meta(resp: Dict[str, Any], req: Any) -> Dict[str, Any]:
                 continue
 
             decision = _deep_quality_decision(step)
-            if decision in ("REJECT", "REVISE"):
+
+            # extra fallback: regex scan whole json text
+            if not decision:
+                jtxt = json.dumps(step, ensure_ascii=False)
+                m = re.search(r"\b(ACCEPT|REJECT|REVISE)\b", jtxt, flags=re.I)
+                if m:
+                    decision = m.group(1).upper()
+
+            if decision in ("REJECT","REVISE"):
                 resp["stopped"] = True
                 resp["stop"] = {"mode": "QUALITY", "decision": decision}
             return resp
@@ -72,6 +133,7 @@ def _orch_apply_stop_meta(resp: Dict[str, Any], req: Any) -> Dict[str, Any]:
     except Exception:
         return resp
 # === ORCH_STOP_META_END ===
+
 
 ROOT = Path(__file__).resolve().parents[1]
 app = FastAPI()
@@ -83,17 +145,18 @@ from fastapi.exception_handlers import request_validation_exception_handler
 
 @app.exception_handler(RequestValidationError)
 async def _req_validation_handler(request, exc: RequestValidationError):
-    # If mode is invalid (Enum/Literal validation), return 400 to satisfy contract
+    # Any validation error touching field named "mode" -> return 400 (contract)
     try:
         errs = exc.errors() or []
         for e in errs:
             loc = e.get("loc") or ()
-            if len(loc) >= 2 and loc[0] == "body" and loc[1] == "mode":
+            if any(str(x).lower() == "mode" for x in loc):
                 return JSONResponse(status_code=400, content={"detail": "Unknown mode"})
     except Exception:
         pass
     return await request_validation_exception_handler(request, exc)
 # === REQUEST_VALIDATION_MODE_400_END ===
+
 
 
 # -----------------------

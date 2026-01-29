@@ -14,7 +14,7 @@ from app.config_registry import load_modes, load_presets
 from app.orchestrator_stub import execute_stub
 from app.llm_client import llm_debug_call
 from app.resume_index import get_latest_run_id, set_latest_run_id
-from app.team_runtime import apply_team_runtime, TeamRuntimeError
+from app.team_runtime import apply_team_runtime, TeamRuntimeError, InvalidTeamId, ModeNotAllowed
 
 ROOT = Path(__file__).resolve().parents[1]
 app = FastAPI()
@@ -85,6 +85,14 @@ def agent_step(req: StepRequest):
     try:
 
         payload, _team_meta = apply_team_runtime(payload, req.mode)
+
+    except ModeNotAllowed as e:
+
+        raise HTTPException(status_code=422, detail=str(e))
+
+    except InvalidTeamId as e:
+
+        raise HTTPException(status_code=400, detail=str(e))
 
     except TeamRuntimeError as e:
 

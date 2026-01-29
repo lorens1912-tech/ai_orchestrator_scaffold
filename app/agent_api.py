@@ -45,7 +45,14 @@ class AgentStepRequest(BaseModel):
 @router.post("/agent/step")
 def agent_step(req: AgentStepRequest) -> Dict[str, Any]:
     try:
+        # === RESUME_V4_BEGIN ===
         run_id = None
+        if req.resume:
+            run_id = get_latest_run_id(req.book_id)
+        if not run_id:
+            run_id = None
+        set_latest_run_id(req.book_id, run_id)
+        # === RESUME_V4_END ===
         if req.resume:
             run_id = get_latest_run_id(req.book_id)
         if not run_id:

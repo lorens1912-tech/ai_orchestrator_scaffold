@@ -13,6 +13,7 @@ from app.config import validate_config
 from app.config_registry import load_modes, load_presets
 from app.orchestrator_stub import execute_stub
 from app.llm_client import llm_debug_call
+from app.resume_index import get_latest_run_id, set_latest_run_id
 
 ROOT = Path(__file__).resolve().parents[1]
 app = FastAPI()
@@ -100,7 +101,14 @@ def agent_step(req: StepRequest):
     else:
         raise HTTPException(status_code=400, detail="Provide mode or preset")
 
-    run_id = _new_run_id()
+    # === RESUME_V4_BEGIN ===
+    run_id = None
+    if req.resume:
+        run_id = get_latest_run_id(req.book_id)
+    if not run_id:
+        run_id = _new_run_id()
+    set_latest_run_id(req.book_id, run_id)
+    # === RESUME_V4_END ===
     try:
         artifacts = execute_stub(run_id=run_id, book_id=req.book_id, modes=modes, payload=payload)
     except ValueError as e:

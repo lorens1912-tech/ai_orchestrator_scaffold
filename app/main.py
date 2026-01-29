@@ -17,8 +17,83 @@ from app.resume_index import get_latest_run_id, set_latest_run_id
 from app.team_runtime import apply_team_runtime, TeamRuntimeError, InvalidTeamId, ModeNotAllowed
 from app.team_runtime import apply_team_runtime, InvalidTeamId, ModeNotAllowed, TeamRuntimeError
 
+# === ORCH_STOP_META_BEGIN ===
+from typing import Any, Dict
+
+def _deep_quality_decision(x: Any) -> str:
+    try:
+        if isinstance(x, dict):
+            for k in ("decision", "verdict", "status"):
+                v = x.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip().upper()
+            for k in ("result", "output", "payload", "data", "meta"):
+                v = x.get(k)
+                d = _deep_quality_decision(v)
+                if d:
+                    return d
+        return ""
+    except Exception:
+        return ""
+
+def _orch_apply_stop_meta(resp: Dict[str, Any], req: Any) -> Dict[str, Any]:
+    try:
+        preset_id = getattr(req, "preset", None)
+        if not preset_id:
+            return resp
+
+        from app.config_registry import load_presets  # local import (avoid cycles)
+        pd = load_presets()
+        pid = str(preset_id).strip().upper()
+        preset = pd.get(pid)
+
+        if not isinstance(preset, dict):
+            return resp
+        if preset.get("stop_on_quality_non_accept") is not True:
+            return resp
+
+        artifacts = resp.get("artifacts") or []
+        for ap in reversed(artifacts):
+            pp = Path(str(ap))
+            if not (pp.exists() and pp.is_file()):
+                continue
+            step = json.loads(pp.read_text(encoding="utf-8"))
+            mode = str(step.get("mode") or "").strip().upper()
+            if mode != "QUALITY":
+                continue
+
+            decision = _deep_quality_decision(step)
+            if decision in ("REJECT", "REVISE"):
+                resp["stopped"] = True
+                resp["stop"] = {"mode": "QUALITY", "decision": decision}
+            return resp
+
+        return resp
+    except Exception:
+        return resp
+# === ORCH_STOP_META_END ===
+
 ROOT = Path(__file__).resolve().parents[1]
 app = FastAPI()
+
+# === REQUEST_VALIDATION_MODE_400_BEGIN ===
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.exception_handlers import request_validation_exception_handler
+
+@app.exception_handler(RequestValidationError)
+async def _req_validation_handler(request, exc: RequestValidationError):
+    # If mode is invalid (Enum/Literal validation), return 400 to satisfy contract
+    try:
+        errs = exc.errors() or []
+        for e in errs:
+            loc = e.get("loc") or ()
+            if len(loc) >= 2 and loc[0] == "body" and loc[1] == "mode":
+                return JSONResponse(status_code=400, content={"detail": "Unknown mode"})
+    except Exception:
+        pass
+    return await request_validation_exception_handler(request, exc)
+# === REQUEST_VALIDATION_MODE_400_END ===
 
 
 # -----------------------
@@ -149,7 +224,9 @@ def agent_step(req: StepRequest):
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(st, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    return {"ok": True, "run_id": run_id, "artifacts": artifacts, "state": st}
+    __resp = {"ok": True, "run_id": run_id, "artifacts": artifacts, "state": st}
+    __resp = _orch_apply_stop_meta(__resp, req)  # ORCH_APPLY_STOP_META_LINE
+    return __resp
 
 
 # -----------------------

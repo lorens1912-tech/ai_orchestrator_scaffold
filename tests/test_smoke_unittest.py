@@ -40,7 +40,7 @@ class SmokeTests(unittest.TestCase):
         code, data = http_get("/config/validate")
         self.assertEqual(code, 200)
         self.assertTrue(data.get("ok") is True)
-        self.assertEqual(data.get("modes_count"), 12)
+        self.assertEqual(data.get("modes_count"), 13)
         self.assertEqual(data.get("presets_count"), 3)
 
     def test_unknown_mode(self):

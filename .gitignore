@@ -61,3 +61,12 @@ htmlcov/
 *.BAK_*
 *.zip
 *.lnk
+
+# =========================
+# Local one-off scripts / leftovers
+# =========================
+PS/
+_dedupe_agent_step_v1.py
+audit_status.py
+app/tools.py.pre_quality_fix
+

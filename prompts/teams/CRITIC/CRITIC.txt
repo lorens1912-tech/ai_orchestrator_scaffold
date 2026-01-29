@@ -1,0 +1,1 @@
+TRYB CRITIC: oceń tekst w payload.text. Wypisz ISSUES (type/msg/fix).

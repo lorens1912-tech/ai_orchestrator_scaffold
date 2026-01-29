@@ -32,36 +32,53 @@ def _load_json(p: Path) -> Any:
 
 def _load_teams() -> Dict[str, Dict[str, Any]]:
     data = _load_json(TEAMS_FILE)
-
     teams: Dict[str, Dict[str, Any]] = {}
 
-    # Format A: {"WRITER": {...}, "CRITIC": {...}}
-    if isinstance(data, dict) and any(k != "teams" for k in data.keys()):
+    # --- PRIORITY: wrapper {"teams": {...}} or {"teams":[...]} ---
+    if isinstance(data, dict) and "teams" in data:
+        t = data.get("teams")
+
+        # wrapper dict: {"teams": {"WRITER": {...}, "CRITIC": {...}}}
+        if isinstance(t, dict):
+            for k, v in t.items():
+                tid = _normalize_team_id(k)
+                if not tid:
+                    continue
+                teams[tid] = v if isinstance(v, dict) else {"_raw": v}
+            if teams:
+                return teams
+
+        # wrapper list: {"teams": [{"id":"WRITER", ...}, ...]}
+        if isinstance(t, list):
+            for item in t:
+                if not isinstance(item, dict):
+                    continue
+                tid = _normalize_team_id(item.get("id") or item.get("team_id") or item.get("name"))
+                if not tid:
+                    continue
+                teams[tid] = item
+            if teams:
+                return teams
+
+        raise TeamRuntimeError("TEAM_ROUTER: teams.json contains 'teams' but format unsupported")
+
+    # --- Format A: direct dict {"WRITER": {...}} (skip metadata keys) ---
+    if isinstance(data, dict):
+        META_KEYS = {"version", "defaults", "policies", "schema", "_comment", "comment", "meta"}
         for k, v in data.items():
             if not isinstance(k, str):
                 continue
-            if k == "teams":
+            if k.strip().lower() in META_KEYS:
                 continue
             tid = _normalize_team_id(k)
             if not tid:
                 continue
-            teams[tid] = v if isinstance(v, dict) else {"_raw": v}
+            if isinstance(v, dict):
+                teams[tid] = v
         if teams:
             return teams
 
-    # Format B: {"teams": [ {"id":"WRITER", ...}, ... ]}
-    if isinstance(data, dict) and isinstance(data.get("teams"), list):
-        for item in data["teams"]:
-            if not isinstance(item, dict):
-                continue
-            tid = _normalize_team_id(item.get("id") or item.get("team_id") or item.get("name"))
-            if not tid:
-                continue
-            teams[tid] = item
-        if teams:
-            return teams
-
-    # Format C: [ {"id":"WRITER", ...}, ... ]
+    # --- Format B: list [{"id":"WRITER",...}] ---
     if isinstance(data, list):
         for item in data:
             if not isinstance(item, dict):
@@ -80,9 +97,9 @@ def apply_team_runtime(payload: Dict[str, Any], mode: Any) -> Tuple[Dict[str, An
         payload = {}
 
     team_id = _normalize_team_id(payload.get("team") or payload.get("team_id")) or "WRITER"
-
-    # kompatybilność: jeśli mode nie ma (np. jakieś stare ścieżki), NIE wywalaj 400
     mode_u = _normalize_team_id(mode) or _normalize_team_id(payload.get("mode")) or None
+
+    # jeśli mode brak — nie wywalaj 400 (kompatybilność ze starymi ścieżkami/testami)
     if not mode_u:
         meta = {"team_id": team_id, "mode": None, "skipped": True, "reason": "mode missing"}
         return payload, meta
@@ -107,7 +124,7 @@ def apply_team_runtime(payload: Dict[str, Any], mode: Any) -> Tuple[Dict[str, An
     if not isinstance(policy, dict):
         policy = {}
 
-    # wstrzyk do payload => wyląduje w step.input
+    # telemetry do step.input
     payload["_team_id"] = team_id
     payload["_team_policy_id"] = policy.get("policy_id") or policy.get("id") or team_cfg.get("policy_id")
     payload["_team_model"] = policy.get("model")

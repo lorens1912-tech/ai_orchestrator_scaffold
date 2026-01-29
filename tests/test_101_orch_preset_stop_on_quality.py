@@ -1,29 +1,34 @@
+import unittest
 import requests
 from pathlib import Path
 
 BASE = "http://127.0.0.1:8000"
 
-def test_orch_stop_test_stops_on_quality_non_accept():
-    bad = "As an AI language model, I cannot comply with that request."
+class Test101OrchPresetStopOnQuality(unittest.TestCase):
+    def test_orch_stop_test_stops_on_quality_non_accept(self):
+        bad = "As an AI language model, I cannot comply with that request."
 
-    r = requests.post(f"{BASE}/agent/step", json={
-        "book_id": "default",
-        "preset": "ORCH_STOP_TEST",
-        "input": bad,
-        "resume": False
-    }, timeout=30)
+        r = requests.post(f"{BASE}/agent/step", json={
+            "book_id": "default",
+            "preset": "ORCH_STOP_TEST",
+            "input": bad,
+            "resume": False
+        }, timeout=30)
 
-    assert r.status_code == 200, r.text
-    j = r.json()
-    assert j.get("ok") is True, j
+        self.assertEqual(r.status_code, 200, r.text)
+        j = r.json()
+        self.assertTrue(j.get("ok") is True, j)
 
-    artifacts = j.get("artifacts") or []
-    assert len(artifacts) == 1, j
+        artifacts = j.get("artifacts") or []
+        self.assertEqual(len(artifacts), 1, j)
 
-    assert j.get("stopped") is True, j
-    stop = j.get("stop") or {}
-    assert stop.get("mode") == "QUALITY", stop
-    assert stop.get("decision") in ("REJECT","REVISE"), stop
+        self.assertTrue(j.get("stopped") is True, j)
+        stop = j.get("stop") or {}
+        self.assertEqual(stop.get("mode"), "QUALITY", stop)
+        self.assertIn(stop.get("decision"), ("REJECT","REVISE"), stop)
 
-    p = Path(artifacts[0])
-    assert p.exists(), str(p)
+        p = Path(artifacts[0])
+        self.assertTrue(p.exists(), str(p))
+
+if __name__ == "__main__":
+    unittest.main()

@@ -70,3 +70,12 @@ _dedupe_agent_step_v1.py
 audit_status.py
 app/tools.py.pre_quality_fix
 
+
+# =========================
+# TEST FIXTURES (tracked)
+# Keep runtime books ignored, but track default profile for tests.
+# =========================
+!books/
+books/**
+!books/default/
+!books/default/project_profile.json

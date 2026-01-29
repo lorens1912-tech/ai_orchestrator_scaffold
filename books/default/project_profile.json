@@ -1,0 +1,16 @@
+{
+  "book_id": "default",
+  "domain": "NONFICTION",
+  "language": "pl",
+  "topic": "Default profile fixture for tests",
+  "banned_phrases": [
+    "jak zwykle",
+    "jak zwykle"
+  ],
+  "style_rules": {
+    "no_meta_ai": true,
+    "no_placeholders": true,
+    "dedupe_lists": true
+  },
+  "meta": { "version": 1 }
+}

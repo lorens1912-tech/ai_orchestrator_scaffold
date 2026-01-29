@@ -1,41 +1,22 @@
-# --- Python ---
+# local scratch
+_logs/
+*.log
+server.log
+server.err.log
+AUDIT_REPORT_*.md
+_backup_working_tree.diff
+_patch_*.py
+_dump_*.py
+PS/
+memory/
+out_book.json
+book_text*.txt
+_compare_*.txt
+_books_filelist.txt
+
+# windows junk
+*.lnk
+
+# python
 __pycache__/
-*.py[cod]
-*.pyd
-*.egg-info/
-.pytest_cache/
-.coverage
-htmlcov/
-dist/
-build/
-
-# --- Virtual envs ---
-venv/
-.venv/
-
-# --- Secrets / local config ---
-.env
-openai_key.txt
-*.pem
-*.key
-*.pfx
-
-# --- Local/runtime junk ---
-_TRASH_*/
-_queue/
-outputs/
-runs/
-*.bak
-*.BAK*
-_last_*.json
-_last_*.txt
-_audit_*.json
-_agent_*.json
-_agent_*.md
-_agent_*.py
-audit_status.py
-STATUS.md
-openapi.json
-
-# --- Book workspace (recommended: keep out of git) ---
-books/
+*.pyc

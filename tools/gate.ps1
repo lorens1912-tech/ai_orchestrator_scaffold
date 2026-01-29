@@ -5,7 +5,7 @@ Set-Location $ProjectRoot
 Write-Host "[GATE] cwd = $((Get-Location).Path)"
 
 Write-Host "[GATE] py_compile tests..."
-Get-ChildItem -Path .\tests -Filter "test_0*.py" | ForEach-Object {
+Get-ChildItem -Path .\tests -Filter "test_*.py" | ForEach-Object {
   python -m py_compile $_.FullName
 }
 
@@ -18,7 +18,8 @@ try {
 }
 
 Write-Host "[GATE] unittest discover..."
-python -m unittest discover -s tests -p "test_0*.py" -v
+python -m unittest discover -s tests -p "test_*.py" -v
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "[GATE] PASS"
+

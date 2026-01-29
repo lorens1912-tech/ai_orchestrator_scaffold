@@ -22,6 +22,24 @@
         "CRITIC",
         "WRITE"
       ]
+    },
+    {
+      "id": "ORCH_STANDARD",
+      "modes": [
+        "PLAN",
+        "WRITE",
+        "CRITIC",
+        "EDIT",
+        "QUALITY"
+      ],
+      "stop_on_quality_non_accept": true
+    },
+    {
+      "id": "ORCH_STOP_TEST",
+      "modes": [
+        "QUALITY"
+      ],
+      "stop_on_quality_non_accept": true
     }
   ],
   "ORCH_STANDARD": [

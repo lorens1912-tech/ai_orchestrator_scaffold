@@ -1,25 +1,24 @@
-# local scratch
+# =========================
+# Local scratch / runtime
+# =========================
 _logs/
 *.log
 server.log
 server.err.log
-AUDIT_REPORT_*.md
+openapi.json
+payload.json*
+_last_*.*
+_agent_*.*
+_audit_*.*
+_compare_*.txt
+_books_filelist.txt
 _backup_working_tree.diff
 _patch_*.py
 _dump_*.py
 PS/
-memory/
-out_book.json
-book_text*.txt
-_compare_*.txt
-_books_filelist.txt
-
-# windows junk
-*.lnk
-
-# python
-__pycache__/
-*.pyc
+_queue/
+STATUS.md
+_TRASH_*/
 
 # runtime state (resume)
 _latest_run_id.txt
@@ -27,3 +26,38 @@ _latest_run_id.txt.tmp
 books/**/_latest_run_id.txt
 books/**/_latest_run_id.txt.tmp
 
+# =========================
+# Data dirs (local only)
+# =========================
+books/
+runs/
+memory/
+out_book.json
+book_text*.txt
+
+# =========================
+# Secrets / env
+# =========================
+.env
+openai_key.txt
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.coverage
+htmlcov/
+
+# =========================
+# Backups / junk
+# =========================
+*.bak
+*.bak_*
+*.BAK
+*.BAK_*
+*.zip
+*.lnk

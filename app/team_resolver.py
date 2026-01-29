@@ -21,7 +21,7 @@ def _load_agents() -> Dict[str, Dict[str, Any]]:
             {"id":"AUTHOR","model":"gpt-4.1-mini","allowed_modes":["PLAN","WRITE","REWRITE","EXPAND"]},
             {"id":"EDITOR","model":"gpt-4.1-mini","allowed_modes":["EDIT","STYLE","TRANSLATE"]},
             {"id":"CRITIC","model":"gpt-5.2","allowed_modes":["CRITIC"]},
-            {"id":"QA_GATE","model":"gpt-5.2","allowed_modes":["QUALITY","UNIQUENESS"]},
+            {"id":"QA","model":"gpt-5.2","allowed_modes":["QUALITY","UNIQUENESS"]},
             {"id":"CONTINUITY_KEEPER","model":"gpt-5.2","allowed_modes":["CONTINUITY"]},
             {"id":"RESEARCH_FACTCHECK","model":"gpt-5.2","allowed_modes":["FACTCHECK"]},
             {"id":"STYLE_VOICE","model":"gpt-4.1-mini","allowed_modes":["STYLE"]}

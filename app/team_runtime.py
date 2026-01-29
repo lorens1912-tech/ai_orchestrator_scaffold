@@ -5,7 +5,6 @@ import hashlib
 from pathlib import Path
 from typing import Any, Dict, Tuple, Optional, List
 
-
 # =========================
 # Errors (mapowane w /agent/step)
 # =========================
@@ -29,10 +28,17 @@ ROOT = Path(__file__).resolve().parents[1]
 TEAMS_PATH = Path(__file__).resolve().with_name("teams.json")
 PROMPTS_DIR = ROOT / "prompts" / "teams"
 
+ALIASES = {
+    "AUTHOR": "WRITER",
+    "QA": "QA",
+}
 
 def _upper(x: Any) -> str:
     return (str(x) if x is not None else "").strip().upper()
 
+def _alias(team_id: str) -> str:
+    t = _upper(team_id)
+    return ALIASES.get(t, t)
 
 def _read_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
@@ -42,15 +48,13 @@ def _read_json(path: Path) -> Dict[str, Any]:
     except Exception as e:
         raise TeamRuntimeError(f"TEAM_ROUTER: invalid json in {path.as_posix()}: {e}")
 
-
 def _normalize_teams_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
-    # obsługa obu formatów:
-    # 1) {"teams": {...}}
-    # 2) {...}
+    # supported:
+    # 1) {"teams": {"WRITER": {...}, ...}}
+    # 2) {"WRITER": {...}, "CRITIC": {...}}
     if isinstance(doc, dict) and isinstance(doc.get("teams"), dict):
         return doc["teams"]
     return doc if isinstance(doc, dict) else {}
-
 
 def _load_teams() -> Dict[str, Any]:
     teams_doc = _read_json(TEAMS_PATH)
@@ -62,7 +66,6 @@ def _load_teams() -> Dict[str, Any]:
             out[kk] = v
     return out
 
-
 def _default_policy_id(team_id: str) -> str:
     if team_id == "WRITER":
         return "POLICY_WRITER_v1"
@@ -71,7 +74,6 @@ def _default_policy_id(team_id: str) -> str:
     if team_id == "QA":
         return "POLICY_QA_v1"
     return f"POLICY_{team_id}_v1"
-
 
 def _allowed_modes(team_cfg: Dict[str, Any]) -> Optional[List[str]]:
     am = team_cfg.get("allowed_modes")
@@ -84,14 +86,8 @@ def _allowed_modes(team_cfg: Dict[str, Any]) -> Optional[List[str]]:
         return out
     return None
 
-
-def _pick_policy(team_cfg: Dict[str, Any], team_id: str, mode_u: str) -> Dict[str, Any]:
-    """
-    Obsługa typowych wariantów teams.json:
-      - policy_id / default_policy
-      - policies: { "WRITE": {..} } lub policies: { "WRITE": "POLICY_X" }
-      - policy: { model, temperature, max_tokens, policy_id? }
-    """
+def _pick_policy(team_cfg: Dict[str, Any], team_id: str, mode: str) -> Dict[str, Any]:
+    mode_u = _upper(mode)
     policy: Dict[str, Any] = {}
 
     policies = team_cfg.get("policies")
@@ -119,31 +115,26 @@ def _pick_policy(team_cfg: Dict[str, Any], team_id: str, mode_u: str) -> Dict[st
 
     return policy
 
-
 def _sha1_text(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()
-
 
 def _prompt_paths(team_id: str, mode_u: str) -> Tuple[Path, Path]:
     sys_p = (PROMPTS_DIR / team_id / "system.txt")
     mode_p = (PROMPTS_DIR / team_id / f"{mode_u}.txt")
     return sys_p, mode_p
 
-
 def _read_if_exists(p: Path) -> str:
     if p.exists() and p.is_file():
         return p.read_text(encoding="utf-8")
     return ""
 
-
 def _default_team_for_mode(mode_u: str) -> str:
-    # kompatybilność ze starymi testami/pipeline:
+    # minimalne mapowanie, zgodne z logiką pipeline
     if mode_u == "CRITIC":
         return "CRITIC"
     if mode_u == "QUALITY":
         return "QA"
     return "WRITER"
-
 
 def apply_team_runtime(payload: Dict[str, Any], mode: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if payload is None:
@@ -151,13 +142,14 @@ def apply_team_runtime(payload: Dict[str, Any], mode: str) -> Tuple[Dict[str, An
 
     mode_u = _upper(mode)
     if not mode_u:
-        # nie wywracamy calli bez mode (np. edge-case testów / innych endpointów)
+        # nie wywracamy ścieżki na wywołaniach bez mode
         return dict(payload), {"id": None, "policy_id": None, "policy": {}, "allowed_modes": None, "prompts": {}}
 
     teams = _load_teams()
 
     explicit = payload.get("team") or payload.get("team_id") or payload.get("_team_id")
-    team_id = _upper(explicit) if explicit is not None and str(explicit).strip() else _default_team_for_mode(mode_u)
+    team_raw = _upper(explicit) if explicit is not None and str(explicit).strip() else _default_team_for_mode(mode_u)
+    team_id = _alias(team_raw)
 
     if team_id not in teams:
         raise InvalidTeamId(team_id)
@@ -175,7 +167,6 @@ def apply_team_runtime(payload: Dict[str, Any], mode: str) -> Tuple[Dict[str, An
     model = str(policy.get("model") or "").strip() or "gpt-4.1-mini"
     policy["model"] = model
 
-    # prompty: UWAGA — ścieżki NIE mogą być puste (bo Path("") == "." i test_091 się wysypie)
     sys_p, mode_p = _prompt_paths(team_id, mode_u)
     sys_txt = _read_if_exists(sys_p)
     mode_txt = _read_if_exists(mode_p)
@@ -196,7 +187,7 @@ def apply_team_runtime(payload: Dict[str, Any], mode: str) -> Tuple[Dict[str, An
     out["_team_prompts"] = prompts_meta
     out.setdefault("_requested_model", model)
 
-    meta = {
+    team_meta = {
         "id": team_id,
         "policy_id": policy_id,
         "policy": policy,
@@ -204,4 +195,4 @@ def apply_team_runtime(payload: Dict[str, Any], mode: str) -> Tuple[Dict[str, An
         "prompts": prompts_meta,
     }
 
-    return out, meta
+    return out, team_meta

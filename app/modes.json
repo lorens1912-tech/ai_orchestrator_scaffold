@@ -26,11 +26,11 @@
     },
     {
       "id": "QUALITY",
-      "default_team": "QA_GATE"
+      "default_team": "QA"
     },
     {
       "id": "UNIQUENESS",
-      "default_team": "QA_GATE"
+      "default_team": "QA"
     },
     {
       "id": "CONTINUITY",

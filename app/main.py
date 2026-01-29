@@ -14,6 +14,7 @@ from app.config_registry import load_modes, load_presets
 from app.orchestrator_stub import execute_stub
 from app.llm_client import llm_debug_call
 from app.resume_index import get_latest_run_id, set_latest_run_id
+from app.team_runtime import apply_team_runtime, TeamRuntimeError
 
 ROOT = Path(__file__).resolve().parents[1]
 app = FastAPI()
@@ -78,6 +79,19 @@ def agent_step(req: StepRequest):
     known = _known_mode_ids()
 
     payload = dict(req.payload or {})
+
+    # TEAM_RUNTIME_APPLY_BEGIN
+
+    try:
+
+        payload, _team_meta = apply_team_runtime(payload, req.mode)
+
+    except TeamRuntimeError as e:
+
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # TEAM_RUNTIME_APPLY_END
+
     if req.input is not None and "input" not in payload:
         payload["input"] = req.input
 

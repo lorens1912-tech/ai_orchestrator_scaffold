@@ -1,7 +1,38 @@
 {
   "presets": [
-    {"id":"DEFAULT","modes":["WRITE"]},
-    {"id":"WRITING_STANDARD","modes":["PLAN","WRITE","UNIQUENESS","QUALITY"]},
-    {"id":"PIPELINE_DRAFT","modes":["PLAN","CRITIC","WRITE"]}
+    {
+      "id": "DEFAULT",
+      "modes": [
+        "WRITE"
+      ]
+    },
+    {
+      "id": "WRITING_STANDARD",
+      "modes": [
+        "PLAN",
+        "WRITE",
+        "UNIQUENESS",
+        "QUALITY"
+      ]
+    },
+    {
+      "id": "PIPELINE_DRAFT",
+      "modes": [
+        "PLAN",
+        "CRITIC",
+        "WRITE"
+      ]
+    }
+  ],
+  "ORCH_STANDARD": [
+    "PLAN",
+    "WRITE",
+    "CRITIC",
+    "EDIT",
+    "QUALITY"
+  ],
+  "ORCH_STOP_TEST": [
+    "QUALITY",
+    "EDIT"
   ]
 }

@@ -223,6 +223,46 @@ def agent_step(req: StepRequest):
 
     try:
 
+        # === UNKNOWN_MODE_400_BEGIN ===
+        def _extract_mode_ids(_md):
+            out = []
+            try:
+                if isinstance(_md, dict):
+                    if isinstance(_md.get("modes"), list):
+                        for it in _md["modes"]:
+                            if isinstance(it, dict) and it.get("id"):
+                                out.append(str(it["id"]).strip().upper())
+                            elif isinstance(it, str) and it.strip():
+                                out.append(it.strip().upper())
+                        return out
+                    if isinstance(_md.get("mode_ids"), list):
+                        return [str(x).strip().upper() for x in _md["mode_ids"] if str(x).strip()]
+                    return [str(k).strip().upper() for k in _md.keys() if str(k).strip()]
+                if isinstance(_md, list):
+                    for it in _md:
+                        if isinstance(it, dict) and it.get("id"):
+                            out.append(str(it["id"]).strip().upper())
+                        elif isinstance(it, str) and it.strip():
+                            out.append(it.strip().upper())
+                    return out
+                return out
+            except Exception:
+                return out
+
+        try:
+            # Unknown mode MUST be 400 (smoke contract), BEFORE team_runtime can turn it into 422.
+            if getattr(req, "mode", None) and not getattr(req, "preset", None):
+                _mu = str(req.mode).strip().upper()
+                if _mu:
+                    _known = set(_extract_mode_ids(load_modes()))
+                    if _known and _mu not in _known:
+                        raise HTTPException(status_code=400, detail="Unknown mode")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+        # === UNKNOWN_MODE_400_END ===
+
         payload, _team_meta = apply_team_runtime(payload, req.mode)
 
     except ModeNotAllowed as e:

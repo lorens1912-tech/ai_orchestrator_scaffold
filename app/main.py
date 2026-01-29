@@ -15,6 +15,7 @@ from app.orchestrator_stub import execute_stub
 from app.llm_client import llm_debug_call
 from app.resume_index import get_latest_run_id, set_latest_run_id
 from app.team_runtime import apply_team_runtime, TeamRuntimeError, InvalidTeamId, ModeNotAllowed
+from app.team_runtime import apply_team_runtime, InvalidTeamId, ModeNotAllowed, TeamRuntimeError
 
 ROOT = Path(__file__).resolve().parents[1]
 app = FastAPI()

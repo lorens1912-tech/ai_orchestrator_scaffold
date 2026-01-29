@@ -20,3 +20,10 @@ _books_filelist.txt
 # python
 __pycache__/
 *.pyc
+
+# runtime state (resume)
+_latest_run_id.txt
+_latest_run_id.txt.tmp
+books/**/_latest_run_id.txt
+books/**/_latest_run_id.txt.tmp
+

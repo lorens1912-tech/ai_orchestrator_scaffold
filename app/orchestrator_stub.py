@@ -27,12 +27,31 @@ def _atomic_write_json(path: Path, data: Any) -> None:
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
 
-def _known_mode_ids() -> set:
-    md = load_modes()
-    modes = md.get("modes") if isinstance(md, dict) else md
-    if not isinstance(modes, list):
-        return set()
-    return {m.get("id") for m in modes if isinstance(m, dict) and m.get("id")}
+def _load_json_file(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def _presets_raw_list() -> List[Dict[str, Any]]:
+    raw = _load_json_file(PRESETS_FILE)
+    presets = raw.get("presets") if isinstance(raw, dict) else raw
+    if not isinstance(presets, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for p in presets:
+        if isinstance(p, dict) and p.get("id"):
+            out.append(p)
+    return out
+
+def _find_preset_raw(preset_id: str) -> Optional[Dict[str, Any]]:
+    pid = str(preset_id or "").strip()
+    if not pid:
+        return None
+    for p in _presets_raw_list():
+        if str(p.get("id")) == pid:
+            return p
+    return None
 
 def _preset_modes(preset_id: str) -> List[str]:
     pd = load_presets()
@@ -44,35 +63,15 @@ def _preset_modes(preset_id: str) -> List[str]:
             return [str(x).upper() for x in (p.get("modes") or [])]
     raise ValueError(f"Unknown preset: {preset_id}")
 
-def _load_presets_file_raw() -> Any:
-    try:
-        return json.loads(PRESETS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-def _find_preset_raw(preset_id: str) -> Optional[Dict[str, Any]]:
-    pid = str(preset_id or "").strip()
-    if not pid:
-        return None
-    raw = _load_presets_file_raw()
-    presets = raw.get("presets") if isinstance(raw, dict) else raw
-    if not isinstance(presets, list):
-        return None
-    for p in presets:
-        if isinstance(p, dict) and str(p.get("id")) == pid:
-            return p
-    return None
-
-def _quality_retry_cfg_from_file(preset_id: Optional[str]) -> Optional[Dict[str, Any]]:
-    if not preset_id:
-        return None
-    p = _find_preset_raw(str(preset_id))
-    if not isinstance(p, dict):
-        return None
-    cfg = p.get("quality_retry")
-    return cfg if isinstance(cfg, dict) else None
+def _known_mode_ids() -> set:
+    md = load_modes()
+    modes = md.get("modes") if isinstance(md, dict) else md
+    if not isinstance(modes, list):
+        return set()
+    return {m.get("id") for m in modes if isinstance(m, dict) and m.get("id")}
 
 def resolve_modes(arg1: Any, arg2: Any = None) -> Tuple[List[str], Optional[str], Dict[str, Any]]:
+    # tests: resolve_modes(None, "WRITING_STANDARD")
     if isinstance(arg2, str) and arg1 is None:
         preset_id = arg2
         payload: Dict[str, Any] = {"preset": preset_id, "_preset_id": preset_id}
@@ -99,22 +98,12 @@ def resolve_modes(arg1: Any, arg2: Any = None) -> Tuple[List[str], Optional[str]
 
     return [str(mode).upper()], None, payload
 
-def _decision_from_quality_result(result: Any) -> Optional[str]:
-    # Expected from tool_quality: {"payload": {"decision": "..."}}
-    if isinstance(result, dict):
-        pl = result.get("payload")
-        if isinstance(pl, dict):
-            d = pl.get("decision")
-            if isinstance(d, str) and d.strip():
-                return d.strip().upper()
-    return None
-
-
 def _deep_find_decision(obj: Any) -> Optional[str]:
     if isinstance(obj, dict):
-        d = obj.get("decision")
-        if isinstance(d, str) and d.strip():
-            return d.strip().upper()
+        for k in ("decision", "DECISION"):
+            v = obj.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip().upper()
         for v in obj.values():
             r = _deep_find_decision(v)
             if r:
@@ -125,6 +114,15 @@ def _deep_find_decision(obj: Any) -> Optional[str]:
             if r:
                 return r
     return None
+
+def _retry_cfg(preset_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not preset_id:
+        return None
+    p = _find_preset_raw(str(preset_id))
+    if not isinstance(p, dict):
+        return None
+    cfg = p.get("quality_retry")
+    return cfg if isinstance(cfg, dict) else None
 
 def execute_stub(
     run_id: str,
@@ -138,7 +136,7 @@ def execute_stub(
     steps_dir.mkdir(parents=True, exist_ok=True)
 
     state_path = run_dir / "state.json"
-    state = {"run_id": run_id, "latest_text": "", "last_step": 0, "created_at": _iso()}
+    state: Dict[str, Any] = {"run_id": run_id, "latest_text": "", "last_step": 0, "created_at": _iso()}
 
     latest_text = ""
     artifact_paths: List[str] = []
@@ -147,26 +145,26 @@ def execute_stub(
     if isinstance(payload, dict):
         preset_id = payload.get("_preset_id") or payload.get("preset")
 
-    retry_cfg = _quality_retry_cfg_from_file(str(preset_id)) if preset_id else None
+    cfg = _retry_cfg(str(preset_id)) if preset_id else None
     max_attempts = 0
     retry_on = {"REVISE", "REJECT"}
     edit_mode = "EDIT"
 
-    if isinstance(retry_cfg, dict):
+    if isinstance(cfg, dict):
         try:
-            max_attempts = int(retry_cfg.get("max_attempts") or 0)
+            max_attempts = int(cfg.get("max_attempts") or cfg.get("max_retries") or 0)
         except Exception:
             max_attempts = 0
-        on_list = retry_cfg.get("on")
+        on_list = cfg.get("on")
         if isinstance(on_list, list) and on_list:
             retry_on = {str(x).upper() for x in on_list if isinstance(x, str)}
-        em = retry_cfg.get("edit_mode")
+        em = cfg.get("edit_mode")
         if isinstance(em, str) and em.strip():
             edit_mode = em.strip().upper()
 
     queue: List[str] = [str(m).upper() for m in (modes or [])]
-    step_index = 0
     used = 0
+    step_index = 0
 
     while queue:
         mode_id = queue.pop(0).upper()
@@ -201,7 +199,7 @@ def execute_stub(
         artifact_paths.append(str(step_path))
 
         if mode_id == "QUALITY" and max_attempts > 0:
-            decision = _deep_find_decision(result)
+            decision = _deep_find_decision(result) or _deep_find_decision(out_pl)
             if decision and (decision in retry_on) and (used < max_attempts):
                 used += 1
                 queue = [edit_mode, "QUALITY"] + queue

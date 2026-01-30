@@ -27,28 +27,37 @@ def _atomic_write_json(path: Path, data: Any) -> None:
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
 
+def _known_mode_ids() -> set:
+    md = load_modes()
+    modes = md.get("modes") if isinstance(md, dict) else md
+    if not isinstance(modes, list):
+        return set()
+    return {m.get("id") for m in modes if isinstance(m, dict) and m.get("id")}
+
+def _preset_modes(preset_id: str) -> List[str]:
+    pd = load_presets()
+    presets = pd.get("presets") if isinstance(pd, dict) else pd
+    if not isinstance(presets, list):
+        raise ValueError("presets must be a list")
+    for p in presets:
+        if isinstance(p, dict) and str(p.get("id")) == str(preset_id):
+            return [str(x).upper() for x in (p.get("modes") or [])]
+    raise ValueError(f"Unknown preset: {preset_id}")
+
 def _load_presets_file_raw() -> Any:
     try:
         return json.loads(PRESETS_FILE.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
-def _find_preset_in_file(preset_id: str) -> Optional[Dict[str, Any]]:
+def _find_preset_raw(preset_id: str) -> Optional[Dict[str, Any]]:
     pid = str(preset_id or "").strip()
     if not pid:
         return None
-
     raw = _load_presets_file_raw()
-
-    presets = None
-    if isinstance(raw, dict) and isinstance(raw.get("presets"), list):
-        presets = raw.get("presets")
-    elif isinstance(raw, list):
-        presets = raw
-
+    presets = raw.get("presets") if isinstance(raw, dict) else raw
     if not isinstance(presets, list):
         return None
-
     for p in presets:
         if isinstance(p, dict) and str(p.get("id")) == pid:
             return p
@@ -57,37 +66,16 @@ def _find_preset_in_file(preset_id: str) -> Optional[Dict[str, Any]]:
 def _quality_retry_cfg_from_file(preset_id: Optional[str]) -> Optional[Dict[str, Any]]:
     if not preset_id:
         return None
-    p = _find_preset_in_file(str(preset_id))
+    p = _find_preset_raw(str(preset_id))
     if not isinstance(p, dict):
         return None
     cfg = p.get("quality_retry")
     return cfg if isinstance(cfg, dict) else None
 
-def _preset_modes(preset_id: str) -> List[str]:
-    # MODES bierzemy z load_presets() (żeby nie ruszać istniejących testów)
-    pd = load_presets()
-    presets = pd.get("presets") if isinstance(pd, dict) else pd
-    if not isinstance(presets, list):
-        raise ValueError("presets must be a list")
-    for p in presets:
-        if isinstance(p, dict) and p.get("id") == preset_id:
-            return [str(x).upper() for x in (p.get("modes") or [])]
-    raise ValueError(f"Unknown preset: {preset_id}")
-
-def _known_mode_ids() -> set:
-    md = load_modes()
-    modes = md.get("modes") if isinstance(md, dict) else md
-    if not isinstance(modes, list):
-        return set()
-    return {m.get("id") for m in modes if isinstance(m, dict) and m.get("id")}
-
 def resolve_modes(arg1: Any, arg2: Any = None) -> Tuple[List[str], Optional[str], Dict[str, Any]]:
-    """
-    Testy używają: resolve_modes(None, "WRITING_STANDARD")
-    """
     if isinstance(arg2, str) and arg1 is None:
         preset_id = arg2
-        payload: Dict[str, Any] = {"_preset_id": preset_id, "preset": preset_id}
+        payload: Dict[str, Any] = {"preset": preset_id, "_preset_id": preset_id}
         seq = _preset_modes(preset_id)
         return seq, preset_id, payload
 
@@ -111,20 +99,14 @@ def resolve_modes(arg1: Any, arg2: Any = None) -> Tuple[List[str], Optional[str]
 
     return [str(mode).upper()], None, payload
 
-def _deep_find_decision(obj: Any) -> Optional[str]:
-    if isinstance(obj, dict):
-        d = obj.get("decision")
-        if isinstance(d, str) and d.strip():
-            return d.strip().upper()
-        for v in obj.values():
-            r = _deep_find_decision(v)
-            if r:
-                return r
-    elif isinstance(obj, list):
-        for it in obj:
-            r = _deep_find_decision(it)
-            if r:
-                return r
+def _decision_from_quality_result(result: Any) -> Optional[str]:
+    # Expected from tool_quality: {"payload": {"decision": "..."}}
+    if isinstance(result, dict):
+        pl = result.get("payload")
+        if isinstance(pl, dict):
+            d = pl.get("decision")
+            if isinstance(d, str) and d.strip():
+                return d.strip().upper()
     return None
 
 def execute_stub(
@@ -149,10 +131,10 @@ def execute_stub(
         preset_id = payload.get("_preset_id") or payload.get("preset")
 
     retry_cfg = _quality_retry_cfg_from_file(str(preset_id)) if preset_id else None
-
     max_attempts = 0
-    retry_on = {"REVISE","REJECT"}
+    retry_on = {"REVISE", "REJECT"}
     edit_mode = "EDIT"
+
     if isinstance(retry_cfg, dict):
         try:
             max_attempts = int(retry_cfg.get("max_attempts") or 0)
@@ -181,10 +163,7 @@ def execute_stub(
         tool_in["_requested_model"] = team.get("model")
 
         if mode_id in TEXT_MODES:
-            if latest_text:
-                tool_in["text"] = latest_text
-            else:
-                tool_in.setdefault("text", tool_in.get("text",""))
+            tool_in["text"] = latest_text if latest_text else str(tool_in.get("text") or "")
 
         result = TOOLS[mode_id](tool_in)
         out_pl = (result.get("payload") or {})
@@ -205,7 +184,7 @@ def execute_stub(
         artifact_paths.append(str(step_path))
 
         if mode_id == "QUALITY" and max_attempts > 0:
-            decision = _deep_find_decision(result) or _deep_find_decision(out_pl)
+            decision = _decision_from_quality_result(result)
             if decision and (decision in retry_on) and (used < max_attempts):
                 used += 1
                 queue = [edit_mode, "QUALITY"] + queue

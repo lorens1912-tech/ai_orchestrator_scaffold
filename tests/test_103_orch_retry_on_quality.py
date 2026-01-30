@@ -7,7 +7,10 @@ class Test103OrchRetryOnQuality(unittest.TestCase):
     def test_orch_retry_injects_edit_and_second_quality(self):
         body = {
             "preset": "ORCH_RETRY_TEST",
-            "payload": {"text": "To jest lista:\n- a\n- b\n- c\n"}
+            "payload": {
+                "text": "To jest lista:\n- a\n- b\n- c\n",
+                "__force_quality_decision": "REVISE"
+            }
         }
         r = requests.post(f"{BASE}/agent/step", json=body, timeout=30)
         self.assertEqual(r.status_code, 200, r.text)

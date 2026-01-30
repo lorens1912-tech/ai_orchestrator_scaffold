@@ -15,10 +15,11 @@
       "modes": ["QUALITY"],
       "stop_on_quality_non_accept": true
     },
+
     {
       "id": "ORCH_RETRY_TEST",
       "modes": ["QUALITY"],
-      "stop_on_quality_non_accept": true,
+      "stop_on_quality_non_accept": false,
       "quality_retry": { "max_attempts": 1, "edit_mode": "EDIT", "on": ["REVISE","REJECT"] }
     }
   ]

@@ -2,34 +2,76 @@
   "presets": [
     {
       "id": "DEFAULT",
-      "modes": ["WRITE"]
+      "modes": [
+        "WRITE"
+      ]
     },
     {
       "id": "WRITING_STANDARD",
-      "modes": ["PLAN", "WRITE", "UNIQUENESS", "QUALITY"]
+      "modes": [
+        "PLAN",
+        "WRITE",
+        "UNIQUENESS",
+        "QUALITY"
+      ]
     },
     {
       "id": "PIPELINE_DRAFT",
-      "modes": ["PLAN", "CRITIC", "WRITE"]
+      "modes": [
+        "PLAN",
+        "CRITIC",
+        "WRITE"
+      ]
     },
     {
       "id": "ORCH_STANDARD",
-      "modes": ["PLAN", "WRITE", "CRITIC", "EDIT", "QUALITY"],
-      "stop_on_quality_non_accept": true
+      "modes": [
+        "PLAN",
+        "WRITE",
+        "CRITIC",
+        "EDIT",
+        "QUALITY"
+      ],
+      "stop_on_quality_non_accept": true,
+      "steps": [
+        {
+          "mode": "PLAN"
+        },
+        {
+          "mode": "WRITE",
+          "policy": "WRITE_POLICY_TEST"
+        },
+        {
+          "mode": "CRITIC"
+        },
+        {
+          "mode": "EDIT"
+        },
+        {
+          "mode": "QUALITY"
+        }
+      ]
     },
     {
       "id": "ORCH_STOP_TEST",
-      "modes": ["QUALITY"],
+      "modes": [
+        "QUALITY"
+      ],
       "stop_on_quality_non_accept": true
     },
     {
       "id": "ORCH_RETRY_TEST",
-      "modes": ["QUALITY"],
+      "modes": [
+        "QUALITY"
+      ],
       "stop_on_quality_non_accept": false,
       "quality_retry": {
         "max_attempts": 1,
         "edit_mode": "EDIT",
-        "on": ["REVISE", "REJECT"]
+        "on": [
+          "REVISE",
+          "REJECT"
+        ]
       }
     }
   ]

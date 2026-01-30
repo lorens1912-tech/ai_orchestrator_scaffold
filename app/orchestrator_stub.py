@@ -109,6 +109,23 @@ def _decision_from_quality_result(result: Any) -> Optional[str]:
                 return d.strip().upper()
     return None
 
+
+def _deep_find_decision(obj: Any) -> Optional[str]:
+    if isinstance(obj, dict):
+        d = obj.get("decision")
+        if isinstance(d, str) and d.strip():
+            return d.strip().upper()
+        for v in obj.values():
+            r = _deep_find_decision(v)
+            if r:
+                return r
+    elif isinstance(obj, list):
+        for it in obj:
+            r = _deep_find_decision(it)
+            if r:
+                return r
+    return None
+
 def execute_stub(
     run_id: str,
     book_id: str,
@@ -184,7 +201,7 @@ def execute_stub(
         artifact_paths.append(str(step_path))
 
         if mode_id == "QUALITY" and max_attempts > 0:
-            decision = _decision_from_quality_result(result)
+            decision = _deep_find_decision(result)
             if decision and (decision in retry_on) and (used < max_attempts):
                 used += 1
                 queue = [edit_mode, "QUALITY"] + queue

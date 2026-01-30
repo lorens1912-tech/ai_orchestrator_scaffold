@@ -106,16 +106,48 @@ def load_presets() -> Dict[str, Any]:
 
 
 def validate_all() -> Dict[str, Any]:
-    kernel = load_kernel()
-    modes = load_modes()
-    presets = load_presets()
+    """
+    Validation bundle for configs.
+    Always includes:
+      - ok: bool
+      - errors: list[str]
+    """
+    try:
+        kernel = load_kernel()
+        modes = load_modes()
+        presets_raw = load_presets()
 
-    return {
-        "modes_count": modes["modes_count"],
-        "presets_count": presets["presets_count"],
-        "mode_ids": modes["mode_ids"],
-        "preset_ids": presets["preset_ids"],
-        "kernel": kernel,
-        "modes": modes,
-        "presets": presets,
-    }
+        # modes normalize
+        mode_ids = []
+        if isinstance(modes, dict):
+            mm = modes.get("modes")
+            if isinstance(mm, list):
+                mode_ids = [str(x.get("id")).upper() for x in mm if isinstance(x, dict) and x.get("id")]
+            else:
+                mode_ids = [str(x).upper() for x in (modes.get("mode_ids") or [])]
+
+        # presets normalize -> list of dicts with "id"
+        if isinstance(presets_raw, dict) and isinstance(presets_raw.get("presets"), list):
+            plist = presets_raw["presets"]
+        elif isinstance(presets_raw, list):
+            plist = presets_raw
+        elif isinstance(presets_raw, dict):
+            plist = [{"id": k, **(v if isinstance(v, dict) else {"value": v})} for k, v in presets_raw.items()]
+        else:
+            plist = []
+
+        preset_ids = [str(x.get("id")) for x in plist if isinstance(x, dict) and x.get("id")]
+
+        return {
+            "ok": True,
+            "errors": [],
+            "modes_count": len(mode_ids) if mode_ids else (modes.get("modes_count") if isinstance(modes, dict) else None),
+            "presets_count": len(preset_ids),
+            "mode_ids": mode_ids,
+            "preset_ids": preset_ids,
+            "kernel": kernel,
+            "modes": modes,
+            "presets": {"presets": plist, "preset_ids": preset_ids, "presets_count": len(preset_ids)},
+        }
+    except Exception as e:
+        return {"ok": False, "errors": [f"{type(e).__name__}: {e}"]}

@@ -8,11 +8,17 @@ class Test102ConfigPresetsEndpoint(unittest.TestCase):
         r = requests.get(f"{BASE}/config/presets", timeout=10)
         self.assertEqual(r.status_code, 200, r.text)
         j = r.json()
-        presets = j.get("presets") if isinstance(j, dict) else {}
-        self.assertTrue(isinstance(presets, dict), j)
+        self.assertTrue(isinstance(j, dict), j)
 
-        self.assertIn("ORCH_STANDARD", presets, list(presets.keys()))
-        self.assertIn("ORCH_STOP_TEST", presets, list(presets.keys()))
+        preset_ids = j.get("preset_ids") or []
+        self.assertIn("ORCH_STANDARD", preset_ids, preset_ids)
+        self.assertIn("ORCH_STOP_TEST", preset_ids, preset_ids)
+
+        presets = j.get("presets") or []
+        self.assertTrue(isinstance(presets, list), j)
+        ids = [p.get("id") for p in presets if isinstance(p, dict)]
+        self.assertIn("ORCH_STANDARD", ids, ids)
+        self.assertIn("ORCH_STOP_TEST", ids, ids)
 
 if __name__ == "__main__":
     unittest.main()

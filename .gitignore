@@ -79,3 +79,8 @@ app/tools.py.pre_quality_fix
 books/**
 !books/default/
 !books/default/project_profile.json
+
+_openapi.json
+_tmp_*.json
+_tmp_*.txt
+

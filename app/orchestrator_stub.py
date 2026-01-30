@@ -10,8 +10,13 @@ from app.team_resolver import resolve_team
 from app.tools import TOOLS
 
 ROOT = Path(__file__).resolve().parents[1]
+APP_DIR = Path(__file__).resolve().parent
+PRESETS_FILE = APP_DIR / "presets.json"
 
-TEXT_MODES = {"CRITIC","EDIT","REWRITE","QUALITY","UNIQUENESS","CONTINUITY","FACTCHECK","STYLE","TRANSLATE","EXPAND"}
+TEXT_MODES = {
+    "CRITIC","EDIT","REWRITE","QUALITY","UNIQUENESS",
+    "CONTINUITY","FACTCHECK","STYLE","TRANSLATE","EXPAND"
+}
 
 def _iso() -> str:
     return datetime.utcnow().isoformat()
@@ -22,34 +27,52 @@ def _atomic_write_json(path: Path, data: Any) -> None:
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
 
-def _preset_list() -> List[Dict[str, Any]]:
+def _load_presets_file_raw() -> Any:
+    try:
+        return json.loads(PRESETS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def _find_preset_in_file(preset_id: str) -> Optional[Dict[str, Any]]:
+    pid = str(preset_id or "").strip()
+    if not pid:
+        return None
+
+    raw = _load_presets_file_raw()
+
+    presets = None
+    if isinstance(raw, dict) and isinstance(raw.get("presets"), list):
+        presets = raw.get("presets")
+    elif isinstance(raw, list):
+        presets = raw
+
+    if not isinstance(presets, list):
+        return None
+
+    for p in presets:
+        if isinstance(p, dict) and str(p.get("id")) == pid:
+            return p
+    return None
+
+def _quality_retry_cfg_from_file(preset_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not preset_id:
+        return None
+    p = _find_preset_in_file(str(preset_id))
+    if not isinstance(p, dict):
+        return None
+    cfg = p.get("quality_retry")
+    return cfg if isinstance(cfg, dict) else None
+
+def _preset_modes(preset_id: str) -> List[str]:
+    # MODES bierzemy z load_presets() (żeby nie ruszać istniejących testów)
     pd = load_presets()
     presets = pd.get("presets") if isinstance(pd, dict) else pd
     if not isinstance(presets, list):
         raise ValueError("presets must be a list")
-    out: List[Dict[str, Any]] = []
     for p in presets:
-        if isinstance(p, dict) and p.get("id"):
-            out.append(p)
-    return out
-
-def _find_preset_obj(preset_id: str) -> Optional[Dict[str, Any]]:
-    pid = str(preset_id or "").strip()
-    if not pid:
-        return None
-    for p in _preset_list():
-        if str(p.get("id")) == pid:
-            return p
-    return None
-
-def _preset_modes(preset_id: str) -> List[str]:
-    p = _find_preset_obj(preset_id)
-    if not isinstance(p, dict):
-        raise ValueError(f"Unknown preset: {preset_id}")
-    modes = p.get("modes") or []
-    if not isinstance(modes, list):
-        raise ValueError("preset.modes must be a list")
-    return [str(x).upper() for x in modes]
+        if isinstance(p, dict) and p.get("id") == preset_id:
+            return [str(x).upper() for x in (p.get("modes") or [])]
+    raise ValueError(f"Unknown preset: {preset_id}")
 
 def _known_mode_ids() -> set:
     md = load_modes()
@@ -104,15 +127,6 @@ def _deep_find_decision(obj: Any) -> Optional[str]:
                 return r
     return None
 
-def _quality_retry_cfg(preset_id: Optional[str]) -> Optional[Dict[str, Any]]:
-    if not preset_id:
-        return None
-    p = _find_preset_obj(str(preset_id))
-    if not isinstance(p, dict):
-        return None
-    cfg = p.get("quality_retry")
-    return cfg if isinstance(cfg, dict) else None
-
 def execute_stub(
     run_id: str,
     book_id: str,
@@ -134,11 +148,11 @@ def execute_stub(
     if isinstance(payload, dict):
         preset_id = payload.get("_preset_id") or payload.get("preset")
 
-    retry_cfg = _quality_retry_cfg(str(preset_id)) if preset_id else None
+    retry_cfg = _quality_retry_cfg_from_file(str(preset_id)) if preset_id else None
+
     max_attempts = 0
     retry_on = {"REVISE","REJECT"}
     edit_mode = "EDIT"
-
     if isinstance(retry_cfg, dict):
         try:
             max_attempts = int(retry_cfg.get("max_attempts") or 0)

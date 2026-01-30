@@ -11,10 +11,7 @@ from app.tools import TOOLS
 
 ROOT = Path(__file__).resolve().parents[1]
 
-TEXT_MODES = {
-    "CRITIC", "EDIT", "REWRITE", "QUALITY", "UNIQUENESS",
-    "CONTINUITY", "FACTCHECK", "STYLE", "TRANSLATE", "EXPAND",
-}
+TEXT_MODES = {"CRITIC","EDIT","REWRITE","QUALITY","UNIQUENESS","CONTINUITY","FACTCHECK","STYLE","TRANSLATE","EXPAND"}
 
 def _iso() -> str:
     return datetime.utcnow().isoformat()
@@ -67,7 +64,7 @@ def resolve_modes(arg1: Any, arg2: Any = None) -> Tuple[List[str], Optional[str]
     """
     if isinstance(arg2, str) and arg1 is None:
         preset_id = arg2
-        payload: Dict[str, Any] = {}
+        payload: Dict[str, Any] = {"_preset_id": preset_id, "preset": preset_id}
         seq = _preset_modes(preset_id)
         return seq, preset_id, payload
 
@@ -77,6 +74,7 @@ def resolve_modes(arg1: Any, arg2: Any = None) -> Tuple[List[str], Optional[str]
 
     preset_id = payload.get("preset")
     if preset_id:
+        payload.setdefault("_preset_id", preset_id)
         seq = _preset_modes(str(preset_id))
         return seq, str(preset_id), payload
 
@@ -90,14 +88,20 @@ def resolve_modes(arg1: Any, arg2: Any = None) -> Tuple[List[str], Optional[str]
 
     return [str(mode).upper()], None, payload
 
-def _deep_quality_decision(result: Any) -> Optional[str]:
-    # expected: {"payload":{"decision":"ACCEPT|REVISE|REJECT", ...}}
-    if isinstance(result, dict):
-        pl = result.get("payload")
-        if isinstance(pl, dict):
-            d = pl.get("decision")
-            if isinstance(d, str) and d.strip():
-                return d.strip().upper()
+def _deep_find_decision(obj: Any) -> Optional[str]:
+    if isinstance(obj, dict):
+        d = obj.get("decision")
+        if isinstance(d, str) and d.strip():
+            return d.strip().upper()
+        for v in obj.values():
+            r = _deep_find_decision(v)
+            if r:
+                return r
+    elif isinstance(obj, list):
+        for it in obj:
+            r = _deep_find_decision(it)
+            if r:
+                return r
     return None
 
 def _quality_retry_cfg(preset_id: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -126,12 +130,15 @@ def execute_stub(
     latest_text = ""
     artifact_paths: List[str] = []
 
-    preset_id = (payload or {}).get("preset")
-    retry_cfg = _quality_retry_cfg(str(preset_id)) if preset_id else None
+    preset_id = None
+    if isinstance(payload, dict):
+        preset_id = payload.get("_preset_id") or payload.get("preset")
 
+    retry_cfg = _quality_retry_cfg(str(preset_id)) if preset_id else None
     max_attempts = 0
-    retry_on = {"REVISE", "REJECT"}
+    retry_on = {"REVISE","REJECT"}
     edit_mode = "EDIT"
+
     if isinstance(retry_cfg, dict):
         try:
             max_attempts = int(retry_cfg.get("max_attempts") or 0)
@@ -146,7 +153,7 @@ def execute_stub(
 
     queue: List[str] = [str(m).upper() for m in (modes or [])]
     step_index = 0
-    quality_attempts_used = 0
+    used = 0
 
     while queue:
         mode_id = queue.pop(0).upper()
@@ -160,11 +167,10 @@ def execute_stub(
         tool_in["_requested_model"] = team.get("model")
 
         if mode_id in TEXT_MODES:
-            # IMPORTANT: after WRITE/EDIT, use latest_text (overwrite), but keep payload.text on first step
             if latest_text:
                 tool_in["text"] = latest_text
             else:
-                tool_in.setdefault("text", "")
+                tool_in.setdefault("text", tool_in.get("text",""))
 
         result = TOOLS[mode_id](tool_in)
         out_pl = (result.get("payload") or {})
@@ -185,15 +191,15 @@ def execute_stub(
         artifact_paths.append(str(step_path))
 
         if mode_id == "QUALITY" and max_attempts > 0:
-            decision = _deep_quality_decision(result) or _deep_quality_decision(out_pl)
-            if decision and decision in retry_on and quality_attempts_used < max_attempts:
-                quality_attempts_used += 1
+            decision = _deep_find_decision(result) or _deep_find_decision(out_pl)
+            if decision and (decision in retry_on) and (used < max_attempts):
+                used += 1
                 queue = [edit_mode, "QUALITY"] + queue
 
     state["last_step"] = step_index
+    state["completed_steps"] = step_index
     state["latest_text"] = latest_text
     state["status"] = "DONE"
-    state["completed_steps"] = step_index
     _atomic_write_json(state_path, state)
 
     book_dir = ROOT / "books" / book_id / "draft"

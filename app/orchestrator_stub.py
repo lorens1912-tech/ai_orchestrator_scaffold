@@ -154,6 +154,7 @@ def execute_stub(
     steps_dir = run_dir / "steps"
     steps_dir.mkdir(parents=True, exist_ok=True)
 
+
     state_path = run_dir / "state.json"
     state: Dict[str, Any] = {"run_id": run_id, "latest_text": "", "last_step": 0, "created_at": _iso()}
 
@@ -164,13 +165,26 @@ def execute_stub(
     if isinstance(payload, dict):
         preset_id = payload.get("_preset_id") or payload.get("preset")
 
-    # Prefer preset.steps if present (B7), else fallback to legacy modes list
+    # Prefer preset.steps[] if present, else fallback to legacy modes list
     preset_steps = _preset_steps(str(preset_id)) if preset_id else None
     queue: List[StepItem]
     if isinstance(preset_steps, list) and preset_steps:
         queue = list(preset_steps)
     else:
         queue = [{"mode": m} for m in (modes or [])]
+
+    # B7.1: write sequence/audit artifact (000_SEQUENCE.json) AFTER queue init
+    seq_path = steps_dir / "000_SEQUENCE.json"
+    seq_doc = {
+        "sequence_version": 1,
+        "run_id": run_id,
+        "book_id": book_id,
+        "preset_id": preset_id,
+        "queue_initial": queue,
+        "created_at": _iso()
+    }
+    _atomic_write_json(seq_path, seq_doc)
+
 
     cfg = _retry_cfg(str(preset_id)) if preset_id else None
     max_attempts = 0
@@ -200,6 +214,7 @@ def execute_stub(
 
         step_index += 1
 
+        # precedence: step overrides > request payload > team defaults
         step_team_override = (ov.get("team_id") or ov.get("team") or None)
         step_policy = ov.get("policy")
         step_model = ov.get("model")
@@ -214,7 +229,7 @@ def execute_stub(
 
         tool_in.setdefault("book_id", book_id)
 
-        # Model/policy overrides for telemetry + downstream policy/router if used
+        # model/policy override -> telemetry + downstream router if present
         if isinstance(step_model, str) and step_model.strip():
             tool_in["_requested_model"] = step_model.strip()
         else:
@@ -236,6 +251,8 @@ def execute_stub(
             "index": step_index,
             "mode": mode_id,
             "team": team,
+            "effective_model_id": tool_in.get("_requested_model"),
+            "effective_policy_id": tool_in.get("_requested_policy"),
             "preset_id": preset_id,
             "preset_step": ov if isinstance(ov, dict) and ov else None,
             "input": tool_in,
@@ -246,7 +263,7 @@ def execute_stub(
         _atomic_write_json(step_path, step_doc)
         artifact_paths.append(str(step_path))
 
-        # Retry only if enabled for preset (B6.7 behavior retained)
+        # retry only on QUALITY (B6.7 behavior preserved)
         if mode_id == "QUALITY" and max_attempts > 0:
             decision = _deep_find_decision(result) or _deep_find_decision(out_pl)
             if decision and (decision in retry_on) and (used < max_attempts):

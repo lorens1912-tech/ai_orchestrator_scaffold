@@ -13,6 +13,8 @@ from app.tool_dispatcher import dispatch_tool
 
 from app.project_truth_store import build_truth_pack
 
+from app.project_state_store import build_state_pack
+
 ROOT = Path(__file__).resolve().parents[1]
 APP_DIR = Path(__file__).resolve().parent
 PRESETS_FILE = APP_DIR / "presets.json"
@@ -169,6 +171,13 @@ def execute_stub(
     if isinstance(payload, dict):
         preset_id = payload.get("_preset_id") or payload.get("preset")
 
+
+    # project_state cache (once per run)
+    try:
+        _state_pack = build_state_pack()
+    except Exception:
+        _state_pack = {}
+
     # Prefer preset.steps[] if present, else fallback to legacy modes list
     preset_steps = _preset_steps(str(preset_id)) if preset_id else None
     queue: List[StepItem]
@@ -246,6 +255,11 @@ def execute_stub(
             tool_in["text"] = latest_text if latest_text else str(tool_in.get("text") or "")
 
         truth = build_truth_pack(tool_in.get("book_id"))
+        # log project_state meta in artifacts input (same rationale as truth meta)
+        tool_in["_project_state_phase"] = _state_pack.get("phase") if isinstance(_state_pack, dict) else None
+        tool_in["_project_state_blocker"] = _state_pack.get("current_blocker") if isinstance(_state_pack, dict) else None
+        tool_in["_project_state_next_action"] = _state_pack.get("next_action") if isinstance(_state_pack, dict) else None
+
         tool_in["_project_truth_scope"] = truth.get("scope")
         tool_in["_project_truth_sha256"] = truth.get("sha256")
         result = dispatch_tool(mode_id, tool_in)

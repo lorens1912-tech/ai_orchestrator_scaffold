@@ -256,6 +256,7 @@ TOOLS = {
   "STYLE": tool_style,
   "TRANSLATE": tool_translate,
   "EXPAND": tool_expand,
+  "CANON_CHECK": tool_canon_check,
 }
 
 # === AUTOFIX_V1_BEGIN ===

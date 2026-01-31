@@ -51,7 +51,11 @@
     {
       "id": "EXPAND",
       "default_team": "AUTHOR"
+    },
+    {
+      "id": "CANON_CHECK",
+      "label": "Canon Check",
+      "default_team": "CONTINUITY_KEEPER"
     }
   ]
 }
-

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.canon_api import router as canon_router
+
 import json
 import secrets
 from datetime import datetime
@@ -138,6 +140,7 @@ def _orch_apply_stop_meta(resp: Dict[str, Any], req: Any) -> Dict[str, Any]:
 ROOT = Path(__file__).resolve().parents[1]
 app = FastAPI()
 
+app.include_router(canon_router)
 # === REQUEST_VALIDATION_MODE_400_BEGIN ===
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -311,6 +314,11 @@ def agent_step(req: StepRequest):
     set_latest_run_id(req.book_id, run_id)
     # === RESUME_V4_END ===
     try:
+        # B6: pass preset id into payload (for retry/telemetry)
+        if getattr(req, 'preset', None) and isinstance(payload, dict):
+            payload.setdefault('preset', req.preset)
+            payload.setdefault('_preset_id', req.preset)
+
         artifacts = execute_stub(run_id=run_id, book_id=req.book_id, modes=modes, payload=payload)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -414,3 +422,9 @@ def patch_bible_characters(book_id: str, req: BibleCharactersPatch):
 
     _save_bible(book_id, bible)
     return {"ok": True, "book_id": book_id, "characters_count": len(canon["characters"])}
+
+from app.config_registry import load_presets
+
+@app.get("/config/presets")
+def config_presets():
+    return load_presets()

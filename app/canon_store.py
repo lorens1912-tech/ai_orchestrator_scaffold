@@ -1,151 +1,157 @@
+from __future__ import annotations
+
 import json
-import re
-import hashlib
-from pathlib import Path
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List
 
-ROOT = Path(__file__).resolve().parent.parent
-BOOKS_DIR = ROOT / "books"
+ROOT = Path(__file__).resolve().parents[1]
+CANON_VERSION = 1
 
-def _now() -> str:
+
+def _iso() -> str:
     return datetime.utcnow().isoformat()
 
-def _atomic_write_json(path: Path, obj: dict) -> None:
+
+def _atomic_write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
 
-def _read_json(path: Path, default: dict) -> dict:
-    if not path.exists():
-        return default
+
+def _load_json(path: Path, default: Any) -> Any:
     try:
+        if not path.exists():
+            return default
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return default
 
-def _sha(text: str) -> str:
-    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
-def _entity_guess(text: str, limit: int = 60) -> List[str]:
-    # minimalny, deterministyczny extractor: kapitalizowane tokeny (start)
-    caps = re.findall(r"\b[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźżA-ZĄĆĘŁŃÓŚŹŻ\-]{2,}\b", text or "")
-    uniq = sorted(list({c for c in caps}))
-    return uniq[:limit]
+def canon_dir(book_id: str) -> Path:
+    bid = str(book_id or "default").strip() or "default"
+    return ROOT / "books" / bid / "canon"
 
-def _ensure_files(book_dir: Path) -> None:
-    mem = book_dir / "memory"
-    mem.mkdir(parents=True, exist_ok=True)
 
-    tl = mem / "timeline.json"
-    if not tl.exists():
-        _atomic_write_json(tl, {"book_id": book_dir.name, "created_at": _now(), "events": []})
+def _paths(book_id: str) -> Dict[str, Path]:
+    d = canon_dir(book_id)
+    return {
+        "ledger": d / "ledger.json",
+        "timeline": d / "timeline.json",
+        "characters": d / "characters.json",
+        "glossary": d / "glossary.json",
+    }
 
-    facts = mem / "facts.json"
-    if not facts.exists():
-        _atomic_write_json(facts, {"book_id": book_dir.name, "created_at": _now(), "facts": []})
 
-    wk = mem / "who_knows.json"
-    if not wk.exists():
-        _atomic_write_json(wk, {"book_id": book_dir.name, "created_at": _now(), "entries": []})
+def _ensure_section_shape(name: str, x: Any) -> Any:
+    if name in ("ledger", "timeline", "characters"):
+        return x if isinstance(x, list) else []
+    if name == "glossary":
+        return x if isinstance(x, dict) else {}
+    return x
 
-def update_memory_from_chapter(book_id: str, chapter_id: str, version: str | None = None, text: str | None = None) -> Dict[str, Any]:
-    bdir = BOOKS_DIR / str(book_id)
-    if not bdir.exists():
-        raise FileNotFoundError(f"Book not found: {bdir}")
 
-    _ensure_files(bdir)
+def load_canon(book_id: str) -> Dict[str, Any]:
+    ps = _paths(book_id)
 
-    cid = str(chapter_id)
-    v = str(version) if version else "unknown"
-
-    # read latest chapter text if not provided
-    if text is None:
-        latest = bdir / "draft" / "chapters" / cid / "latest.txt"
-        if not latest.exists():
-            raise FileNotFoundError(f"Chapter latest not found: {latest}")
-        text = latest.read_text(encoding="utf-8")
-
-    digest = _sha(text)
-    ents = _entity_guess(text)
-
-    # timeline: 1 event per chapter version (start)
-    tl_path = bdir / "memory" / "timeline.json"
-    tl = _read_json(tl_path, {"book_id": bdir.name, "created_at": _now(), "events": []})
-    events = tl.get("events") if isinstance(tl.get("events"), list) else []
-    event_id = f"{cid}:{v}:{digest[:12]}"
-
-    if not any(isinstance(e, dict) and e.get("id") == event_id for e in events):
-        events.append({
-            "id": event_id,
-            "chapter_id": cid,
-            "version": v,
-            "ts": _now(),
-            "sha256": digest,
-            "entities": ents,
-            "note": "auto_snapshot_v1"
-        })
-        tl["events"] = events
-        tl["updated_at"] = _now()
-        _atomic_write_json(tl_path, tl)
-
-    # facts: entity mentions as starter facts
-    facts_path = bdir / "memory" / "facts.json"
-    fx = _read_json(facts_path, {"book_id": bdir.name, "created_at": _now(), "facts": []})
-    flist = fx.get("facts") if isinstance(fx.get("facts"), list) else []
-
-    added = 0
-    for ent in ents:
-        fid = f"ENT:{ent}:{digest[:12]}"
-        if any(isinstance(f, dict) and f.get("id") == fid for f in flist):
-            continue
-        flist.append({
-            "id": fid,
-            "type": "ENTITY_MENTION",
-            "value": ent,
-            "chapter_id": cid,
-            "version": v,
-            "sha256": digest,
-            "ts": _now(),
-            "confidence": "LOW",
-            "note": "auto_extract_v1"
-        })
-        added += 1
-
-    if added:
-        fx["facts"] = flist
-        fx["updated_at"] = _now()
-        _atomic_write_json(facts_path, fx)
-
-    # who_knows: placeholder entry (nie rozstrzygamy wiedzy bez LLM)
-    wk_path = bdir / "memory" / "who_knows.json"
-    wk = _read_json(wk_path, {"book_id": bdir.name, "created_at": _now(), "entries": []})
-    wlist = wk.get("entries") if isinstance(wk.get("entries"), list) else []
-    wid = f"WK:{cid}:{v}:{digest[:12]}"
-
-    if not any(isinstance(x, dict) and x.get("id") == wid for x in wlist):
-        wlist.append({
-            "id": wid,
-            "chapter_id": cid,
-            "version": v,
-            "sha256": digest,
-            "ts": _now(),
-            "characters": ents[:20],
-            "knowledge": [],
-            "note": "placeholder_v1"
-        })
-        wk["entries"] = wlist
-        wk["updated_at"] = _now()
-        _atomic_write_json(wk_path, wk)
+    ledger = _ensure_section_shape("ledger", _load_json(ps["ledger"], []))
+    timeline = _ensure_section_shape("timeline", _load_json(ps["timeline"], []))
+    characters = _ensure_section_shape("characters", _load_json(ps["characters"], []))
+    glossary = _ensure_section_shape("glossary", _load_json(ps["glossary"], {}))
 
     return {
-        "book_id": bdir.name,
-        "chapter_id": cid,
-        "version": v,
-        "sha256": digest,
-        "entities_count": len(ents),
-        "timeline_event_id": event_id,
-        "facts_added": added,
-        "who_knows_id": wid
+        "canon_version": CANON_VERSION,
+        "book_id": str(book_id or "default"),
+        "updated_at": _iso(),
+        "ledger": ledger,
+        "timeline": timeline,
+        "characters": characters,
+        "glossary": glossary,
     }
+
+
+def _index_by_id(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    for it in items:
+        if isinstance(it, dict) and it.get("id"):
+            out[str(it["id"])] = it
+    return out
+
+
+def _upsert_list(existing: List[Dict[str, Any]], incoming: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    ex = _index_by_id(existing)
+    for it in incoming:
+        if not isinstance(it, dict):
+            continue
+        iid = it.get("id")
+        if not iid:
+            continue
+        ex[str(iid)] = {**ex.get(str(iid), {}), **it}
+    return [ex[k] for k in sorted(ex.keys())]
+
+
+def _remove_ids(existing: List[Dict[str, Any]], remove_ids: List[str]) -> List[Dict[str, Any]]:
+    rm = {str(x) for x in (remove_ids or []) if str(x).strip()}
+    out: List[Dict[str, Any]] = []
+    for it in existing:
+        if not isinstance(it, dict):
+            continue
+        iid = str(it.get("id") or "")
+        if iid and iid in rm:
+            continue
+        out.append(it)
+    return out
+
+
+def patch_canon(book_id: str, patch: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    patch schema:
+      {
+        "upsert": {
+          "ledger": [ {id,...}, ... ],
+          "timeline": [ {id,...}, ... ],
+          "characters": [ {id,...}, ... ],
+          "glossary": { "TERM": "def", ... }
+        },
+        "remove": {
+          "ledger_ids": ["..."],
+          "timeline_ids": ["..."],
+          "character_ids": ["..."],
+          "glossary_terms": ["TERM"]
+        }
+      }
+    """
+    canon = load_canon(book_id)
+    up = patch.get("upsert") if isinstance(patch, dict) else {}
+    rm = patch.get("remove") if isinstance(patch, dict) else {}
+
+    if isinstance(up, dict):
+        if isinstance(up.get("ledger"), list):
+            canon["ledger"] = _upsert_list(canon["ledger"], up["ledger"])
+        if isinstance(up.get("timeline"), list):
+            canon["timeline"] = _upsert_list(canon["timeline"], up["timeline"])
+        if isinstance(up.get("characters"), list):
+            canon["characters"] = _upsert_list(canon["characters"], up["characters"])
+        if isinstance(up.get("glossary"), dict):
+            canon["glossary"] = {**canon["glossary"], **up["glossary"]}
+
+    if isinstance(rm, dict):
+        if isinstance(rm.get("ledger_ids"), list):
+            canon["ledger"] = _remove_ids(canon["ledger"], rm["ledger_ids"])
+        if isinstance(rm.get("timeline_ids"), list):
+            canon["timeline"] = _remove_ids(canon["timeline"], rm["timeline_ids"])
+        if isinstance(rm.get("character_ids"), list):
+            canon["characters"] = _remove_ids(canon["characters"], rm["character_ids"])
+        if isinstance(rm.get("glossary_terms"), list):
+            for t in rm["glossary_terms"]:
+                canon["glossary"].pop(str(t), None)
+
+    ps = _paths(book_id)
+    _atomic_write_json(ps["ledger"], canon["ledger"])
+    _atomic_write_json(ps["timeline"], canon["timeline"])
+    _atomic_write_json(ps["characters"], canon["characters"])
+    _atomic_write_json(ps["glossary"], canon["glossary"])
+
+    canon["updated_at"] = _iso()
+    return canon

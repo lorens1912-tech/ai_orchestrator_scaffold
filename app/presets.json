@@ -32,7 +32,25 @@
         "EDIT",
         "QUALITY"
       ],
-      "stop_on_quality_non_accept": true
+      "stop_on_quality_non_accept": true,
+      "steps": [
+        {
+          "mode": "PLAN"
+        },
+        {
+          "mode": "WRITE",
+          "policy": "WRITE_POLICY_TEST"
+        },
+        {
+          "mode": "CRITIC"
+        },
+        {
+          "mode": "EDIT"
+        },
+        {
+          "mode": "QUALITY"
+        }
+      ]
     },
     {
       "id": "ORCH_STOP_TEST",
@@ -40,17 +58,21 @@
         "QUALITY"
       ],
       "stop_on_quality_non_accept": true
+    },
+    {
+      "id": "ORCH_RETRY_TEST",
+      "modes": [
+        "QUALITY"
+      ],
+      "stop_on_quality_non_accept": false,
+      "quality_retry": {
+        "max_attempts": 1,
+        "edit_mode": "EDIT",
+        "on": [
+          "REVISE",
+          "REJECT"
+        ]
+      }
     }
-  ],
-  "ORCH_STANDARD": [
-    "PLAN",
-    "WRITE",
-    "CRITIC",
-    "EDIT",
-    "QUALITY"
-  ],
-  "ORCH_STOP_TEST": [
-    "QUALITY",
-    "EDIT"
   ]
 }

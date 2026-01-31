@@ -11,6 +11,8 @@ from app.tools import TOOLS
 
 from app.tool_dispatcher import dispatch_tool
 
+from app.project_truth_store import build_truth_pack
+
 ROOT = Path(__file__).resolve().parents[1]
 APP_DIR = Path(__file__).resolve().parent
 PRESETS_FILE = APP_DIR / "presets.json"
@@ -243,6 +245,9 @@ def execute_stub(
         if mode_id in TEXT_MODES:
             tool_in["text"] = latest_text if latest_text else str(tool_in.get("text") or "")
 
+        truth = build_truth_pack(tool_in.get("book_id"))
+        tool_in["_project_truth_scope"] = truth.get("scope")
+        tool_in["_project_truth_sha256"] = truth.get("sha256")
         result = dispatch_tool(mode_id, tool_in)
         out_pl = (result.get("payload") or {})
         if isinstance(out_pl, dict) and out_pl.get("text"):

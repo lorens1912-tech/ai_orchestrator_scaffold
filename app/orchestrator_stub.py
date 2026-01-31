@@ -9,6 +9,8 @@ from app.config_registry import load_presets, load_modes
 from app.team_resolver import resolve_team
 from app.tools import TOOLS
 
+from app.tool_dispatcher import dispatch_tool
+
 ROOT = Path(__file__).resolve().parents[1]
 APP_DIR = Path(__file__).resolve().parent
 PRESETS_FILE = APP_DIR / "presets.json"
@@ -241,7 +243,7 @@ def execute_stub(
         if mode_id in TEXT_MODES:
             tool_in["text"] = latest_text if latest_text else str(tool_in.get("text") or "")
 
-        result = TOOLS[mode_id](tool_in)
+        result = dispatch_tool(mode_id, tool_in)
         out_pl = (result.get("payload") or {})
         if isinstance(out_pl, dict) and out_pl.get("text"):
             latest_text = str(out_pl["text"])

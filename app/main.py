@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Response
+from app.project_truth_api import router as project_truth_router
 from pydantic import BaseModel, Field
 
 from app.config import validate_config
@@ -139,6 +140,8 @@ def _orch_apply_stop_meta(resp: Dict[str, Any], req: Any) -> Dict[str, Any]:
 
 ROOT = Path(__file__).resolve().parents[1]
 app = FastAPI()
+
+app.include_router(project_truth_router)
 
 app.include_router(canon_router)
 # === REQUEST_VALIDATION_MODE_400_BEGIN ===

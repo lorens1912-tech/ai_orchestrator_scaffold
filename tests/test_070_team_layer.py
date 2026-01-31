@@ -7,6 +7,36 @@ BASE = "http://127.0.0.1:8000"
 
 class Test070TeamLayer(unittest.TestCase):
   def test_team_in_steps_and_model_from_policy(self):
+    # B7.1+: 000_SEQUENCE.json is meta, not a step; assert team in real step artifacts
+    body = {
+        "preset": "DRAFT_EDIT_QUALITY",
+        "payload": {"text": "team layer smoke"}
+    }
+    r = requests.post(f"{BASE}/agent/step", json=body, timeout=60)
+    self.assertEqual(r.status_code, 200, r.text)
+    j = r.json()
+    self.assertTrue(j.get("ok") is True, j)
+
+    artifacts = j.get("artifacts") or []
+    self.assertGreaterEqual(len(artifacts), 1, j)
+
+    # check each returned step artifact has team + model from policy
+    for ap in artifacts:
+        d = json.loads(Path(ap).read_text(encoding="utf-8"))
+        self.assertIn("team", d)  # TEAM w każdym *kroku*
+        team = d.get("team") or {}
+        self.assertIsInstance(team, dict)
+        self.assertIn("id", team)
+        self.assertIn("model", team)
+
+        pol = team.get("policy") or {}
+        if isinstance(pol, dict) and pol.get("model"):
+            self.assertEqual(team.get("model"), pol.get("model"))
+
+        # telemetry should match
+        eff = d.get("effective_model_id")
+        if eff:
+            self.assertEqual(eff, team.get("model"))
     body = {
       "preset": "DRAFT_EDIT_QUALITY",
       "book_id": "default",

@@ -154,6 +154,28 @@ def execute_stub(
     steps_dir = run_dir / "steps"
     steps_dir.mkdir(parents=True, exist_ok=True)
 
+    # B7.1: write sequence/audit artifact (000_SEQUENCE.json)
+    seq_path = steps_dir / "000_SEQUENCE.json"
+    try:
+        preset_id_for_seq = None
+        if isinstance(payload, dict):
+            preset_id_for_seq = payload.get("_preset_id") or payload.get("preset")
+        preset_raw = _find_preset_raw(str(preset_id_for_seq)) if preset_id_for_seq else None
+        seq_doc = {
+            "run_id": run_id,
+            "book_id": book_id,
+            "preset_id": preset_id_for_seq,
+            "preset_has_steps": bool(preset_raw and isinstance(preset_raw.get("steps"), list)),
+            "queue_initial": queue if isinstance(queue, list) else [],
+            "quality_retry": (preset_raw.get("quality_retry") if isinstance(preset_raw, dict) else None),
+            "require_final_quality": (preset_raw.get("require_final_quality") if isinstance(preset_raw, dict) else None),
+            "created_at": _iso(),
+        }
+        _atomic_write_json(seq_path, seq_doc)
+    except Exception:
+        pass
+
+
     state_path = run_dir / "state.json"
     state: Dict[str, Any] = {"run_id": run_id, "latest_text": "", "last_step": 0, "created_at": _iso()}
 
@@ -237,6 +259,8 @@ def execute_stub(
             "index": step_index,
             "mode": mode_id,
             "team": team,
+            "effective_model_id": tool_in.get("_requested_model"),
+            "effective_policy_id": tool_in.get("_requested_policy"),
             "preset_id": preset_id,
             "preset_step": ov if isinstance(ov, dict) and ov else None,
             "input": tool_in,

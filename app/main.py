@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.canon_api import router as canon_router
+
 import json
 import secrets
 from datetime import datetime
@@ -138,6 +140,7 @@ def _orch_apply_stop_meta(resp: Dict[str, Any], req: Any) -> Dict[str, Any]:
 ROOT = Path(__file__).resolve().parents[1]
 app = FastAPI()
 
+app.include_router(canon_router)
 # === REQUEST_VALIDATION_MODE_400_BEGIN ===
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse

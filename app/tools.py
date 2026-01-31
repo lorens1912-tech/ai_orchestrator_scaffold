@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
+from app.canon_store import load_canon
+from app.canon_check import canon_check
 from app.quality_rules import evaluate_quality
 
 def _is_test_mode() -> bool:
@@ -231,6 +233,15 @@ def tool_expand(payload: Dict[str, Any]) -> Dict[str, Any]:
     if text:
         text = text + "\n\n(Dopowiedzenie: napięcie rośnie.)"
     return {"tool":"EXPAND","payload":{"text":text, "meta":{"requested_model": payload.get("_requested_model")}}}
+
+
+def tool_canon_check(payload):
+    book_id = str((payload or {}).get("book_id") or "default")
+    text = str((payload or {}).get("text") or "")
+    scene_ref = str((payload or {}).get("scene_ref") or (payload or {}).get("scene") or "")
+    canon = load_canon(book_id)
+    report = canon_check(text=text, canon=canon, scene_ref=scene_ref)
+    return {"tool": "CANON_CHECK", "payload": report}
 
 TOOLS = {
   "PLAN": tool_plan,

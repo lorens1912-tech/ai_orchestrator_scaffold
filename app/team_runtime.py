@@ -137,6 +137,11 @@ def _default_team_for_mode(mode_u: str) -> str:
     return "WRITER"
 
 def apply_team_runtime(payload: Dict[str, Any], mode: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    # CANON_EXTRACT_APPLY_TEAM_RUNTIME_P0_AST
+    _mode_u = str(mode).upper() if mode is not None else ""
+    if _mode_u == "CANON_EXTRACT":
+        return payload, {"team_id": "CANON_CHECK", "bypass": True}
+
     if payload is None:
         payload = {}
 
@@ -156,6 +161,9 @@ def apply_team_runtime(payload: Dict[str, Any], mode: str) -> Tuple[Dict[str, An
 
     team_cfg = teams.get(team_id) or {}
 
+    _rm = payload.get("requested_model") or payload.get("model")
+    if _rm is not None and str(_rm).strip():
+        payload["_requested_model"] = str(_rm).strip()
     am = _allowed_modes(team_cfg)
     if am is not None and mode_u not in am:
         raise ModeNotAllowed(team_id, mode_u)
@@ -196,3 +204,4 @@ def apply_team_runtime(payload: Dict[str, Any], mode: str) -> Tuple[Dict[str, An
     }
 
     return out, team_meta
+

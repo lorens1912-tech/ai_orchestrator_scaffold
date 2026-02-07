@@ -1,3 +1,8 @@
-$env:EXPECTED_MODES_COUNT="14"
-$env:WRITE_MODEL_FORCE="gpt-4.1-mini"
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+Set-Location C:\AI\ai_orchestrator_scaffold
+
+Write-Host "=== START UVICORN (FOREGROUND, NO RELOAD) ==="
+
+python -m uvicorn app.main:app `
+  --host 127.0.0.1 `
+  --port 8000 `
+  --log-level info

@@ -1,10 +1,10 @@
 {
-  "teams": [
-    { "id": "WRITER", "model": "gpt-4.1-mini" },
-    { "id": "CRITIC", "model": "gpt-4.1-mini" },
-    { "id": "QA", "model": "gpt-4.1-mini" },
-    { "id": "CONTINUITY", "model": "gpt-4.1-mini" },
-    { "id": "FACTCHECK", "model": "gpt-4.1-mini" },
-    { "id": "TRANSLATE", "model": "gpt-4.1-mini" }
-  ]
+  "teams": {
+    "WRITER":     { "model": "gpt-4.1-mini" },
+    "CRITIC":     { "model": "gpt-4.1-mini" },
+    "QA":         { "model": "gpt-4.1-mini" },
+    "CONTINUITY": { "model": "gpt-4.1-mini" },
+    "FACTCHECK":  { "model": "gpt-4.1-mini" },
+    "TRANSLATE":  { "model": "gpt-4.1-mini" }
+  }
 }

@@ -1,59 +1,10 @@
 {
-  "version": 1,
   "teams": {
-    "WRITER": {
-      "allowed_modes": [
-        "EDIT",
-        "OUTLINE",
-        "PLAN",
-        "REWRITE",
-        "WRITE",
-        "CANON_CHECK"
-      ],
-      "default_policy": {
-        "policy_id": "POLICY_WRITER_v1",
-        "model": "gpt-4.1-mini",
-        "temperature": 0.7,
-        "max_tokens": 1200
-      }
-    },
-    "CRITIC": {
-      "allowed_modes": [
-        "CONTINUITY",
-        "CRITIC",
-        "UNIQUENESS"
-      ],
-      "default_policy": {
-        "policy_id": "POLICY_CRITIC_v1",
-        "model": "gpt-4.1-mini",
-        "temperature": 0.2,
-        "max_tokens": 900
-      }
-    },
-    "QA": {
-      "allowed_modes": [
-        "QUALITY"
-      ],
-      "default_policy": {
-        "policy_id": "POLICY_QA_v1",
-        "model": "gpt-4.1-mini",
-        "temperature": 0.0,
-        "max_tokens": 500
-      }
-    },
-    "CANON_KEEPER": {
-      "allowed_modes": [
-        "CANON_CHECK",
-        "CONTINUITY",
-        "FACTCHECK",
-        "QUALITY"
-      ],
-      "default_policy": {
-        "policy_id": "POLICY_CANON_KEEPER_v1",
-        "model": "gpt-4.1-mini",
-        "temperature": 0.0,
-        "max_tokens": 800
-      }
-    }
+    "WRITER":     { "model": "gpt-4.1-mini" },
+    "CRITIC":     { "model": "gpt-4.1-mini" },
+    "QA":         { "model": "gpt-4.1-mini" },
+    "CONTINUITY": { "model": "gpt-4.1-mini" },
+    "FACTCHECK":  { "model": "gpt-4.1-mini" },
+    "TRANSLATE":  { "model": "gpt-4.1-mini" }
   }
 }

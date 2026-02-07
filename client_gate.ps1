@@ -1,46 +1,140 @@
 param(
-  [string]$BaseUrl = "http://127.0.0.1:8000",
-  [string]$Book    = "gate_test",
-  [switch]$Clean
+  [switch]$Full
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-function Clean-Book([string]$BookId) {
-  $root  = "C:\AI\ai_orchestrator_scaffold"
-  $trash = Join-Path $root ("_TRASH_" + (Get-Date -Format "yyyyMMdd_HHmmss"))
-  New-Item -ItemType Directory -Force $trash | Out-Null
-  Move-Item "$root\books\$BookId" $trash -ErrorAction SilentlyContinue
+$ROOT = "C:\AI\ai_orchestrator_scaffold"
+Set-Location $ROOT
+
+# --- helpers ---
+function Write-Line($s) { Write-Host $s }
+
+function Http-Json([string]$url, [int]$timeoutSec = 5) {
+  try {
+    return Invoke-RestMethod $url -TimeoutSec $timeoutSec
+  } catch {
+    return $null
+  }
 }
 
-if ($Clean) { Clean-Book $Book }
+# --- proof output ---
+$stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$proof = Join-Path $ROOT ("reports\P0_GATE_PROOF_" + $stamp + ".txt")
+New-Item -ItemType Directory -Force -Path (Join-Path $ROOT "reports") | Out-Null
 
-Write-Host "[1] STEP"
-$step = Invoke-RestMethod "$BaseUrl/books/agent/step" -Method POST -ContentType "application/json" `
-        -Body (@{ book=$Book; mode="buffer" } | ConvertTo-Json)
-Write-Host "    job_id=$($step.job_id)"
+# --- 1) Runtime health check ---
+$health = Http-Json "http://127.0.0.1:8000/health" 3
+if ($null -eq $health -or -not $health.ok) {
+  @(
+    "P0_GATE_PROOF"
+    "time=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    "status=FAIL"
+    "reason=HEALTH_DOWN"
+    "hint=Start server in 🔵: python -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
+  ) | Out-File $proof -Encoding UTF8
 
-Write-Host "[2] WORKER/ONCE"
-$w = Invoke-RestMethod "$BaseUrl/books/agent/worker/once" -Method POST -ContentType "application/json" `
-     -Body (@{ book=$Book; job_id=$step.job_id } | ConvertTo-Json)
-Write-Host "    worker.status=$($w.status)"
+  throw "P0_GATE_FAIL: /health is down. PROOF=$proof"
+}
 
-Write-Host "[3] ACCEPT require_fact_ok=true (BEZ fact_check) — tu bramka ma zadziałać"
-$acc1 = Invoke-RestMethod "$BaseUrl/books/agent/accept" -Method POST -ContentType "application/json" `
-        -Body (@{ book=$Book; clear_buffer=$false; require_fact_ok=$true } | ConvertTo-Json)
-Write-Host "    accept1.status=$($acc1.status) added_chars=$($acc1.added_chars) error=$($acc1.error)"
+# --- 2) Config validate ---
+$validate = Http-Json "http://127.0.0.1:8000/config/validate" 5
+if ($null -eq $validate -or -not $validate.ok) {
+  @(
+    "P0_GATE_PROOF"
+    "time=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    "status=FAIL"
+    "reason=VALIDATE_FAIL"
+    "validate_raw=$(if($validate){($validate | ConvertTo-Json -Depth 10)}else{'NULL'})"
+  ) | Out-File $proof -Encoding UTF8
 
-Write-Host "[4] FACT_CHECK (buffer)"
-$fact = Invoke-RestMethod "$BaseUrl/books/agent/fact_check" -Method POST -ContentType "application/json" `
-        -Body (@{ book=$Book; source="buffer" } | ConvertTo-Json)
-Write-Host "    fact.ok=$($fact.ok) issues=$($fact.issues.Count)"
+  throw "P0_GATE_FAIL: /config/validate failed. PROOF=$proof"
+}
 
-Write-Host "[5] ACCEPT require_fact_ok=true (PO fact_check) — powinno przejść jeśli fact.ok=true"
-$acc2 = Invoke-RestMethod "$BaseUrl/books/agent/accept" -Method POST -ContentType "application/json" `
-        -Body (@{ book=$Book; clear_buffer=$true; require_fact_ok=$true } | ConvertTo-Json)
-Write-Host "    accept2.status=$($acc2.status) added_chars=$($acc2.added_chars) error=$($acc2.error)"
+# --- 3) Import check (catches NameError in tools.py etc.) ---
+try {
+  $importOut = python -c "import app.main; print('IMPORT_OK')" 2>&1
+} catch {
+  $importOut = "IMPORT_THROW: $($_.Exception.Message)"
+}
+if ($importOut -notmatch "IMPORT_OK") {
+  @(
+    "P0_GATE_PROOF"
+    "time=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    "status=FAIL"
+    "reason=IMPORT_FAIL"
+    "import_out=$importOut"
+  ) | Out-File $proof -Encoding UTF8
 
-Write-Host "[6] TAIL master.txt"
-$master = "C:\AI\ai_orchestrator_scaffold\books\$Book\draft\master.txt"
-if (Test-Path $master) { Get-Content $master -Tail 20 } else { Write-Host "    master.txt not found" }
+  throw "P0_GATE_FAIL: import app.main failed. PROOF=$proof"
+}
 
+# --- 4) P0 pytest contract ---
+if (-not (Test-Path ".\tests\test_p0_runtime.py")) {
+  @(
+    "P0_GATE_PROOF"
+    "time=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    "status=FAIL"
+    "reason=MISSING_TEST_FILE"
+    "missing=tests\test_p0_runtime.py"
+  ) | Out-File $proof -Encoding UTF8
+
+  throw "P0_GATE_FAIL: missing tests/test_p0_runtime.py. PROOF=$proof"
+}
+
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+$pytestOut = python -m pytest .\tests\test_p0_runtime.py -q 2>&1
+$sw.Stop()
+$pytestOk = ($LASTEXITCODE -eq 0)
+
+if (-not $pytestOk) {
+  @(
+    "P0_GATE_PROOF"
+    "time=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    "status=FAIL"
+    "reason=PYTEST_P0_FAIL"
+    "seconds=$($sw.Elapsed.TotalSeconds)"
+    "pytest_out=$pytestOut"
+  ) | Out-File $proof -Encoding UTF8
+
+  throw "P0_GATE_FAIL: pytest P0 failed. PROOF=$proof"
+}
+
+# --- Optional: FULL suite (only if -Full) ---
+$fullNote = "skipped"
+if ($Full) {
+  $fullSw = [System.Diagnostics.Stopwatch]::StartNew()
+  $fullOut = python -m pytest -q 2>&1
+  $fullSw.Stop()
+  $fullOk = ($LASTEXITCODE -eq 0)
+  $fullNote = "ok=$fullOk seconds=$($fullSw.Elapsed.TotalSeconds)"
+  if (-not $fullOk) {
+    @(
+      "P0_GATE_PROOF"
+      "time=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+      "status=FAIL"
+      "reason=PYTEST_FULL_FAIL"
+      "p0_seconds=$($sw.Elapsed.TotalSeconds)"
+      "full_seconds=$($fullSw.Elapsed.TotalSeconds)"
+      "full_out=$fullOut"
+    ) | Out-File $proof -Encoding UTF8
+
+    throw "P0_GATE_FAIL: full pytest failed. PROOF=$proof"
+  }
+}
+
+@(
+  "P0_GATE_PROOF"
+  "time=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+  "status=PASS"
+  "health_ok=True"
+  "validate_ok=True"
+  "modes_count=$($validate.modes_count)"
+  "presets_count=$($validate.presets_count)"
+  "p0_pytest_seconds=$($sw.Elapsed.TotalSeconds)"
+  "full=$fullNote"
+  "proof=$proof"
+) | Out-File $proof -Encoding UTF8
+
+Write-Line "P0_GATE=PASS | modes=$($validate.modes_count) presets=$($validate.presets_count) | proof=$proof"

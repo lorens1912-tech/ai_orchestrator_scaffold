@@ -79,3 +79,8 @@ app/tools.py.pre_quality_fix
 books/**
 !books/default/
 !books/default/project_profile.json
+# P13 release hygiene
+reports/P13_*.txt
+reports/P13_*.json
+reports/P13_PYTEST_*.txt
+archive/untracked/*.zip

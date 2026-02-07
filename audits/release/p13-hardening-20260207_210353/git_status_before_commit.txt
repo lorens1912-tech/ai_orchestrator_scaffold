@@ -1,0 +1,6 @@
+?? HANDOFF_EXIT_20260207_201721.md
+?? HANDOFF_EXIT_20260207_203103.md
+?? audits/release/p13-hardening-20260207_210353/
+?? reports/
+?? scripts/P13_strict_gate.ps1
+?? tests/test_p13_contracts_strict.py

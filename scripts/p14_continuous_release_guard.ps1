@@ -16,15 +16,15 @@ if ($dirty) {
 }
 
 if ($Full) {
-  # tryb P15+ (pełny) — bez fastpath
+  # P15: pełny suite, ale lokalny test-mode (bez fastpath, bez zewn. timeoutów)
   Remove-Item Env:PYTEST_FASTPATH -ErrorAction SilentlyContinue
-  Remove-Item Env:AGENT_TEST_MODE -ErrorAction SilentlyContinue
+  $env:AGENT_TEST_MODE = "1"
   Remove-Item Env:WRITE_MODEL_FORCE -ErrorAction SilentlyContinue
 
   $cmd = "python -m pytest -q -x --maxfail=1"
 }
 else {
-  # tryb P14 — TYLKO strict pack 002-007, fastpath ON
+  # P14 strict pack
   $env:PYTEST_FASTPATH = "1"
   $env:AGENT_TEST_MODE = "0"
   Remove-Item Env:WRITE_MODEL_FORCE -ErrorAction SilentlyContinue
@@ -37,7 +37,6 @@ else {
     "tests/test_006_pipeline_smoke.py"
     "tests/test_007_artifact_schema.py"
   )
-
   $cmd = "python -m pytest -q -x --maxfail=1 " + ($tests -join " ")
 }
 

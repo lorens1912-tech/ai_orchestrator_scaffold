@@ -5,3 +5,14 @@ HANDOFF_EXIT_*.md
 .pytest_cache/
 runs/run_*/
 reports/P*_*.txt
+backups/
+books/book_runtime_test/
+_p15_force_fail_patch.py
+_p15_hotfix_quality.py
+_p15_nuclear_patch.py
+_p15_patch_active_runtime.py
+_p15_patch_hardfail.py
+_p15_patch_main_payload_wrap.py
+_p15_patch_wrap_quality_payload_all.py
+_p15_runtime_wrap_quality.py
+_p15_smoke_eval.py

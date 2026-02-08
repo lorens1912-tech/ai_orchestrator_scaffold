@@ -1,15 +1,17 @@
-param([switch]$Full)
+param(
+  [switch]$Full
+)
 
 $ErrorActionPreference = "Stop"
-$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-Set-Location $RepoRoot
 
 function Fail([string]$msg) { throw $msg }
 
-Write-Host "P14: Continuous Release Guard"
-$mode = if ($Full) { "FULL" } else { "STRICT_002_007_FASTPATH" }
-Write-Host "MODE:" $mode
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+Set-Location $RepoRoot
 
+Write-Host "P14: Continuous Release Guard"
+
+# 0) Drzewo musi być czyste
 $dirty = git status --porcelain
 if ($dirty) {
   Write-Host "BLOCKED_DIRTY_TREE:"
@@ -17,128 +19,129 @@ if ($dirty) {
   Fail "Working tree must be clean before release/push."
 }
 
-# Snapshot env
-$trackedEnv = @("PYTEST_FASTPATH","AGENT_TEST_MODE","WRITE_MODEL_FORCE")
-$envBackup = @{}
-foreach ($name in $trackedEnv) {
-  $item = Get-Item "Env:$name" -ErrorAction SilentlyContinue
-  if ($item) { $envBackup[$name] = $item.Value } else { $envBackup[$name] = $null }
-}
-
-function Restore-Env {
-  param([hashtable]$Backup)
-  foreach ($k in $Backup.Keys) {
-    if ($null -eq $Backup[$k]) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
-    else { Set-Item "Env:$k" $Backup[$k] }
-  }
-}
-
-function Stop-Listener8000 {
-  try {
-    $listeners = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
-  } catch {
-    $listeners = @()
+function Stop-Listeners8000 {
+  $lines = netstat -ano -p tcp | Select-String ":8000"
+  $pids = @()
+  foreach ($ln in $lines) {
+    $parts = (($ln.ToString() -replace "\s+", " ").Trim()).Split(" ")
+    if ($parts.Count -ge 5) { $pids += $parts[-1] }
   }
 
-  if ($listeners) {
-    $procIds = $listeners | Select-Object -ExpandProperty OwningProcess -Unique
-    foreach ($procId in $procIds) {
-      try { Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue } catch {}
+  $pids = $pids | Where-Object { $_ -match '^\d+$' } | Sort-Object -Unique
+  foreach ($procId in $pids) {
+    if ([int]$procId -gt 0) {
+      try {
+        Stop-Process -Id $procId -Force -ErrorAction Stop
+        Write-Host "KILLED_PID:$procId"
+      } catch {}
     }
-    Start-Sleep -Milliseconds 600
   }
 }
 
-function Wait-Health {
-  param([int]$TimeoutSec = 25)
-  $deadline = (Get-Date).AddSeconds($TimeoutSec)
-  while ((Get-Date) -lt $deadline) {
+if ($Full) {
+  Remove-Item Env:PYTEST_FASTPATH -ErrorAction SilentlyContinue
+  Remove-Item Env:AGENT_TEST_MODE -ErrorAction SilentlyContinue
+  Remove-Item Env:WRITE_MODEL_FORCE -ErrorAction SilentlyContinue
+  $modeLabel = "FULL_SUITE_NO_FASTPATH"
+  $pytestCmd = "python -m pytest -q -x --maxfail=1"
+}
+else {
+  $env:PYTEST_FASTPATH = "1"
+  $env:AGENT_TEST_MODE = "0"
+  Remove-Item Env:WRITE_MODEL_FORCE -ErrorAction SilentlyContinue
+  $modeLabel = "STRICT_002_007_FASTPATH"
+
+  $tests = @(
+    "tests/test_002_config_contract.py",
+    "tests/test_003_write_step.py",
+    "tests/test_004_critic_step.py",
+    "tests/test_005_edit_step.py",
+    "tests/test_006_pipeline_smoke.py",
+    "tests/test_007_artifact_schema.py"
+  )
+  $pytestCmd = "python -m pytest -q -x --maxfail=1 " + ($tests -join " ")
+}
+
+Write-Host "MODE: $modeLabel"
+
+# 1) ubij stary listener 8000 (stale profile)
+Stop-Listeners8000
+Start-Sleep -Milliseconds 500
+
+# 2) start serwera z właściwym profilem
+$pyLauncher = if (Get-Command py -ErrorAction SilentlyContinue) { "py -3.11" } else { "python" }
+
+$launch = @"
+Set-Location '$RepoRoot'
+`$env:PYTEST_FASTPATH = '$($env:PYTEST_FASTPATH)'
+`$env:AGENT_TEST_MODE = '$($env:AGENT_TEST_MODE)'
+Remove-Item Env:WRITE_MODEL_FORCE -ErrorAction SilentlyContinue
+$pyLauncher -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --log-level warning
+"@
+
+$server = Start-Process -FilePath "powershell" `
+  -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-Command",$launch `
+  -PassThru -WindowStyle Hidden
+
+Write-Host "SERVER_PID:$($server.Id)"
+
+try {
+  # 3) health wait
+  $ready = $false
+  for ($i=0; $i -lt 60; $i++) {
     try {
-      Invoke-RestMethod -Uri "http://127.0.0.1:8000/health" -Method Get -TimeoutSec 2 | Out-Null
-      return $true
-    } catch {
-      Start-Sleep -Milliseconds 300
-    }
+      $h = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/health" -TimeoutSec 2
+      if ($h) { $ready = $true; break }
+    } catch {}
+    Start-Sleep -Milliseconds 500
   }
-  return $false
-}
+  if (-not $ready) { Fail "PRECHECK_FAIL: /health not ready on 127.0.0.1:8000" }
 
-function Precheck-AgentStep {
-  $body = @{
+  # 4) robust precheck /agent/step
+  $preBody = @{
     mode   = "WRITE"
     preset = "DEFAULT"
     input  = "guard precheck"
   } | ConvertTo-Json -Depth 10
 
-  $resp = Invoke-RestMethod `
-    -Method Post `
+  $pre = Invoke-RestMethod -Method Post `
     -Uri "http://127.0.0.1:8000/agent/step" `
     -ContentType "application/json" `
-    -Body $body `
-    -TimeoutSec 20
+    -Body $preBody `
+    -TimeoutSec 15
 
-  if ($null -eq $resp) { Fail "PRECHECK_FAIL: empty response from /agent/step" }
+  if ($null -eq $pre) { Fail "PRECHECK_FAIL: empty /agent/step response" }
 
-  $okFlag = (($resp.PSObject.Properties.Name -contains "ok" -and $resp.ok -eq $true) -or
-             ($resp.PSObject.Properties.Name -contains "status" -and $resp.status -eq "ok"))
-
-  $hasRunId = ($resp.PSObject.Properties.Name -contains "run_id" -and -not [string]::IsNullOrWhiteSpace([string]$resp.run_id))
-  $hasArtifactPath = ($resp.PSObject.Properties.Name -contains "artifact_path" -and -not [string]::IsNullOrWhiteSpace([string]$resp.artifact_path))
-  $hasArtifacts = ($resp.PSObject.Properties.Name -contains "artifacts" -and $null -ne $resp.artifacts -and $resp.artifacts.Count -gt 0)
-
-  if (-not $okFlag) {
-    $raw = $resp | ConvertTo-Json -Depth 8 -Compress
-    Fail "PRECHECK_FAIL: /agent/step returned non-ok payload: $raw"
+  $isOk = $false
+  if ($pre.PSObject.Properties.Name -contains "ok") {
+    $isOk = [bool]$pre.ok
+  } elseif ($pre.PSObject.Properties.Name -contains "status") {
+    $isOk = ([string]$pre.status -eq "ok")
   }
 
-  if (-not ($hasRunId -or $hasArtifactPath -or $hasArtifacts)) {
-    $raw = $resp | ConvertTo-Json -Depth 8 -Compress
-    Write-Warning "PRECHECK_WARN: /agent/step without run/artifact markers. Continue, pytest decides. payload=$raw"
-  }
-}
-
-$serverProc = $null
-try {
-  if ($Full) {
-    Remove-Item Env:PYTEST_FASTPATH -ErrorAction SilentlyContinue
-    Remove-Item Env:AGENT_TEST_MODE -ErrorAction SilentlyContinue
-    Remove-Item Env:WRITE_MODEL_FORCE -ErrorAction SilentlyContinue
-  } else {
-    $env:PYTEST_FASTPATH = "1"
-    $env:AGENT_TEST_MODE = "0"
-    Remove-Item Env:WRITE_MODEL_FORCE -ErrorAction SilentlyContinue
+  if (-not $isOk) {
+    $raw = $pre | ConvertTo-Json -Compress -Depth 20
+    Fail "PRECHECK_FAIL: /agent/step non-ok payload: $raw"
   }
 
-  Stop-Listener8000
-  $serverProc = Start-Process -FilePath "python" -ArgumentList @("-m","uvicorn","app.main:app","--host","127.0.0.1","--port","8000") -PassThru -WindowStyle Hidden
-
-  if (-not (Wait-Health -TimeoutSec 25)) { Fail "Server precheck failed: health timeout on 127.0.0.1:8000" }
-  Precheck-AgentStep
-
-  if ($Full) {
-    $cmd = "python -m pytest -q -x --maxfail=1"
-  } else {
-    $tests = @(
-      "tests/test_002_config_contract.py",
-      "tests/test_003_write_step.py",
-      "tests/test_004_critic_step.py",
-      "tests/test_005_edit_step.py",
-      "tests/test_006_pipeline_smoke.py",
-      "tests/test_007_artifact_schema.py"
-    )
-    $cmd = "python -m pytest -q -x --maxfail=1 " + ($tests -join " ")
+  if (-not ($pre.PSObject.Properties.Name -contains "run_id") -or [string]::IsNullOrWhiteSpace([string]$pre.run_id)) {
+    $raw = $pre | ConvertTo-Json -Compress -Depth 20
+    Fail "PRECHECK_FAIL: /agent/step bez run_id: $raw"
   }
 
-  Write-Host "RUNNING:" $cmd
-  Invoke-Expression $cmd
+  Write-Host "PRECHECK_OK: run_id=$($pre.run_id)"
+
+  # 5) tests
+  Write-Host "RUNNING: $pytestCmd"
+  Invoke-Expression $pytestCmd
   if ($LASTEXITCODE -ne 0) { Fail "pytest failed." }
 
   Write-Host "P14_GUARD_PASS"
   exit 0
 }
 finally {
-  if ($serverProc -and -not $serverProc.HasExited) {
-    try { Stop-Process -Id $serverProc.Id -Force -ErrorAction SilentlyContinue } catch {}
+  if ($server -and -not $server.HasExited) {
+    Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
   }
-  Restore-Env -Backup $envBackup
+  Stop-Listeners8000
 }

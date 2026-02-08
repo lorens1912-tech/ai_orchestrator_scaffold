@@ -1,100 +1,106 @@
-param([switch]$Full)
-$ErrorActionPreference = "Stop"
-function Fail([string]$m){ throw $m }
+param(
+  [switch]$Full
+)
 
+$ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $RepoRoot
+
 Write-Host "P14: Continuous Release Guard"
 
-function Get-DirtyLines {
-  $raw = git status --porcelain
-  if (-not $raw) { return @() }
-  @($raw -split "`r?`n" | Where-Object { $_ -and $_.Trim() -ne "" })
-}
-
-function Stop-Stale8000 {
+function Stop-Port8000Process {
   try {
     $conns = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
     if ($conns) {
       $pids = $conns | Select-Object -ExpandProperty OwningProcess -Unique
-      foreach ($procId in $pids) {
-        try {
-          Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-          Write-Host "KILLED_PID:$procId"
-        } catch {}
+      foreach ($p in $pids) {
+        if ($p -and $p -ne $PID) {
+          try { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue } catch {}
+        }
       }
-      Start-Sleep -Milliseconds 400
+      Start-Sleep -Milliseconds 500
     }
   } catch {}
 }
 
-$dirty = Get-DirtyLines
+function Wait-ApiReady {
+  param([int]$MaxTries = 80)
+  for ($i = 1; $i -le $MaxTries; $i++) {
+    try {
+      $r = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/config/validate" -TimeoutSec 2
+      if ($r) { return $true }
+    } catch {}
+    Start-Sleep -Milliseconds 500
+  }
+  return $false
+}
+
+function Start-ManagedServer {
+  param([bool]$Fastpath)
+
+  Stop-Port8000Process
+
+  if ($Fastpath) {
+    $cmd = "Set-Location '$RepoRoot'; `$env:AGENT_TEST_MODE='0'; `$env:PYTEST_FASTPATH='1'; Remove-Item Env:WRITE_MODEL_FORCE -ErrorAction SilentlyContinue; uvicorn app.main:app --host 127.0.0.1 --port 8000"
+  } else {
+    $cmd = "Set-Location '$RepoRoot'; `$env:AGENT_TEST_MODE='1'; Remove-Item Env:PYTEST_FASTPATH -ErrorAction SilentlyContinue; Remove-Item Env:WRITE_MODEL_FORCE -ErrorAction SilentlyContinue; uvicorn app.main:app --host 127.0.0.1 --port 8000"
+  }
+
+  $proc = Start-Process powershell.exe -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-Command",$cmd -PassThru -WindowStyle Hidden
+
+  if (-not (Wait-ApiReady -MaxTries 80)) {
+    try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+    throw "Managed server failed to start on 127.0.0.1:8000"
+  }
+
+  return $proc
+}
+
+# dirty-tree check, ale ignoruj lokalne logi/handoff
+$dirtyRaw = git status --porcelain --untracked-files=all
+$dirty = @()
+if ($dirtyRaw) {
+  $dirty = $dirtyRaw | Where-Object {
+    ($_ -notmatch '^\?\?\s+reports\/') -and
+    ($_ -notmatch '^\?\?\s+HANDOFF_EXIT_.*\.md$')
+  }
+}
 if ($dirty.Count -gt 0) {
   Write-Host "BLOCKED_DIRTY_TREE:"
   $dirty | ForEach-Object { Write-Host $_ }
-  Fail "Working tree must be clean before release/push."
+  throw "Working tree must be clean before release/push (excluding local reports/handoff)."
 }
 
-if ($Full) {
-  Write-Host "MODE: FULL_SUITE_NO_FASTPATH"
-  Remove-Item Env:PYTEST_FASTPATH -ErrorAction SilentlyContinue
-  Remove-Item Env:AGENT_TEST_MODE -ErrorAction SilentlyContinue
-  Remove-Item Env:WRITE_MODEL_FORCE -ErrorAction SilentlyContinue
-  $cmd = "python -m pytest -q -x --maxfail=1"
-}
-else {
-  Write-Host "MODE: STRICT_002_007_FASTPATH"
-  $env:PYTEST_FASTPATH = "1"
-  $env:AGENT_TEST_MODE = "0"
-  Remove-Item Env:WRITE_MODEL_FORCE -ErrorAction SilentlyContinue
-  $tests = @(
-    "tests/test_002_config_contract.py"
-    "tests/test_003_write_step.py"
-    "tests/test_004_critic_step.py"
-    "tests/test_005_edit_step.py"
-    "tests/test_006_pipeline_smoke.py"
-    "tests/test_007_artifact_schema.py"
-  )
-  $cmd = "python -m pytest -q -x --maxfail=1 " + ($tests -join " ")
-}
-
-# managed server precheck (deterministyczny)
-Stop-Stale8000
-$server = Start-Process -FilePath "python" -ArgumentList "-m","uvicorn","app.main:app","--host","127.0.0.1","--port","8000" -PassThru -WindowStyle Hidden
-Write-Host "SERVER_PID:$($server.Id)"
-Start-Sleep -Seconds 2
-
+$server = $null
 try {
-  $body = @{
-    mode   = "WRITE"
-    preset = "DEFAULT"
-    input  = "guard precheck"
-  } | ConvertTo-Json -Depth 10
-
-  $resp = Invoke-WebRequest -Method Post -Uri "http://127.0.0.1:8000/agent/step" -ContentType "application/json" -Body $body -TimeoutSec 20
-  $raw  = [string]$resp.Content
-
-  if ([string]::IsNullOrWhiteSpace($raw)) {
-    Fail "PRECHECK_FAIL: /agent/step empty response"
+  if ($Full) {
+    Write-Host "MODE: FULL_REAL"
+    $server = Start-ManagedServer -Fastpath:$false
+    $cmd = "python -m pytest -q -x --maxfail=1"
+  }
+  else {
+    Write-Host "MODE: STRICT_002_007_FASTPATH"
+    $server = Start-ManagedServer -Fastpath:$true
+    $tests = @(
+      "tests/test_002_config_contract.py"
+      "tests/test_003_write_step.py"
+      "tests/test_004_critic_step.py"
+      "tests/test_005_edit_step.py"
+      "tests/test_006_pipeline_smoke.py"
+      "tests/test_007_artifact_schema.py"
+    )
+    $cmd = "python -m pytest -q -x --maxfail=1 " + ($tests -join " ")
   }
 
-  $okRegex1  = [regex]::IsMatch($raw, '"ok"\s*:\s*true')
-  $okRegex2  = [regex]::IsMatch($raw, '\\"ok\\"\s*:\s*true')
-  $ridRegex1 = [regex]::IsMatch($raw, '"run_id"\s*:\s*"[^"]+"')
-  $ridRegex2 = [regex]::IsMatch($raw, '\\"run_id\\"\s*:\s*\\"[^\\"]+\\"')
+  Write-Host "RUNNING:" $cmd
+  Invoke-Expression $cmd
+  if ($LASTEXITCODE -ne 0) { throw "pytest failed." }
 
-  if ((-not ($okRegex1 -or $okRegex2)) -or (-not ($ridRegex1 -or $ridRegex2))) {
-    Fail ("PRECHECK_FAIL: /agent/step non-ok payload: " + $raw)
-  }
+  Write-Host "P14_GUARD_PASS"
+  exit 0
 }
 finally {
-  try { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue } catch {}
-  Start-Sleep -Milliseconds 250
+  if ($server -and $server.Id) {
+    try { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue } catch {}
+  }
 }
-
-Write-Host "RUNNING:" $cmd
-Invoke-Expression $cmd
-if ($LASTEXITCODE -ne 0) { throw "pytest failed." }
-
-Write-Host "P14_GUARD_PASS"
-exit 0

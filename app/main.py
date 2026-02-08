@@ -760,3 +760,11 @@ def config_presets():
 # === /P6_FINAL_CONFIG_PRESETS_ROUTE ===
 
 # === P6_FINAL_CONFIG_PRESETS_ROUTE ===
+
+
+# --- PYTEST FASTPATH (opt-in via PYTEST_FASTPATH=1) ---
+try:
+    from app.pytest_fastpath import install_pytest_fastpath
+    install_pytest_fastpath(app)
+except Exception:
+    pass

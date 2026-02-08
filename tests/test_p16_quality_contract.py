@@ -1,45 +1,53 @@
 import json
-import re
+import time
 from pathlib import Path
-
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 from app.main import app
 
 client = TestClient(app)
 
-def _run_quality(text: str, min_words: int):
+def _get(d, key, default=None):
+    if not isinstance(d, dict):
+        return default
+    if key in d:
+        return d[key]
+    k1 = key.lower()
+    if k1 in d:
+        return d[k1]
+    k2 = key.upper()
+    if k2 in d:
+        return d[k2]
+    return default
+
+def _read_quality_payload(run_id: str, timeout_sec: float = 6.0):
+    steps_dir = Path("runs") / run_id / "steps"
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        q_files = sorted(steps_dir.glob("*_QUALITY.json"))
+        if q_files:
+            raw = q_files[-1].read_text(encoding="utf-8")
+            j = json.loads(raw)
+            return j["result"]["payload"], raw
+        time.sleep(0.05)
+    raise AssertionError(f"run={run_id}, brak *_QUALITY.json")
+
+def _run_pipeline(topic: str, min_words: int):
     body = {
-        "mode": "QUALITY",
+        "preset": "WRITING_STANDARD",
         "payload": {
-            "text": text,
+            "topic": topic,
             "min_words": min_words
         }
     }
+    time.sleep(1.05)  # anty-kolizja run_id
     r = client.post("/agent/step", json=body)
-    assert r.status_code == 200, r.text
-    data = r.json()
-    run_id = data["run_id"]
-
-    steps_dir = Path("runs") / run_id / "steps"
-    q_files = sorted(steps_dir.glob("*_QUALITY.json"))
-    assert q_files, f"Brak *_QUALITY.json dla run_id={run_id}"
-
-    qf = q_files[-1]
-    raw = qf.read_text(encoding="utf-8")
-    j = json.loads(raw)
-    payload = j["result"]["payload"]
+    assert r.status_code == 200, f"status={r.status_code}, body={r.text}"
+    run_id = r.json()["run_id"]
+    payload, raw = _read_quality_payload(run_id)
     return run_id, payload, raw
 
-def _get(payload, key, default=None):
-    if key in payload:
-        return payload[key]
-    lk = key.lower()
-    if lk in payload:
-        return payload[lk]
-    return default
-
 def test_p16_quality_short_fail_and_block():
-    run_id, p, raw = _run_quality("krotki test", 120)
+    run_id, p, raw = _run_pipeline("krotki test", 120)
 
     dec = str(_get(p, "DECISION", "")).upper()
     block = _get(p, "BLOCK_PIPELINE", None)
@@ -54,13 +62,11 @@ def test_p16_quality_short_fail_and_block():
     assert block is True, f"run={run_id}, BLOCK_PIPELINE={block}"
     assert words < 120, f"run={run_id}, WORDS={words}"
     assert "MIN_WORDS" in reasons_txt, f"run={run_id}, REASONS={reasons}"
-
-    # JSON kontrakt: nie dopuszczamy zdublowanego lower-case key
-    assert re.search(r'"block_pipeline"\s*:', raw) is None, f"run={run_id} ma niedozwolony key block_pipeline"
+    assert '"block_pipeline"' not in raw, f"run={run_id} ma niedozwolony key block_pipeline"
 
 def test_p16_quality_long_accept_and_no_block():
-    long_text = " ".join([f"slowo{i}" for i in range(1, 141)])
-    run_id, p, raw = _run_quality(long_text, 120)
+    long_topic = " ".join([f"slowo{i}" for i in range(1, 141)])  # 140
+    run_id, p, raw = _run_pipeline(long_topic, 120)
 
     dec = str(_get(p, "DECISION", "")).upper()
     block = _get(p, "BLOCK_PIPELINE", None)
@@ -75,7 +81,4 @@ def test_p16_quality_long_accept_and_no_block():
     assert block is False, f"run={run_id}, BLOCK_PIPELINE={block}"
     assert words >= 120, f"run={run_id}, WORDS={words}"
     assert "MIN_WORDS" not in reasons_txt, f"run={run_id}, REASONS={reasons}"
-
-    # JSON kontrakt: nie dopuszczamy zdublowanego lower-case key
-    assert re.search(r'"block_pipeline"\s*:', raw) is None, f"run={run_id} ma niedozwolony key block_pipeline"
-
+    assert '"block_pipeline"' not in raw, f"run={run_id} ma niedozwolony key block_pipeline"

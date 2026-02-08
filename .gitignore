@@ -90,3 +90,5 @@ HANDOFF_EXIT_*.md
 reports/*
 !reports/.gitkeep
 reports/
+reports/
+HANDOFF_EXIT_*.md

@@ -201,6 +201,11 @@ def install_pytest_fastpath(app) -> None:
                         "tool": step_mode,
                         "decision": "ACCEPT",
                         "output": f"{step_mode} generated in fastpath",
+                        "payload": {
+                            "mode": step_mode,
+                            "text": f"{step_mode} generated in fastpath",
+                            "source": "PYTEST_FASTPATH"
+                        },
                     },
                     "text": f"{step_mode} generated in fastpath",
                 }
@@ -293,3 +298,4 @@ def install_pytest_fastpath(app) -> None:
             }, status_code=200)
 
         return await call_next(request)
+

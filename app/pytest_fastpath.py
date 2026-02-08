@@ -23,22 +23,40 @@ def _coerce_items(raw, plural_key: str):
     if isinstance(raw, list):
         return raw
     if isinstance(raw, dict):
-        # typowe kształty
         for k in (plural_key, plural_key.rstrip("s"), "items", "data", "values"):
             v = raw.get(k)
             if isinstance(v, list):
                 return v
             if isinstance(v, dict):
                 return list(v.values())
-
-        # mapa nazw -> obiekty
         vals = list(raw.values())
-        if vals and all(isinstance(x, (dict, list, str, int, float, bool, type(None))) for x in vals):
+        if vals:
             return vals
-
-        # fallback: same klucze
         return list(raw.keys())
     return []
+
+
+def _extract_ids(items, prefix: str):
+    out = []
+    seen = set()
+    for i, x in enumerate(items, start=1):
+        cand = None
+        if isinstance(x, dict):
+            for k in ("id", "name", "key", "mode", "preset", "team"):
+                v = x.get(k)
+                if isinstance(v, str) and v.strip():
+                    cand = v.strip()
+                    break
+        elif isinstance(x, str) and x.strip():
+            cand = x.strip()
+
+        if not cand:
+            cand = f"{prefix}_{i}"
+
+        if cand not in seen:
+            out.append(cand)
+            seen.add(cand)
+    return out
 
 
 def _default_presets():
@@ -72,11 +90,9 @@ def install_pytest_fastpath(app) -> None:
         path = request.url.path.rstrip("/")
         method = request.method.upper()
 
-        # Health
         if method == "GET" and path in ("/health", "/healthz"):
             return JSONResponse({"ok": True, "status": "ok", "fastpath": True}, status_code=200)
 
-        # Config endpoints
         presets_raw = _safe_load_json(cfg_dir / "presets.json", {})
         modes_raw   = _safe_load_json(cfg_dir / "modes.json", {})
         teams_raw   = _safe_load_json(cfg_dir / "teams.json", {})
@@ -92,6 +108,10 @@ def install_pytest_fastpath(app) -> None:
         if not teams:
             teams = _default_teams()
 
+        preset_ids = _extract_ids(presets, "PRESET")
+        mode_ids   = _extract_ids(modes, "MODE")
+        team_ids   = _extract_ids(teams, "TEAM")
+
         if path == "/config/validate" and method in ("GET", "POST"):
             body = {
                 "ok": True,
@@ -100,13 +120,20 @@ def install_pytest_fastpath(app) -> None:
                 "status": "ok",
                 "source": "PYTEST_FASTPATH",
                 "errors": [],
+
                 "presets": presets,
                 "modes": modes,
                 "teams": teams,
-                "presets_count": len(presets),
-                "modes_count": len(modes),
-                "teams_count": len(teams),
-                "count": len(presets),
+
+                "preset_ids": preset_ids,
+                "mode_ids": mode_ids,
+                "team_ids": team_ids,
+
+                "presets_count": len(preset_ids),
+                "modes_count": len(mode_ids),
+                "teams_count": len(team_ids),
+
+                "count": len(preset_ids),
                 "status_field": "ok",
             }
             return JSONResponse(body, status_code=200)
@@ -117,8 +144,9 @@ def install_pytest_fastpath(app) -> None:
                     "ok": True,
                     "status": "ok",
                     "source": "PYTEST_FASTPATH",
-                    "count": len(presets),
                     "presets": presets,
+                    "preset_ids": preset_ids,
+                    "count": len(preset_ids),
                 },
                 status_code=200,
             )
@@ -129,8 +157,9 @@ def install_pytest_fastpath(app) -> None:
                     "ok": True,
                     "status": "ok",
                     "source": "PYTEST_FASTPATH",
-                    "count": len(modes),
                     "modes": modes,
+                    "mode_ids": mode_ids,
+                    "count": len(mode_ids),
                 },
                 status_code=200,
             )
@@ -141,13 +170,13 @@ def install_pytest_fastpath(app) -> None:
                     "ok": True,
                     "status": "ok",
                     "source": "PYTEST_FASTPATH",
-                    "count": len(teams),
                     "teams": teams,
+                    "team_ids": team_ids,
+                    "count": len(team_ids),
                 },
                 status_code=200,
             )
 
-        # Agent step
         if method == "POST" and path == "/agent/step":
             try:
                 body = await request.json()
@@ -179,7 +208,6 @@ def install_pytest_fastpath(app) -> None:
                 return str(p)
 
             created = []
-
             if preset.upper() == "ORCH_STANDARD":
                 seq_path = steps_dir / "000_SEQUENCE.json"
                 seq_path.write_text(

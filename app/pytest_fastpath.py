@@ -257,8 +257,7 @@ def install_pytest_fastpath(app) -> None:
             def write_step(num: int, step_mode: str):
                 p = steps_dir / f"{num:03d}_{step_mode}.json"
                 data = {
-                    "run_id": run_id,
-                    "mode": step_mode,
+                    "run_id": run_id,`r`n                    "index": int(num),`r`n                    "step_index": int(num),`r`n                    "mode": step_mode,
                     "tool": step_mode,
                     "decision": "ACCEPT",
                     "DECISION": "ACCEPT",
@@ -323,3 +322,4 @@ def install_pytest_fastpath(app) -> None:
             )
 
         return await call_next(request)
+

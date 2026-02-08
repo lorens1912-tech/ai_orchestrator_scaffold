@@ -1,5 +1,59 @@
 from __future__ import annotations
 
+
+def _p15_hardfail_quality_payload(payload):
+    try:
+        if not isinstance(payload, dict):
+            return payload
+
+        reasons = payload.get("REASONS") or payload.get("reasons") or []
+        if not isinstance(reasons, list):
+            reasons = [reasons]
+
+        flags = payload.get("FLAGS") or payload.get("flags") or {}
+        if not isinstance(flags, dict):
+            flags = {}
+
+        stats = payload.get("STATS") or payload.get("stats") or {}
+        if not isinstance(stats, dict):
+            stats = {}
+
+        too_short = bool(flags.get("too_short", False)) or any("MIN_WORDS" in str(r).upper() for r in reasons)
+
+        if too_short:
+            payload["DECISION"] = "FAIL"
+            payload["BLOCK_PIPELINE"] = True
+
+            if not any("MIN_WORDS" in str(r).upper() for r in reasons):
+                words = stats.get("words", 0)
+                reasons.insert(0, f"MIN_WORDS: Words={words}.")
+            payload["REASONS"] = reasons
+
+            must_fix = payload.get("MUST_FIX") or payload.get("must_fix") or []
+            if not isinstance(must_fix, list):
+                must_fix = [must_fix]
+
+            found = False
+            for item in must_fix:
+                if isinstance(item, dict) and str(item.get("id", "")).upper() == "MIN_WORDS":
+                    item["severity"] = "FAIL"
+                    found = True
+
+            if not found:
+                must_fix.insert(0, {
+                    "id": "MIN_WORDS",
+                    "severity": "FAIL",
+                    "title": "Za mało słów",
+                    "detail": "Hard-fail P15",
+                    "hint": "Rozwiń tekst do minimum."
+                })
+            payload["MUST_FIX"] = must_fix
+
+        return payload
+    except Exception:
+        return payload
+
+
 import json
 import hashlib
 from pathlib import Path
@@ -204,4 +258,85 @@ def apply_team_runtime(payload: Dict[str, Any], mode: str) -> Tuple[Dict[str, An
     }
 
     return out, team_meta
+
+
+# P15_HARDFAIL_RUNTIME_WRAP_START
+def _p15_apply_hardfail_quality(out):
+    try:
+        if not isinstance(out, dict):
+            return out
+        if str(out.get("tool", "")).upper() != "QUALITY":
+            return out
+
+        p = out.get("payload")
+        if not isinstance(p, dict):
+            return out
+
+        reasons = p.get("REASONS") or p.get("reasons") or []
+        if not isinstance(reasons, list):
+            reasons = [reasons]
+
+        flags = p.get("FLAGS") or p.get("flags") or {}
+        if not isinstance(flags, dict):
+            flags = {}
+
+        stats = p.get("STATS") or p.get("stats") or {}
+        if not isinstance(stats, dict):
+            stats = {}
+
+        too_short = bool(flags.get("too_short", False)) or any("MIN_WORDS" in str(r).upper() for r in reasons)
+
+        if too_short:
+            p["DECISION"] = "FAIL"
+            p["BLOCK_PIPELINE"] = True
+
+            if not any("MIN_WORDS" in str(r).upper() for r in reasons):
+                reasons.insert(0, f"MIN_WORDS: Words={stats.get('words', 0)}.")
+            p["REASONS"] = reasons
+
+            must_fix = p.get("MUST_FIX") or p.get("must_fix") or []
+            if not isinstance(must_fix, list):
+                must_fix = [must_fix]
+
+            found = False
+            for it in must_fix:
+                if isinstance(it, dict) and str(it.get("id", "")).upper() == "MIN_WORDS":
+                    it["severity"] = "FAIL"
+                    found = True
+
+            if not found:
+                must_fix.insert(0, {
+                    "id": "MIN_WORDS",
+                    "severity": "FAIL",
+                    "title": "Za mało słów",
+                    "detail": "Hard-fail P15",
+                    "hint": "Rozwiń tekst do minimum."
+                })
+            p["MUST_FIX"] = must_fix
+            out["payload"] = p
+
+        return out
+    except Exception:
+        return out
+
+
+def _p15_wrap_quality_callable(fn):
+    def _wrapped(*args, **kwargs):
+        return _p15_apply_hardfail_quality(fn(*args, **kwargs))
+    _wrapped.__name__ = getattr(fn, "__name__", "wrapped_quality_fn")
+    _wrapped.__doc__ = getattr(fn, "__doc__", None)
+    return _wrapped
+
+
+for _n, _v in list(globals().items()):
+    if _n.startswith("_p15_"):
+        continue
+    if "quality" not in _n.lower():
+        continue
+    if not callable(_v):
+        continue
+    if getattr(_v, "__module__", None) != __name__:
+        continue
+    globals()[_n] = _p15_wrap_quality_callable(_v)
+# P15_HARDFAIL_RUNTIME_WRAP_END
 

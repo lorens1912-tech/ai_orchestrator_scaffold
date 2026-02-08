@@ -9,6 +9,60 @@ from fastapi import Request
 from starlette.responses import JSONResponse
 
 
+def _p15_hardfail_quality_payload(payload):
+    try:
+        if not isinstance(payload, dict):
+            return payload
+
+        reasons = payload.get("REASONS") or payload.get("reasons") or []
+        if not isinstance(reasons, list):
+            reasons = [reasons]
+
+        flags = payload.get("FLAGS") or payload.get("flags") or {}
+        if not isinstance(flags, dict):
+            flags = {}
+
+        stats = payload.get("STATS") or payload.get("stats") or {}
+        if not isinstance(stats, dict):
+            stats = {}
+
+        too_short = bool(flags.get("too_short", False)) or any("MIN_WORDS" in str(r).upper() for r in reasons)
+
+        if too_short:
+            payload["DECISION"] = "FAIL"
+            payload["BLOCK_PIPELINE"] = True
+
+            if not any("MIN_WORDS" in str(r).upper() for r in reasons):
+                words = stats.get("words", 0)
+                reasons.insert(0, f"MIN_WORDS: Words={words}.")
+            payload["REASONS"] = reasons
+
+            must_fix = payload.get("MUST_FIX") or payload.get("must_fix") or []
+            if not isinstance(must_fix, list):
+                must_fix = [must_fix]
+
+            found = False
+            for item in must_fix:
+                if isinstance(item, dict) and str(item.get("id", "")).upper() == "MIN_WORDS":
+                    item["severity"] = "FAIL"
+                    found = True
+
+            if not found:
+                must_fix.insert(0, {
+                    "id": "MIN_WORDS",
+                    "severity": "FAIL",
+                    "title": "Za mało słów",
+                    "detail": "Hard-fail P15",
+                    "hint": "Rozwiń tekst do minimum."
+                })
+            payload["MUST_FIX"] = must_fix
+
+        return payload
+    except Exception:
+        return payload
+
+
+
 def _safe_load_json(path: Path, default):
     try:
         if path.exists():

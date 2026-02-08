@@ -1,5 +1,59 @@
 from __future__ import annotations
 
+
+def _p15_hardfail_quality_payload(payload):
+    try:
+        if not isinstance(payload, dict):
+            return payload
+
+        reasons = payload.get("REASONS") or payload.get("reasons") or []
+        if not isinstance(reasons, list):
+            reasons = [reasons]
+
+        flags = payload.get("FLAGS") or payload.get("flags") or {}
+        if not isinstance(flags, dict):
+            flags = {}
+
+        stats = payload.get("STATS") or payload.get("stats") or {}
+        if not isinstance(stats, dict):
+            stats = {}
+
+        too_short = bool(flags.get("too_short", False)) or any("MIN_WORDS" in str(r).upper() for r in reasons)
+
+        if too_short:
+            payload["DECISION"] = "FAIL"
+            payload["BLOCK_PIPELINE"] = True
+
+            if not any("MIN_WORDS" in str(r).upper() for r in reasons):
+                words = stats.get("words", 0)
+                reasons.insert(0, f"MIN_WORDS: Words={words}.")
+            payload["REASONS"] = reasons
+
+            must_fix = payload.get("MUST_FIX") or payload.get("must_fix") or []
+            if not isinstance(must_fix, list):
+                must_fix = [must_fix]
+
+            found = False
+            for item in must_fix:
+                if isinstance(item, dict) and str(item.get("id", "")).upper() == "MIN_WORDS":
+                    item["severity"] = "FAIL"
+                    found = True
+
+            if not found:
+                must_fix.insert(0, {
+                    "id": "MIN_WORDS",
+                    "severity": "FAIL",
+                    "title": "Za mało słów",
+                    "detail": "Hard-fail P15",
+                    "hint": "Rozwiń tekst do minimum."
+                })
+            payload["MUST_FIX"] = must_fix
+
+        return payload
+    except Exception:
+        return payload
+
+
 import inspect
 import json
 from datetime import datetime
@@ -110,7 +164,7 @@ def _normalize_modes_list(modes: Any) -> List[str]:
 
 def resolve_modes(arg1: Any = None, arg2: Any = None, **kwargs) -> Tuple[List[str], Optional[str], Dict[str, Any]]:
     if kwargs:
-        payload = kwargs.get("payload") if isinstance(kwargs.get("payload"), dict) else {}
+        payload = _p15_hardfail_quality_payload(kwargs).get("payload") if isinstance(kwargs.get("payload"), dict) else {}
         preset_id = kwargs.get("preset_id") or kwargs.get("preset") or payload.get("preset")
         modes_kw = _normalize_modes_list(kwargs.get("modes"))
         if preset_id:
@@ -128,7 +182,7 @@ def resolve_modes(arg1: Any = None, arg2: Any = None, **kwargs) -> Tuple[List[st
         payload = {"preset": preset_id, "_preset_id": preset_id}
         return _preset_modes(preset_id), preset_id, payload
 
-    payload = arg1 if isinstance(arg1, dict) else arg2
+    payload = _p15_hardfail_quality_payload(arg1) if isinstance(arg1, dict) else arg2
     if not isinstance(payload, dict):
         raise TypeError("resolve_modes expects payload dict (or None, preset_id)")
 
@@ -176,7 +230,7 @@ def _normalize_execute_call(*args, **kwargs) -> Tuple[str, str, List[str], Dict[
     run_id = kwargs.get("run_id")
     book_id = kwargs.get("book_id")
     modes = kwargs.get("modes")
-    payload = kwargs.get("payload")
+    payload = _p15_hardfail_quality_payload(kwargs).get("payload")
     steps = kwargs.get("steps")
 
     rem: List[Any] = []
@@ -188,16 +242,16 @@ def _normalize_execute_call(*args, **kwargs) -> Tuple[str, str, List[str], Dict[
         if len(rem) >= 3 and isinstance(rem[0], str) and isinstance(rem[1], (list, tuple)) and isinstance(rem[2], dict):
             book_id = book_id or rem[0]
             modes = modes or list(rem[1])
-            payload = payload or rem[2]
+            payload = _p15_hardfail_quality_payload(payload) or rem[2]
             if len(rem) >= 4 and steps is None:
                 steps = rem[3]
         elif len(rem) >= 2 and isinstance(rem[0], (list, tuple)) and isinstance(rem[1], dict):
             modes = modes or list(rem[0])
-            payload = payload or rem[1]
+            payload = _p15_hardfail_quality_payload(payload) or rem[1]
             if len(rem) >= 3 and steps is None:
                 steps = rem[2]
         elif len(rem) >= 1 and isinstance(rem[0], dict):
-            payload = payload or rem[0]
+            payload = _p15_hardfail_quality_payload(payload) or rem[0]
 
     if not isinstance(payload, dict):
         payload = {}
@@ -223,7 +277,7 @@ def execute_stub(*args, **kwargs) -> List[str]:
     if not modes:
         seq, _preset_id, payload2 = resolve_modes(payload)
         modes = seq
-        payload = payload2
+        payload = _p15_hardfail_quality_payload(payload2)
 
     preset_id = payload.get("_preset_id") or payload.get("preset")
 

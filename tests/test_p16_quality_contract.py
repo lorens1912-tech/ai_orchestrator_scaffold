@@ -15,7 +15,7 @@ def _run_quality(text: str, min_words: int):
             "min_words": min_words
         }
     }
-    r = client.post("/agent/step", json=body, timeout=120)
+    r = client.post("/agent/step", json=body)
     assert r.status_code == 200, r.text
     data = r.json()
     run_id = data["run_id"]
@@ -78,3 +78,4 @@ def test_p16_quality_long_accept_and_no_block():
 
     # JSON kontrakt: nie dopuszczamy zdublowanego lower-case key
     assert re.search(r'"block_pipeline"\s*:', raw) is None, f"run={run_id} ma niedozwolony key block_pipeline"
+

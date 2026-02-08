@@ -1,3 +1,7 @@
 reports/*
 !reports/.gitkeep
 HANDOFF_EXIT_*.md
+**/__pycache__/
+.pytest_cache/
+runs/run_*/
+reports/P*_*.txt

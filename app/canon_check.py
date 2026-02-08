@@ -166,7 +166,7 @@ def canon_check(text: str, canon: Dict[str, Any], scene_ref: str = "") -> Dict[s
                 "type": "decision_violation",
                 "decision": "narration",
                 "BLOCK_PIPELINE": (str("narration").upper() == "FAIL"),
-                "block_pipeline": (str("narration").upper() == "FAIL"),
+                "BLOCK_PIPELINE": (str("narration").upper() == "FAIL"),
                 "expected": exp_narr,
                 "found": got_narr,
                 "scene_ref": scene_ref,

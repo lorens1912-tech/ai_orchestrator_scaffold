@@ -201,7 +201,7 @@ def tool_quality(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"tool":"QUALITY","payload":{
         "DECISION": r["decision"],
         "BLOCK_PIPELINE": (str(r["decision"]).upper() == "FAIL"),
-        "block_pipeline": (str(r["decision"]).upper() == "FAIL"),
+        "BLOCK_PIPELINE": (str(r["decision"]).upper() == "FAIL"),
         "REASONS": r["reasons"],
         "MUST_FIX": r["must_fix"],
         "STATS": r["stats"],

@@ -69,7 +69,7 @@ def evaluate_quality(text: str, *, min_words: int = 200, forbid_lists: bool = Tr
     return {
         "decision": decision,
         "BLOCK_PIPELINE": (str(decision).upper() == "FAIL"),
-        "block_pipeline": (str(decision).upper() == "FAIL"),
+        "BLOCK_PIPELINE": (str(decision).upper() == "FAIL"),
         "reasons": [f"{i.id}: {i.title}" for i in issues],
         "must_fix": [
             {"id": i.id, "severity": i.severity, "title": i.title, "detail": i.detail, "hint": i.hint}
@@ -103,7 +103,7 @@ if "_p15_orig_evaluate_quality" not in globals():
 
         # key aliases (upper/lower)
         decision_key = "DECISION" if "DECISION" in out else ("decision" if "decision" in out else "DECISION")
-        block_key = "BLOCK_PIPELINE" if "BLOCK_PIPELINE" in out else ("block_pipeline" if "block_pipeline" in out else "BLOCK_PIPELINE")
+        block_key = "BLOCK_PIPELINE" if "BLOCK_PIPELINE" in out else ("BLOCK_PIPELINE" if "BLOCK_PIPELINE" in out else "BLOCK_PIPELINE")
         reasons_key = "REASONS" if "REASONS" in out else ("reasons" if "reasons" in out else "REASONS")
         must_key = "MUST_FIX" if "MUST_FIX" in out else ("must_fix" if "must_fix" in out else "MUST_FIX")
         stats_key = "STATS" if "STATS" in out else ("stats" if "stats" in out else "STATS")

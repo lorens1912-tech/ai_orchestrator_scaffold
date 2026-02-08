@@ -70,21 +70,39 @@ def _latest_quality_payload(run_id: str):
 
 
 def _run_quality(preset_id: str, text: str, min_words: int):
+    import json
+    import time
+
+    # P18 FIX:
+    # - bez mode=QUALITY (żeby preset mógł wykonać pełny kontrakt)
+    # - topic zamiast text (spójnie z runtime)
     body = {
-        "mode": "QUALITY",
         "preset": preset_id,
         "payload": {
-            "text": text,
-            "min_words": min_words,
-        },
+            "topic": text,
+            "min_words": min_words
+        }
     }
+
+    # run_id bywa sekundowy -> minimalny odstęp, żeby uniknąć kolizji
+    time.sleep(1.05)
+
     r = client.post("/agent/step", json=body)
     assert r.status_code == 200, f"preset={preset_id}, status={r.status_code}, body={r.text}"
-    run_id = r.json()["run_id"]
-    payload, raw = _latest_quality_payload(run_id)
+
+    data = r.json()
+    run_id = data["run_id"]
+    steps_dir = Path("runs") / run_id / "steps"
+    q_files = sorted(steps_dir.glob("*_QUALITY.json"))
+
+    if not q_files:
+        return run_id, None, None
+
+    qf = q_files[-1]
+    raw = qf.read_text(encoding="utf-8")
+    doc = json.loads(raw)
+    payload = ((doc.get("result") or {}).get("payload"))
     return run_id, payload, raw
-
-
 def _get(payload: dict, key: str, default=None):
     if key in payload:
         return payload[key]

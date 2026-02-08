@@ -200,6 +200,8 @@ def tool_quality(payload: Dict[str, Any]) -> Dict[str, Any]:
     r = evaluate_quality(text, min_words=int(payload.get("min_words") or 200), forbid_lists=bool(payload.get("forbid_lists", True)))
     return {"tool":"QUALITY","payload":{
         "DECISION": r["decision"],
+        "BLOCK_PIPELINE": (str(r["decision"]).upper() == "FAIL"),
+        "block_pipeline": (str(r["decision"]).upper() == "FAIL"),
         "REASONS": r["reasons"],
         "MUST_FIX": r["must_fix"],
         "STATS": r["stats"],

@@ -68,6 +68,8 @@ def evaluate_quality(text: str, *, min_words: int = 200, forbid_lists: bool = Tr
 
     return {
         "decision": decision,
+        "BLOCK_PIPELINE": (str(decision).upper() == "FAIL"),
+        "block_pipeline": (str(decision).upper() == "FAIL"),
         "reasons": [f"{i.id}: {i.title}" for i in issues],
         "must_fix": [
             {"id": i.id, "severity": i.severity, "title": i.title, "detail": i.detail, "hint": i.hint}

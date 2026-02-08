@@ -20,8 +20,8 @@ function Get-ListenPids8000 {
 function Stop-Listen8000 {
   $pids = @(Get-ListenPids8000)
   if ($pids.Count -gt 0) {
-    foreach ($pid in $pids) {
-      try { Stop-Process -Id $pid -Force -ErrorAction Stop } catch {}
+    foreach ($procId in $pids) {
+      try { Stop-Process -Id $procId -Force -ErrorAction Stop } catch {}
     }
   }
 
@@ -132,3 +132,4 @@ finally {
     try { Stop-Process -Id $script:GuardServer.Id -Force -ErrorAction SilentlyContinue } catch {}
   }
 }
+

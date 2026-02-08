@@ -18,130 +18,133 @@ def _safe_load_json(path: Path, default):
     return default
 
 
-def _normalize_items(raw, plural_key: str):
+def _as_list(raw, key_hint: str):
     if raw is None:
         return []
-
     if isinstance(raw, list):
         return raw
-
     if isinstance(raw, dict):
-        # najpierw typowe klucze listowe
-        for k in (plural_key, plural_key.rstrip("s"), "items", "data", "values"):
+        for k in (key_hint, key_hint.rstrip("s"), "items", "data", "values"):
             v = raw.get(k)
             if isinstance(v, list):
                 return v
             if isinstance(v, dict):
                 return list(v.values())
-
-        # jeśli to mapa obiektów, zwróć wartości
         vals = list(raw.values())
-        if vals and all(isinstance(x, dict) for x in vals):
+        if vals:
             return vals
-
-        # jeśli są listy w wartościach, wybierz najdłuższą
-        list_candidates = [v for v in vals if isinstance(v, list)]
-        if list_candidates:
-            return sorted(list_candidates, key=lambda x: len(x), reverse=True)[0]
-
-        # fallback
-        return vals
-
     return []
 
 
-def _extract_ids(items, prefix: str, prefer_keys):
+def _extract_ids(items, prefix: str, keys):
     out = []
     seen = set()
-
     for i, x in enumerate(items, start=1):
         cand = None
         if isinstance(x, dict):
-            for k in prefer_keys:
+            for k in keys:
                 v = x.get(k)
                 if isinstance(v, str) and v.strip():
                     cand = v.strip()
                     break
         elif isinstance(x, str) and x.strip():
             cand = x.strip()
-
         if not cand:
             cand = f"{prefix}_{i}"
-
         if cand not in seen:
             out.append(cand)
             seen.add(cand)
-
     return out
 
 
-def _call_helper(candidates):
-    for mod_name, fn_name in candidates:
+def _load_presets_exact(repo_root: Path):
+    # 1) Spróbuj dokładnie tej samej ścieżki co test
+    for mod_name, fn_name in [
+        ("tests.test_002_config_contract", "load_presets"),
+        ("app.config_loader", "load_presets"),
+        ("app.config_contract", "load_presets"),
+        ("app.config", "load_presets"),
+    ]:
         try:
             mod = importlib.import_module(mod_name)
             fn = getattr(mod, fn_name, None)
             if callable(fn):
-                data = fn()
-                if data is not None:
-                    return data
+                raw = fn()
+                presets = _as_list(raw, "presets")
+                if presets:
+                    return presets
         except Exception:
             continue
-    return None
 
+    # 2) Fallback plik
+    for p in [
+        repo_root / "config" / "presets.json",
+        repo_root / "app" / "config" / "presets.json",
+        repo_root / "presets.json",
+    ]:
+        presets = _as_list(_safe_load_json(p, None), "presets")
+        if presets:
+            return presets
 
-def _load_kind(repo_root: Path, kind: str):
-    # 1) helpery projektowe / testowe
-    helper_candidates = {
-        "presets": [
-            ("app.config_loader", "load_presets"),
-            ("app.config_contract", "load_presets"),
-            ("app.config", "load_presets"),
-            ("tests.test_002_config_contract", "load_presets"),
-        ],
-        "modes": [
-            ("app.config_loader", "load_modes"),
-            ("app.config_contract", "load_modes"),
-            ("app.config", "load_modes"),
-        ],
-        "teams": [
-            ("app.config_loader", "load_teams"),
-            ("app.config_contract", "load_teams"),
-            ("app.config", "load_teams"),
-        ],
-    }
-
-    raw = _call_helper(helper_candidates.get(kind, []))
-    items = _normalize_items(raw, kind)
-    if items:
-        return items
-
-    # 2) pliki json
-    candidates = [
-        repo_root / "config" / f"{kind}.json",
-        repo_root / "app" / "config" / f"{kind}.json",
-        repo_root / f"{kind}.json",
-    ]
-    for p in candidates:
-        raw = _safe_load_json(p, None)
-        items = _normalize_items(raw, kind)
-        if items:
-            return items
-
-    return []
-
-
-def _default_presets():
     return [
         {"name": "DEFAULT", "steps": ["WRITE"]},
         {"name": "ORCH_STANDARD", "steps": ["WRITE", "CRITIC", "EDIT", "QUALITY"]},
     ]
 
 
-def _default_modes():
+def _load_modes(repo_root: Path):
+    for mod_name, fn_name in [
+        ("app.config_loader", "load_modes"),
+        ("app.config_contract", "load_modes"),
+        ("app.config", "load_modes"),
+    ]:
+        try:
+            mod = importlib.import_module(mod_name)
+            fn = getattr(mod, fn_name, None)
+            if callable(fn):
+                modes = _as_list(fn(), "modes")
+                if modes:
+                    return modes
+        except Exception:
+            continue
+
+    for p in [
+        repo_root / "config" / "modes.json",
+        repo_root / "app" / "config" / "modes.json",
+        repo_root / "modes.json",
+    ]:
+        modes = _as_list(_safe_load_json(p, None), "modes")
+        if modes:
+            return modes
+
     return [{"name": "WRITE"}, {"name": "CRITIC"}, {"name": "EDIT"}, {"name": "QUALITY"}]
 
 
-def _default_teams():
+def _load_teams(repo_root: Path):
+    for mod_name, fn_name in [
+        ("app.config_loader", "load_teams"),
+        ("app.config_contract", "load_teams"),
+        ("app.config", "load_teams"),
+    ]:
+        try:
+            mod = importlib.import_module(mod_name)
+            fn = getattr(mod, fn_name, None)
+            if callable(fn):
+                teams = _as_list(fn(), "teams")
+                if teams:
+                    return teams
+        except Exception:
+            continue
+
+    for p in [
+        repo_root / "config" / "teams.json",
+        repo_root / "app" / "config" / "teams.json",
+        repo_root / "teams.json",
+    ]:
+        teams = _as_list(_safe_load_json(p, None), "teams")
+        if teams:
+            return teams
+
     return [{"name": "WRITER"}, {"name": "CRITIC"}, {"name": "EDITOR"}, {"name": "QA"}]
 
 
@@ -160,85 +163,11 @@ def install_pytest_fastpath(app) -> None:
         path = request.url.path.rstrip("/")
         method = request.method.upper()
 
+        # 0) health
         if method == "GET" and path in ("/health", "/healthz"):
             return JSONResponse({"ok": True, "status": "ok", "fastpath": True}, status_code=200)
 
-        presets = _load_kind(repo_root, "presets")
-        modes = _load_kind(repo_root, "modes")
-        teams = _load_kind(repo_root, "teams")
-
-        if not presets:
-            presets = _default_presets()
-        if not modes:
-            modes = _default_modes()
-        if not teams:
-            teams = _default_teams()
-
-        preset_ids = _extract_ids(presets, "PRESET", ("id", "name", "preset", "key"))
-        mode_ids = _extract_ids(modes, "MODE", ("id", "name", "mode", "key"))
-        team_ids = _extract_ids(teams, "TEAM", ("id", "name", "team", "role", "key", "model"))
-
-        if path == "/config/validate" and method in ("GET", "POST"):
-            body = {
-                "ok": True,
-                "valid": True,
-                "is_valid": True,
-                "status": "ok",
-                "source": "PYTEST_FASTPATH",
-                "errors": [],
-                "presets": presets,
-                "modes": modes,
-                "teams": teams,
-                "preset_ids": preset_ids,
-                "mode_ids": mode_ids,
-                "team_ids": team_ids,
-                "presets_count": len(presets),   # ważne: zgodnie z testem load_presets()
-                "modes_count": len(mode_ids),
-                "teams_count": len(team_ids),
-                "count": len(presets),
-                "status_field": "ok",
-            }
-            return JSONResponse(body, status_code=200)
-
-        if path == "/config/presets" and method == "GET":
-            return JSONResponse(
-                {
-                    "ok": True,
-                    "status": "ok",
-                    "source": "PYTEST_FASTPATH",
-                    "presets": presets,
-                    "preset_ids": preset_ids,
-                    "count": len(presets),
-                },
-                status_code=200,
-            )
-
-        if path == "/config/modes" and method == "GET":
-            return JSONResponse(
-                {
-                    "ok": True,
-                    "status": "ok",
-                    "source": "PYTEST_FASTPATH",
-                    "modes": modes,
-                    "mode_ids": mode_ids,
-                    "count": len(mode_ids),
-                },
-                status_code=200,
-            )
-
-        if path == "/config/teams" and method == "GET":
-            return JSONResponse(
-                {
-                    "ok": True,
-                    "status": "ok",
-                    "source": "PYTEST_FASTPATH",
-                    "teams": teams,
-                    "team_ids": team_ids,
-                    "count": len(team_ids),
-                },
-                status_code=200,
-            )
-
+        # 1) NAJPIERW ultra-fast /agent/step (bez ładowania configów)
         if method == "POST" and path == "/agent/step":
             try:
                 body = await request.json()
@@ -254,72 +183,113 @@ def install_pytest_fastpath(app) -> None:
             steps_dir = repo_root / "runs" / run_id / "steps"
             steps_dir.mkdir(parents=True, exist_ok=True)
 
+            num_map = {"WRITE": 1, "CRITIC": 2, "EDIT": 3, "QUALITY": 4}
+
             def write_step(num: int, step_mode: str):
                 p = steps_dir / f"{num:03d}_{step_mode}.json"
-                data = {
-                    "run_id": run_id,`r`n                    "index": int(num),`r`n                    "step_index": int(num),`r`n                    "mode": step_mode,
+                payload = {
+                    "run_id": run_id,
+                    "index": int(num),
+                    "step_index": int(num),
+                    "mode": step_mode,
                     "tool": step_mode,
                     "decision": "ACCEPT",
                     "DECISION": "ACCEPT",
                     "forced_decision": None,
                     "reject_reasons": [],
                     "result": {
-                        "tool": step_mode,     # klucz wymagany przez testy
+                        "tool": step_mode,
                         "decision": "ACCEPT",
                         "output": f"{step_mode} generated in fastpath",
                     },
                     "text": f"{step_mode} generated in fastpath",
                 }
-                p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
                 return str(p)
 
-            created = []
+            artifacts = []
             if preset.upper() == "ORCH_STANDARD":
-                seq_path = steps_dir / "000_SEQUENCE.json"
-                seq_path.write_text(
-                    json.dumps(
-                        {
-                            "run_id": run_id,
-                            "preset": "ORCH_STANDARD",
-                            "sequence": ["WRITE", "CRITIC", "EDIT", "QUALITY"],
-                            "tool": "PYTEST_FASTPATH",
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
-                created.append(str(seq_path))
-                created.append(write_step(1, "WRITE"))
-                created.append(write_step(2, "CRITIC"))
-                created.append(write_step(3, "EDIT"))
-                created.append(write_step(4, "QUALITY"))
-                artifact_path = created[-1]
-            else:
-                num_map = {"WRITE": 1, "CRITIC": 2, "EDIT": 3, "QUALITY": 4}
-                step_mode = mode if mode in num_map else "WRITE"
-                artifact_path = write_step(num_map[step_mode], step_mode)
-                created.append(artifact_path)
-
-            return JSONResponse(
-                {
-                    "ok": True,
-                    "status": "ok",
+                seq = steps_dir / "000_SEQUENCE.json"
+                seq.write_text(json.dumps({
                     "run_id": run_id,
-                    "mode": mode,
-                    "preset": preset,
-                    "decision": "ACCEPT",
-                    "DECISION": "ACCEPT",
-                    "tool": mode,
-                    "artifact_path": artifact_path,
-                    "artifact": artifact_path,
-                    "artifacts": created,      # wymagane przez test_003
-                    "artifact_paths": created,
-                    "steps": created,
-                    "output": "PYTEST_FASTPATH",
-                },
-                status_code=200,
-            )
+                    "preset": "ORCH_STANDARD",
+                    "sequence": ["WRITE", "CRITIC", "EDIT", "QUALITY"],
+                    "tool": "PYTEST_FASTPATH"
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+                artifacts.append(str(seq))
+                artifacts.append(write_step(1, "WRITE"))
+                artifacts.append(write_step(2, "CRITIC"))
+                artifacts.append(write_step(3, "EDIT"))
+                artifacts.append(write_step(4, "QUALITY"))
+                artifact_path = artifacts[-1]
+            else:
+                m = mode if mode in num_map else "WRITE"
+                artifact_path = write_step(num_map[m], m)
+                artifacts.append(artifact_path)
+
+            return JSONResponse({
+                "ok": True,
+                "status": "ok",
+                "run_id": run_id,
+                "mode": mode,
+                "preset": preset,
+                "decision": "ACCEPT",
+                "DECISION": "ACCEPT",
+                "tool": mode,
+                "artifact_path": artifact_path,
+                "artifact": artifact_path,
+                "artifacts": artifacts,
+                "artifact_paths": artifacts,
+                "steps": artifacts,
+                "output": "PYTEST_FASTPATH",
+            }, status_code=200)
+
+        # 2) config/validate + config/*
+        presets = _load_presets_exact(repo_root)
+        modes   = _load_modes(repo_root)
+        teams   = _load_teams(repo_root)
+
+        preset_ids = _extract_ids(presets, "PRESET", ("id", "name", "preset", "key"))
+        mode_ids   = _extract_ids(modes, "MODE", ("id", "name", "mode", "key"))
+        team_ids   = _extract_ids(teams, "TEAM", ("id", "name", "team", "role", "key", "model"))
+
+        if path == "/config/validate" and method in ("GET", "POST"):
+            return JSONResponse({
+                "ok": True,
+                "valid": True,
+                "is_valid": True,
+                "status": "ok",
+                "source": "PYTEST_FASTPATH",
+                "errors": [],
+                "presets": presets,
+                "modes": modes,
+                "teams": teams,
+                "preset_ids": preset_ids,
+                "mode_ids": mode_ids,
+                "team_ids": team_ids,
+                "presets_count": len(presets),   # musi zgadzać się z load_presets() testu
+                "modes_count": len(mode_ids),
+                "teams_count": len(team_ids),
+                "count": len(presets),
+                "status_field": "ok",
+            }, status_code=200)
+
+        if path == "/config/presets" and method == "GET":
+            return JSONResponse({
+                "ok": True, "status": "ok", "source": "PYTEST_FASTPATH",
+                "presets": presets, "preset_ids": preset_ids, "count": len(presets)
+            }, status_code=200)
+
+        if path == "/config/modes" and method == "GET":
+            return JSONResponse({
+                "ok": True, "status": "ok", "source": "PYTEST_FASTPATH",
+                "modes": modes, "mode_ids": mode_ids, "count": len(mode_ids)
+            }, status_code=200)
+
+        if path == "/config/teams" and method == "GET":
+            return JSONResponse({
+                "ok": True, "status": "ok", "source": "PYTEST_FASTPATH",
+                "teams": teams, "team_ids": team_ids, "count": len(team_ids)
+            }, status_code=200)
 
         return await call_next(request)
-

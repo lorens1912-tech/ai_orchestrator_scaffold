@@ -86,3 +86,6 @@ reports/P13_PYTEST_*.txt
 archive/untracked/*.zip
 
 HANDOFF_EXIT_*.md
+
+reports/*
+!reports/.gitkeep

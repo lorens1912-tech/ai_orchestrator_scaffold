@@ -21,3 +21,4 @@
 - Komendy 1:1, bez placeholderów
 <!-- AUDYT_SNAPSHOT_POLICY_END -->
 
+

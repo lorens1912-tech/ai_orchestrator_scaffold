@@ -16,12 +16,9 @@ def _p15_hardfail_quality_payload(payload):
         if not isinstance(payload, dict):
 
 
+            payload = _p20_5_backfill_artifact_tool(payload)`r`n
+
             return payload
-
-
-
-
-
         reasons = payload.get("REASONS") or payload.get("reasons") or []
 
 
@@ -151,24 +148,18 @@ def _p15_hardfail_quality_payload(payload):
 
 
 
+        payload = _p20_5_backfill_artifact_tool(payload)`r`n
+
+
+
+
         return payload
-
-
     except Exception:
 
 
+        payload = _p20_5_backfill_artifact_tool(payload)`r`n
+
         return payload
-
-
-
-
-
-
-
-
-
-
-
 def _p15_force_fail(payload):
 
 
@@ -178,12 +169,9 @@ def _p15_force_fail(payload):
         if not isinstance(payload, dict):
 
 
+            payload = _p20_5_backfill_artifact_tool(payload)`r`n
+
             return payload
-
-
-
-
-
         reasons = payload.get("REASONS") or payload.get("reasons") or []
 
 
@@ -313,21 +301,18 @@ def _p15_force_fail(payload):
 
 
 
+        payload = _p20_5_backfill_artifact_tool(payload)`r`n
+
+
+
+
         return payload
-
-
     except Exception:
 
 
+        payload = _p20_5_backfill_artifact_tool(payload)`r`n
+
         return payload
-
-
-
-
-
-
-
-
 # === P6_PRESETS_CANONICAL_HELPER ===
 
 
@@ -1507,6 +1492,38 @@ def config_validate() -> Dict[str, Any]:
 
 
 
+
+def _p20_5_backfill_artifact_tool(obj):
+    try:
+        if not isinstance(obj, dict):
+            return obj
+
+        paths = obj.get("artifacts") or obj.get("artifact_paths") or []
+        if isinstance(paths, str):
+            paths = [paths]
+
+        if isinstance(obj.get("artifact_paths"), list) and not obj.get("artifacts"):
+            obj["artifacts"] = list(obj.get("artifact_paths") or [])
+
+        tool_value = obj.get("tool") or obj.get("mode") or "WRITE"
+        obj["tool"] = tool_value
+
+        for p in paths:
+            try:
+                if not isinstance(p, str):
+                    continue
+                with open(p, "r", encoding="utf-8") as f:
+                    step_obj = json.load(f)
+                if isinstance(step_obj, dict) and not step_obj.get("tool"):
+                    step_obj["tool"] = step_obj.get("mode") or tool_value
+                    with open(p, "w", encoding="utf-8") as f:
+                        json.dump(step_obj, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+
+        return obj
+    except Exception:
+        return obj
 @app.post("/agent/step")
 
 
@@ -2826,3 +2843,4 @@ async def _p20_5_mode_precedence_and_artifacts_alias(request: _P20Request, call_
 
     return await call_next(request)
 # --- /P20_5_MODE_PRECEDENCE_MIDDLEWARE ---
+

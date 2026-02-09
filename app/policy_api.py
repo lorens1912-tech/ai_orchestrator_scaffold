@@ -5,7 +5,7 @@ from app.policy_feedback import adjust_policy_from_feedback
 
 router = APIRouter()
 
-@router.post("/policy/adjust")
+@router.post("/policy/adjust", operation_id="policy_adjust_base")
 def policy_adjust(body: Dict[str, Any] = Body(...)):
     current_policy = body.get("current_policy") or {}
     feedback = body.get("feedback") or {}
@@ -14,3 +14,4 @@ def policy_adjust(body: Dict[str, Any] = Body(...)):
         feedback=feedback,
     )
     return {"status": "ok", "adjusted_policy": adjusted_policy, "audit": audit}
+

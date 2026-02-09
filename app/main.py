@@ -877,3 +877,23 @@ try:
     install_pytest_fastpath(app)
 except Exception:
     pass
+
+# P20_4_POLICY_START
+from typing import Any, Dict
+from fastapi import Body
+
+@app.post("/policy/adjust")
+def policy_adjust(body: Dict[str, Any] = Body(...)):
+    from app.policy_feedback import adjust_policy_from_feedback
+    current_policy = body.get("current_policy") or {}
+    feedback = body.get("feedback") or {}
+    adjusted_policy, audit = adjust_policy_from_feedback(current_policy=current_policy, feedback=feedback)
+    return {"status": "ok", "adjusted_policy": adjusted_policy, "audit": audit}
+# P20_4_POLICY_END
+
+
+
+# P20_4_ROUTER_INCLUDE_STRICT_START
+from app.policy_api import router as p20_4_policy_router
+app.include_router(p20_4_policy_router)
+# P20_4_ROUTER_INCLUDE_STRICT_END

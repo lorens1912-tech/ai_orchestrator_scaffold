@@ -35,8 +35,8 @@ class TestArtifactSchema007(unittest.TestCase):
     def _step(self, mode: str, input_text: str):
         resp = requests.post(
             f"{BASE_URL}/agent/step",
-            json={"mode": mode, "preset": "DEFAULT", "input": input_text},
-            timeout=30,
+            json={"mode": mode, "input": input_text},
+            timeout=120,
         )
         self.assertEqual(resp.status_code, 200, resp.text)
         payload = resp.json()

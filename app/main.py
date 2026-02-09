@@ -2760,5 +2760,69 @@ def policy_adjust_targeted(body: Dict[str, Any] = Body(...)):
 
 # P20_5_TARGETED_ENDPOINT_END
 
+# --- P20_5_MODE_PRECEDENCE_MIDDLEWARE (auto-injected) ---
+import json as _p20_json
+from fastapi import Request as _P20Request
+from fastapi.responses import JSONResponse as _P20JSONResponse, Response as _P20Response
 
+@app.middleware("http")
+async def _p20_5_mode_precedence_and_artifacts_alias(request: _P20Request, call_next):
+    if request.method.upper() == "POST" and request.url.path == "/agent/step":
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
 
+        if isinstance(body, dict):
+            mode = body.get("mode")
+            if isinstance(mode, str) and mode.strip():
+                mode = mode.strip().upper()
+                body["mode"] = mode
+                # Explicit mode must win over preset in single-step endpoint
+                body.pop("preset", None)
+                payload = body.get("payload")
+                if isinstance(payload, dict):
+                    payload["mode"] = mode
+                    payload.pop("preset", None)
+
+                raw = _p20_json.dumps(body).encode("utf-8")
+
+                async def _receive():
+                    return {"type": "http.request", "body": raw, "more_body": False}
+
+                request = _P20Request(request.scope, _receive)
+
+        response = await call_next(request)
+
+        # Backward-compatibility alias: artifacts <- artifact_paths
+        try:
+            ctype = (response.headers.get("content-type") or "").lower()
+            if "application/json" in ctype:
+                chunks = []
+                async for c in response.body_iterator:
+                    chunks.append(c)
+                raw = b"".join(chunks)
+                payload = _p20_json.loads(raw.decode("utf-8"))
+
+                if isinstance(payload, dict):
+                    if ("artifact_paths" in payload) and not payload.get("artifacts"):
+                        payload["artifacts"] = payload.get("artifact_paths") or []
+                    return _P20JSONResponse(
+                        status_code=response.status_code,
+                        content=payload,
+                        headers=dict(response.headers),
+                    )
+
+                return _P20Response(
+                    content=raw,
+                    status_code=response.status_code,
+                    media_type="application/json",
+                    headers=dict(response.headers),
+                )
+        except Exception:
+            return response
+
+        return response
+
+    return await call_next(request)
+# --- /P20_5_MODE_PRECEDENCE_MIDDLEWARE ---

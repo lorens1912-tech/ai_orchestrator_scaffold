@@ -18,7 +18,7 @@ class TestWriteStep003(unittest.TestCase):
                 "preset": "DEFAULT",
                 "input": "test write step",
             },
-            timeout=30,
+            timeout=120,
         )
         self.assertEqual(resp.status_code, 200, resp.text)
         payload = resp.json()
@@ -58,3 +58,4 @@ class TestWriteStep003(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

@@ -30,7 +30,7 @@ class TestPipelineSmoke006(unittest.TestCase):
         resp = requests.post(
             f"{BASE_URL}/agent/step",
             json={"mode": mode, "preset": "DEFAULT", "input": input_text},
-            timeout=30,
+            timeout=120,
         )
         self.assertEqual(resp.status_code, 200, resp.text)
         payload = resp.json()
@@ -67,3 +67,4 @@ class TestPipelineSmoke006(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

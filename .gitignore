@@ -16,3 +16,6 @@ _p15_patch_main_payload_wrap.py
 _p15_patch_wrap_quality_payload_all.py
 _p15_runtime_wrap_quality.py
 _p15_smoke_eval.py
+config/auto_retry_policy.json
+
+config/auto_retry_policy.json

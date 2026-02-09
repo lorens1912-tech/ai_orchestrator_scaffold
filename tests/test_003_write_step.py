@@ -15,7 +15,6 @@ class TestWriteStep003(unittest.TestCase):
             f"{BASE_URL}/agent/step",
             json={
                 "mode": "WRITE",
-                "preset": "DEFAULT",
                 "input": "test write step",
             },
             timeout=120,

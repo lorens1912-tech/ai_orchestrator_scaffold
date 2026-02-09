@@ -15,7 +15,6 @@ class TestCriticStep004(unittest.TestCase):
             f"{BASE_URL}/agent/step",
             json={
                 "mode": "CRITIC",
-                "preset": "DEFAULT",
                 "input": "test critic step",
             },
             timeout=120,

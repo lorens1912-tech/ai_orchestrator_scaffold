@@ -15,7 +15,6 @@ class TestEditStep005(unittest.TestCase):
             f"{BASE_URL}/agent/step",
             json={
                 "mode": "EDIT",
-                "preset": "DEFAULT",
                 "input": "test edit step",
             },
             timeout=120,

@@ -1612,6 +1612,20 @@ import json as _p20_json
 from fastapi import Request as _P20Request
 from fastapi.responses import JSONResponse as _P20JSONResponse, Response as _P20Response
 
+def _p20_5_recalc_content_length(response):
+    try:
+        if response is None:
+            response = _p20_5_recalc_content_length(response)
+            return response
+        body = getattr(response, "body", None)
+        if isinstance(body, (bytes, bytearray)):
+            response.headers["content-length"] = str(len(body))
+    except Exception:
+        pass
+    response = _p20_5_recalc_content_length(response)
+    return response
+
+
 @app.middleware("http")
 async def _p20_5_mode_precedence_and_artifacts_alias(request: _P20Request, call_next):
     if request.method.upper() == "POST" and request.url.path == "/agent/step":
@@ -1667,8 +1681,10 @@ async def _p20_5_mode_precedence_and_artifacts_alias(request: _P20Request, call_
                     headers=dict(response.headers),
                 )
         except Exception:
+            response = _p20_5_recalc_content_length(response)
             return response
 
+        response = _p20_5_recalc_content_length(response)
         return response
 
     return await call_next(request)

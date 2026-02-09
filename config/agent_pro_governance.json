@@ -1,0 +1,36 @@
+{
+  "project": "AgentAI PRO",
+  "governance_version": "2026-02-09",
+  "source_of_truth": {
+    "type": "AUDYT-SNAPSHOT",
+    "strict": true,
+    "rules": [
+      "AUDYT-SNAPSHOT is the only source of truth",
+      "No assumptions and no backtracking outside snapshot",
+      "Every new chat must start with AUDYT-SNAPSHOT",
+      "Every session end must update snapshot (save game)",
+      "No work start without snapshot"
+    ]
+  },
+  "workflow_protocol": {
+    "client_window": "🟢 KLIENT - all commands/tests",
+    "server_window": "🔵 SERWER - only uvicorn start/CTRL+C",
+    "command_rule": "always full 1:1 commands",
+    "path_rule": "no placeholders, only real values or runtime variables"
+  },
+  "architecture_invariants": [
+    "orchestrator + quality gate + state contracts remain unchanged",
+    "MODE/TEAM/PRESET decision layers remain unchanged",
+    "runs/books/config/reports remain file-based source of truth",
+    "deterministic step ordering and auditable artifacts"
+  ],
+  "roadmap_adoption": {
+    "adopt_now": ["P21", "P22", "P23", "P24_LIGHT", "P27", "P30", "P32"],
+    "later": ["P29_PARTIAL", "multimodal_importers", "editor_plugins", "gpu_tuning"],
+    "not_now": ["full_local_RLHF", "multi_gpu_hard_optimization", "swarm_replatform"]
+  },
+  "enforcement": {
+    "require_snapshot_before_guard": true,
+    "require_snapshot_before_release": true
+  }
+}

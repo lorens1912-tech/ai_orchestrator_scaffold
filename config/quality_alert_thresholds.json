@@ -1,0 +1,17 @@
+{
+  "window_events_min": 100,
+  "max_fail_rate": 0.30,
+  "max_block_rate": 0.30,
+  "max_empty_rate": 0.08,
+  "max_min_words_rate": 0.25,
+  "warn_fail_rate": 0.20,
+  "warn_block_rate": 0.20,
+  "warn_empty_rate": 0.04,
+  "warn_min_words_rate": 0.15,
+  "auto_retry": {
+    "enabled": true,
+    "max_retries": 1,
+    "retry_on": ["EMPTY", "MIN_WORDS"],
+    "cooldown_seconds": 0
+  }
+}

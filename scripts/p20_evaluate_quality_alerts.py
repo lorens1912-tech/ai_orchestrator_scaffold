@@ -1,181 +1,164 @@
-import argparse
-import datetime as dt
-import glob
+from __future__ import annotations
+
 import json
 import os
-import sys
+import glob
 from pathlib import Path
+from datetime import datetime
 
-def load_json(p: Path):
-    with p.open("r", encoding="utf-8") as f:
-        return json.load(f)
 
-def deep_find(obj, wanted_lower: set):
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if str(k).lower() in wanted_lower:
-                return v
-        for v in obj.values():
-            r = deep_find(v, wanted_lower)
-            if r is not None:
-                return r
-    elif isinstance(obj, list):
-        for it in obj:
-            r = deep_find(it, wanted_lower)
-            if r is not None:
-                return r
+def ci_get(d, *keys):
+    if not isinstance(d, dict):
+        return None
+    m = {str(k).lower(): v for k, v in d.items()}
+    for k in keys:
+        v = m.get(str(k).lower())
+        if v is not None and not (isinstance(v, str) and v.strip() == ""):
+            return v
     return None
 
-def to_float(v):
+
+def as_float(*vals):
+    for v in vals:
+        try:
+            if v is None:
+                continue
+            if isinstance(v, str) and v.strip() == "":
+                continue
+            return float(v)
+        except Exception:
+            pass
+    return None
+
+
+def as_int(*vals):
+    for v in vals:
+        try:
+            if v is None:
+                continue
+            if isinstance(v, str) and v.strip() == "":
+                continue
+            return int(float(v))
+        except Exception:
+            pass
+    return None
+
+
+def latest_file(pattern: str) -> Path | None:
+    xs = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+    return Path(xs[0]) if xs else None
+
+
+repo = Path(__file__).resolve().parents[1]
+telemetry_dir = repo / "reports" / "handoff" / "telemetry"
+telemetry_dir.mkdir(parents=True, exist_ok=True)
+
+summary_env = os.environ.get("P20_SUMMARY_FILE", "").strip()
+events_env = os.environ.get("P20_EVENTS_FILE", "").strip()
+out_env = os.environ.get("P20_ALERT_OUT", "").strip()
+
+summary_file = Path(summary_env) if summary_env else latest_file(str(telemetry_dir / "P20_QUALITY_SUMMARY_*.json"))
+events_file = Path(events_env) if events_env else latest_file(str(telemetry_dir / "P20_QUALITY_EVENTS_*.jsonl"))
+
+summary = {}
+if summary_file and summary_file.exists():
+    summary = json.loads(summary_file.read_text(encoding="utf-8"))
+
+metrics = ci_get(summary, "metrics", "stats", "summary")
+if not isinstance(metrics, dict):
+    metrics = {}
+
+events = as_int(
+    ci_get(summary, "events", "total_events", "count", "event_count"),
+    ci_get(metrics, "events", "total_events", "count", "event_count"),
+)
+
+if (events is None or events <= 0) and events_file and events_file.exists():
     try:
-        x = float(v)
-        # jeśli podane w % (np. 12), znormalizuj do 0.12
-        if x > 1.0 and x <= 100.0:
-            x = x / 100.0
-        return x
+        with events_file.open("r", encoding="utf-8") as f:
+            events = sum(1 for _ in f)
     except Exception:
-        return None
+        pass
 
-def to_int(v):
+fail_rate = as_float(
+    ci_get(summary, "fail_rate", "failure_rate"),
+    ci_get(metrics, "fail_rate", "failure_rate"),
+)
+reject_rate = as_float(
+    ci_get(summary, "reject_rate"),
+    ci_get(metrics, "reject_rate"),
+)
+min_words_fail_rate = as_float(
+    ci_get(summary, "min_words_fail_rate"),
+    ci_get(metrics, "min_words_fail_rate"),
+)
+
+# Progi
+defaults = {
+    "yellow": {"fail_rate": 0.15, "reject_rate": 0.08, "min_words_fail_rate": 0.12},
+    "red": {"fail_rate": 0.30, "reject_rate": 0.20, "min_words_fail_rate": 0.25},
+}
+thr_file = repo / "config" / "quality_alert_thresholds.json"
+cfg = {}
+if thr_file.exists():
     try:
-        return int(float(v))
+        cfg = json.loads(thr_file.read_text(encoding="utf-8"))
     except Exception:
-        return None
+        cfg = {}
 
-def pick_latest(pattern: str):
-    items = glob.glob(pattern)
-    if not items:
-        return None
-    items.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-    return Path(items[0])
+yellow = {
+    "fail_rate": as_float(ci_get(ci_get(cfg, "yellow") or {}, "fail_rate")) or defaults["yellow"]["fail_rate"],
+    "reject_rate": as_float(ci_get(ci_get(cfg, "yellow") or {}, "reject_rate")) or defaults["yellow"]["reject_rate"],
+    "min_words_fail_rate": as_float(ci_get(ci_get(cfg, "yellow") or {}, "min_words_fail_rate")) or defaults["yellow"]["min_words_fail_rate"],
+}
+red = {
+    "fail_rate": as_float(ci_get(ci_get(cfg, "red") or {}, "fail_rate")) or defaults["red"]["fail_rate"],
+    "reject_rate": as_float(ci_get(ci_get(cfg, "red") or {}, "reject_rate")) or defaults["red"]["reject_rate"],
+    "min_words_fail_rate": as_float(ci_get(ci_get(cfg, "red") or {}, "min_words_fail_rate")) or defaults["red"]["min_words_fail_rate"],
+}
 
-def read_thresholds(path: Path | None):
-    defaults = {
-        "fail_rate_yellow": 0.10, "fail_rate_red": 0.25,
-        "reject_rate_yellow": 0.05, "reject_rate_red": 0.15,
-        "min_words_fail_rate_yellow": 0.08, "min_words_fail_rate_red": 0.20
-    }
-    if not path or not path.exists():
-        return defaults
-    try:
-        j = load_json(path)
-    except Exception:
-        return defaults
-
-    def get(name, aliases, dflt):
-        v = deep_find(j, {a.lower() for a in aliases})
-        fv = to_float(v)
-        return dflt if fv is None else fv
-
-    out = {
-        "fail_rate_yellow": get("fail_rate_yellow", ["fail_rate_yellow","yellow_fail_rate","fail_yellow"], defaults["fail_rate_yellow"]),
-        "fail_rate_red": get("fail_rate_red", ["fail_rate_red","red_fail_rate","fail_red"], defaults["fail_rate_red"]),
-        "reject_rate_yellow": get("reject_rate_yellow", ["reject_rate_yellow","yellow_reject_rate","reject_yellow"], defaults["reject_rate_yellow"]),
-        "reject_rate_red": get("reject_rate_red", ["reject_rate_red","red_reject_rate","reject_red"], defaults["reject_rate_red"]),
-        "min_words_fail_rate_yellow": get("min_words_fail_rate_yellow", ["min_words_fail_rate_yellow","yellow_min_words_fail_rate","min_words_yellow"], defaults["min_words_fail_rate_yellow"]),
-        "min_words_fail_rate_red": get("min_words_fail_rate_red", ["min_words_fail_rate_red","red_min_words_fail_rate","min_words_red"], defaults["min_words_fail_rate_red"]),
-    }
-    return out
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--summary", default=os.environ.get("P20_SUMMARY_FILE",""))
-    ap.add_argument("--out", default=os.environ.get("P20_POLICY_OUT",""))
-    ap.add_argument("--thresholds", default=os.environ.get("P20_THRESHOLDS_FILE","config/quality_alert_thresholds.json"))
-    args = ap.parse_args()
-
-    summary_path = Path(args.summary) if args.summary else None
-    if summary_path is None or not summary_path.exists():
-        summary_path = pick_latest(r"reports\handoff\telemetry\P20_QUALITY_SUMMARY_*.json")
-    if summary_path is None or not summary_path.exists():
-        print("P20_ALERT_POLICY: UNKNOWN")
-        print("OUT: ")
-        print("ERROR: missing summary file", file=sys.stderr)
-        sys.exit(2)
-
-    out_path = Path(args.out) if args.out else None
-    if out_path is None or str(out_path).strip() == "":
-        ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_path = Path(rf"reports\handoff\telemetry\P20_ALERT_POLICY_{ts}.json")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    thresholds_path = Path(args.thresholds) if args.thresholds else Path("config/quality_alert_thresholds.json")
-    thresholds = read_thresholds(thresholds_path)
-
-    sj = load_json(summary_path)
-
-    events = to_int(deep_find(sj, {"events","total_events","count","event_count","total"}))
-    fail_rate = to_float(deep_find(sj, {"fail_rate","failure_rate","failratio","fails_ratio"}))
-    reject_rate = to_float(deep_find(sj, {"reject_rate","rejected_rate","rejectratio"}))
-    min_words_fail_rate = to_float(deep_find(sj, {"min_words_fail_rate","minwords_fail_rate","min_words_failure_rate"}))
-
-    reasons = []
-    policy = "GREEN"
-
-    if events is None or events <= 0:
-        policy = "RED"
-        reasons.append("NO_EVENTS")
-    else:
-        red_hits = []
-        yellow_hits = []
-
-        if fail_rate is not None:
-            if fail_rate >= thresholds["fail_rate_red"]:
-                red_hits.append(f"FAIL_RATE>={thresholds['fail_rate_red']}")
-            elif fail_rate >= thresholds["fail_rate_yellow"]:
-                yellow_hits.append(f"FAIL_RATE>={thresholds['fail_rate_yellow']}")
-        else:
-            reasons.append("MISSING_FAIL_RATE")
-
-        if reject_rate is not None:
-            if reject_rate >= thresholds["reject_rate_red"]:
-                red_hits.append(f"REJECT_RATE>={thresholds['reject_rate_red']}")
-            elif reject_rate >= thresholds["reject_rate_yellow"]:
-                yellow_hits.append(f"REJECT_RATE>={thresholds['reject_rate_yellow']}")
-        else:
-            reasons.append("MISSING_REJECT_RATE")
-
-        if min_words_fail_rate is not None:
-            if min_words_fail_rate >= thresholds["min_words_fail_rate_red"]:
-                red_hits.append(f"MIN_WORDS_FAIL_RATE>={thresholds['min_words_fail_rate_red']}")
-            elif min_words_fail_rate >= thresholds["min_words_fail_rate_yellow"]:
-                yellow_hits.append(f"MIN_WORDS_FAIL_RATE>={thresholds['min_words_fail_rate_yellow']}")
-        else:
-            reasons.append("MISSING_MIN_WORDS_FAIL_RATE")
-
-        if red_hits:
-            policy = "RED"
-            reasons.extend(red_hits)
-        elif yellow_hits:
-            policy = "YELLOW"
-            reasons.extend(yellow_hits)
-        elif fail_rate is None and reject_rate is None and min_words_fail_rate is None:
-            policy = "YELLOW"
-            reasons.append("MISSING_ALL_RATE_FIELDS")
-        else:
-            policy = "GREEN"
-            reasons.append("WITHIN_THRESHOLDS")
-
-    out = {
-        "project": "AgentAI PRO",
-        "phase": "P20.2",
-        "policy": policy,          # kanoniczne
-        "POLICY": policy,          # kompatybilność
-        "events": events,
+if events is None or events <= 0:
+    policy = "RED"
+    reason = "EVENTS_LE_ZERO_OR_NULL"
+else:
+    rates = {
         "fail_rate": fail_rate,
         "reject_rate": reject_rate,
         "min_words_fail_rate": min_words_fail_rate,
-        "reasons": reasons,
-        "summary_file": str(summary_path),
-        "thresholds_file": str(thresholds_path),
-        "generated_at": dt.datetime.now().isoformat(timespec="seconds")
     }
+    if all(v is None for v in rates.values()):
+        policy = "YELLOW"
+        reason = "NO_RATE_METRICS"
+    else:
+        above_red = any((rates[k] is not None and rates[k] >= red[k]) for k in rates.keys())
+        above_yellow = any((rates[k] is not None and rates[k] >= yellow[k]) for k in rates.keys())
+        if above_red:
+            policy = "RED"
+            reason = "RATE_ABOVE_RED"
+        elif above_yellow:
+            policy = "YELLOW"
+            reason = "RATE_ABOVE_YELLOW"
+        else:
+            policy = "GREEN"
+            reason = "WITHIN_GREEN"
 
-    with out_path.open("w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False, indent=2)
+ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+out_file = Path(out_env) if out_env else (telemetry_dir / f"P20_ALERT_POLICY_{ts}.json")
 
-    print(f"P20_ALERT_POLICY: {policy}")
-    print(f"OUT: {out_path}")
+payload = {
+    "policy": policy,
+    "reason": reason,
+    "events": events,
+    "total_events": events,
+    "count": events,
+    "fail_rate": fail_rate,
+    "reject_rate": reject_rate,
+    "min_words_fail_rate": min_words_fail_rate,
+    "summary_file": str(summary_file) if summary_file else "",
+    "events_file": str(events_file) if events_file else "",
+    "generated_at": datetime.now().isoformat(timespec="seconds"),
+}
 
-if __name__ == "__main__":
-    main()
+out_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+print(f"P20_ALERT_POLICY: {policy}")
+print(f"OUT: {out_file}")

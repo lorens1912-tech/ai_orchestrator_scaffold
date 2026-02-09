@@ -38,7 +38,7 @@ class TestPipelineSmoke006(unittest.TestCase):
         self.assertTrue(payload.get("ok"), f"ok != True: {payload}")
         self.assertTrue(payload.get("run_id"), f"Brak run_id: {payload}")
 
-        artifacts = _normalize_artifacts(payload.get("artifacts"))
+        artifacts = _normalize_artifacts(payload.get("artifacts") or payload.get("artifact_paths"))
         self.assertTrue(artifacts, f"Brak artifacts: {payload}")
 
         p = _abs_path(Path(artifacts[0]))

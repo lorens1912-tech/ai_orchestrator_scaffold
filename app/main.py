@@ -897,3 +897,25 @@ def policy_adjust(body: Dict[str, Any] = Body(...)):
 from app.policy_api import router as p20_4_policy_router
 app.include_router(p20_4_policy_router)
 # P20_4_ROUTER_INCLUDE_STRICT_END
+
+# P20_5_TARGETED_ENDPOINT_START
+from typing import Any, Dict
+from fastapi import Body
+
+@app.post("/policy/adjust/targeted")
+def policy_adjust_targeted(body: Dict[str, Any] = Body(...)):
+    from app.policy_targeted import adjust_policy_targeted
+    adjusted_policy, meta = adjust_policy_targeted(
+        current_policy=body.get("current_policy") or {},
+        feedback=body.get("feedback") or {},
+        preset=body.get("preset"),
+        mode=body.get("mode"),
+        flags=body.get("flags") or {},
+    )
+    return {
+        "status": "ok",
+        "adjusted_policy": adjusted_policy,
+        "audit": meta.get("audit", {}),
+        "telemetry": meta.get("telemetry", {}),
+    }
+# P20_5_TARGETED_ENDPOINT_END

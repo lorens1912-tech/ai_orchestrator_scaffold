@@ -1,34 +1,38 @@
 from __future__ import annotations
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 ALLOWED_STATUS = {"ok", "error"}
+
+def _norm_error_item(item: Any) -> Dict[str, Any]:
+    if isinstance(item, dict):
+        code = item.get("code", "E_GENERIC")
+        message = item.get("message")
+        if message is None:
+            message = str(item)
+        return {"code": str(code), "message": str(message)}
+    return {"code": "E_GENERIC", "message": str(item)}
+
+def _normalize_errors(errors: Optional[Any]) -> List[Dict[str, Any]]:
+    if errors is None:
+        return []
+    if isinstance(errors, list):
+        return [_norm_error_item(x) for x in errors]
+    return [_norm_error_item(errors)]
 
 def build_response(
     status: str = "ok",
     data: Optional[Dict[str, Any]] = None,
-    errors: Optional[Union[Any, List[Any]]] = None
+    errors: Optional[Any] = None
 ) -> Dict[str, Any]:
-    """
-    Buduje standardową odpowiedź API.
-    - Jeśli errors nie jest pusty → status automatycznie staje się 'error'
-    - errors zawsze jest listą (konwersja pojedynczego błędu na listę)
-    """
     if data is None:
         data = {}
+    norm_errors = _normalize_errors(errors)
 
-    if errors is None:
-        errors = []
-    elif not isinstance(errors, list):
-        errors = [errors]
+    # wymuszenie spójności kontraktu: niepuste errors => status=error
+    if norm_errors:
+        status = "error"
 
-    # Kluczowa logika: błędy wymuszają status 'error'
-    final_status = "error" if errors else status
-
-    return {
-        "status": final_status,
-        "data": data,
-        "errors": errors
-    }
+    return {"status": status, "data": data, "errors": norm_errors}
 
 def validate_response(resp: Any) -> bool:
     if not isinstance(resp, dict):
@@ -41,4 +45,9 @@ def validate_response(resp: Any) -> bool:
         return False
     if not isinstance(resp["errors"], list):
         return False
+    for e in resp["errors"]:
+        if not isinstance(e, dict):
+            return False
+        if "code" not in e or "message" not in e:
+            return False
     return True

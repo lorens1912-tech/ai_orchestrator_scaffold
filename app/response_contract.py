@@ -1,3 +1,15 @@
+Set-Location C:\AI\ai_orchestrator_scaffold
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+try { $global:PSNativeCommandUseErrorActionPreference = $true } catch {}
+
+# SANITY
+$branch = (git branch --show-current).Trim()
+if ($branch -ne "p26-pro-writer-runtime") { throw "UNEXPECTED_BRANCH: $branch (expected p26-pro-writer-runtime)" }
+Write-Host "P26_SANITY_OK branch=$branch"
+
+# 1) NAPRAWA KONTRAKTU (domyślny status='ok')
+@'
 from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
@@ -6,12 +18,14 @@ ALLOWED_STATUS = {"ok", "error"}
 def build_response(
     status: str = "ok",
     data: Optional[Dict[str, Any]] = None,
-    errors: Optional[List[Any]] = None
+    errors: Optional[Any] = None
 ) -> Dict[str, Any]:
     if data is None:
         data = {}
     if errors is None:
         errors = []
+    elif not isinstance(errors, list):
+        errors = [errors]
     return {"status": status, "data": data, "errors": errors}
 
 def validate_response(resp: Any) -> bool:

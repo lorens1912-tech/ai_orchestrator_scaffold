@@ -877,6 +877,30 @@ async def agent_step(req: AgentStepRequest) -> Dict[str, Any]:
 
         if req.preset and not payload.get("preset"):
 
+    # P26_PRO_WRITER_RUNTIME_HOOK_BEGIN
+    try:
+        _p26_mode = locals().get("mode", None)
+        _p26_preset = locals().get("preset", None)
+        _p26_payload = locals().get("payload", None)
+
+        if _p26_mode is None and "request" in locals():
+            _p26_mode = getattr(request, "mode", None)
+            _p26_preset = getattr(request, "preset", _p26_preset)
+            _p26_payload = getattr(request, "payload", _p26_payload)
+
+        if _p26_mode is None and "req" in locals():
+            _p26_mode = getattr(req, "mode", None)
+            _p26_preset = getattr(req, "preset", _p26_preset)
+            _p26_payload = getattr(req, "payload", _p26_payload)
+
+        _p26_handled, _p26_response, _p26_meta = try_pro_writer_lane(
+            mode=_p26_mode, preset=_p26_preset, payload=_p26_payload
+        )
+        if _p26_handled and isinstance(_p26_response, dict):
+            return _p26_response
+    except Exception:
+        pass
+    # P26_PRO_WRITER_RUNTIME_HOOK_END
             payload["preset"] = req.preset
 
         if req.mode and not req.modes:
@@ -1611,6 +1635,7 @@ def policy_adjust_targeted(body: Dict[str, Any] = Body(...)):
 import json as _p20_json
 from fastapi import Request as _P20Request
 from fastapi.responses import JSONResponse as _P20JSONResponse, Response as _P20Response
+from app.pro_writer_runtime import try_pro_writer_lane
 
 def _p20_5_recalc_content_length(response):
     try:

@@ -22,5 +22,3 @@ config/auto_retry_policy.json
 reports/
 runs/
 __pycache__/
-app/
-app/

@@ -6,7 +6,7 @@ from pathlib import Path
 import requests
 
 
-BASE = os.getenv("AGENT_BASE_URL", "http://127.0.0.1:8000")
+BASE = os.getenv("AGENT_BASE_URL", "http://127.0.0.1:8001")
 
 
 class Test050ProfileGuardAndDedupe(unittest.TestCase):
@@ -62,3 +62,4 @@ class Test050ProfileGuardAndDedupe(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

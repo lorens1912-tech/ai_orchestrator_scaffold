@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
-BASE = "http://127.0.0.1:8000"
+BASE = "http://127.0.0.1:8001"
 ROOT = Path(__file__).resolve().parents[1]
 
 def http_get(path: str):
@@ -73,5 +73,6 @@ class SmokeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 
 

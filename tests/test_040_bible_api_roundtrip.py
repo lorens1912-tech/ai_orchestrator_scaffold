@@ -3,7 +3,7 @@ import shutil
 from pathlib import Path
 import requests
 
-BASE = "http://127.0.0.1:8000"
+BASE = "http://127.0.0.1:8001"
 
 class TestBibleApi040(unittest.TestCase):
     def test_bible_patch_then_get_contains_character(self):
@@ -35,3 +35,4 @@ class TestBibleApi040(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

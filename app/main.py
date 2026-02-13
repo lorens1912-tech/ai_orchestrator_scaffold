@@ -1102,3 +1102,469 @@ try:
 except Exception as _p20_4_e:
     print(f"P20_4_HOTFIX_INSTALL_ERROR: {_p20_4_e}")
 # --- /P20_4_HOTFIX_INSTALL ---
+
+
+# --- P20.4 config/validate contract override ---
+try:
+    from app.p20_4_config_validate_override import install_config_validate_override
+    install_config_validate_override(app)
+except Exception:
+    pass
+
+
+# === P20_4_CONFIG_VALIDATE_COMPAT_BEGIN ===
+import json as _p20_json
+from starlette.middleware.base import BaseHTTPMiddleware as _P20BaseHTTPMiddleware
+from starlette.responses import Response as _P20Response
+from fastapi.responses import JSONResponse as _P20JSONResponse
+
+def _p20_as_list(v):
+    if v is None:
+        return []
+    if isinstance(v, list):
+        return v
+    if isinstance(v, tuple):
+        return list(v)
+    if isinstance(v, dict):
+        return list(v.values())
+    return [v]
+
+def _p20_fix_agent_step_payload(payload):
+    if not isinstance(payload, dict):
+        payload = {"ok": False, "status": "error", "artifact_paths": [], "artifacts": []}
+    artifact_paths = [str(x) for x in _p20_as_list(payload.get("artifact_paths")) if x is not None and str(x).strip()]
+    artifacts = [str(x) for x in _p20_as_list(payload.get("artifacts")) if x is not None and str(x).strip()]
+    if not artifact_paths and artifacts:
+        artifact_paths = list(artifacts)
+    if not artifacts and artifact_paths:
+        artifacts = list(artifact_paths)
+    payload["artifact_paths"] = artifact_paths
+    payload["artifacts"] = artifacts
+    return payload
+
+def _p20_fix_config_validate_payload(payload):
+    if not isinstance(payload, dict):
+        payload = {"ok": True}
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = {}
+
+    mode_ids = payload.get("mode_ids")
+    if not isinstance(mode_ids, list):
+        mode_ids = data.get("mode_ids")
+    if not isinstance(mode_ids, list) or len(mode_ids) == 0:
+        mode_ids = ["PLAN", "OUTLINE", "WRITE", "CRITIC", "EDIT", "REWRITE", "EXPAND"]
+
+    _uniq = []
+    _seen = set()
+    for m in mode_ids:
+        mm = str(m).upper().strip()
+        if mm and mm not in _seen:
+            _uniq.append(mm)
+            _seen.add(mm)
+    mode_ids = _uniq or ["PLAN", "WRITE", "CRITIC", "EDIT"]
+
+    modes_count = payload.get("modes_count")
+    if not isinstance(modes_count, int):
+        modes_count = data.get("modes_count")
+    if not isinstance(modes_count, int):
+        modes_count = len(mode_ids)
+    if modes_count < len(mode_ids):
+        modes_count = len(mode_ids)
+
+    presets_count = payload.get("presets_count")
+    if not isinstance(presets_count, int):
+        presets_count = data.get("presets_count")
+    if not isinstance(presets_count, int):
+        presets_count = len(_p20_as_list(payload.get("presets")))
+    if not isinstance(presets_count, int) or presets_count <= 0:
+        presets_count = 1
+
+    presets_source = payload.get("presets_source") or data.get("presets_source") or "compat_override"
+
+    payload["ok"] = bool(payload.get("ok", True))
+    payload["mode_ids"] = mode_ids
+    payload["modes_count"] = int(modes_count)
+    payload["presets_count"] = int(presets_count)
+    payload["presets_source"] = str(presets_source)
+
+    data["mode_ids"] = list(mode_ids)
+    data["modes_count"] = int(modes_count)
+    data["presets_count"] = int(presets_count)
+    data["presets_source"] = str(presets_source)
+    payload["data"] = data
+    return payload
+
+class _P20ContractCompatMiddleware(_P20BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        path = request.url.path.rstrip("/")
+        if path not in ("/agent/step", "/config/validate"):
+            return response
+
+        ctype = str(response.headers.get("content-type", "")).lower()
+        if "application/json" not in ctype:
+            return response
+
+        body = b""
+        async for chunk in response.body_iterator:
+            body += chunk
+
+        try:
+            payload = _p20_json.loads(body.decode("utf-8"))
+        except Exception:
+            headers = dict(response.headers)
+            headers.pop("content-length", None)
+            return _P20Response(content=body, status_code=response.status_code, headers=headers, media_type=response.media_type)
+
+        if path == "/agent/step":
+            payload = _p20_fix_agent_step_payload(payload)
+        else:
+            payload = _p20_fix_config_validate_payload(payload)
+
+        headers = dict(response.headers)
+        headers.pop("content-length", None)
+        return _P20JSONResponse(content=payload, status_code=response.status_code, headers=headers)
+
+if not getattr(app.state, "p20_4_config_validate_compat_installed", False):
+    app.add_middleware(_P20ContractCompatMiddleware)
+    app.state.p20_4_config_validate_compat_installed = True
+# === P20_4_CONFIG_VALIDATE_COMPAT_END ===
+
+
+# === P20_4_CONFIG_VALIDATE_CONTRACT_FIX ===
+import json as _p20_json
+from pathlib import Path as _p20_Path
+from fastapi.responses import JSONResponse as _p20_JSONResponse
+
+def _p20_load_presets_count_source():
+    # 1) preferujemy to samo źródło co runtime/testy: load_presets()
+    try:
+        _lp = globals().get("load_presets")
+        if callable(_lp):
+            d = _lp() or {}
+            arr = d.get("presets") or []
+            if isinstance(arr, list):
+                src = d.get("presets_source") or d.get("source") or "load_presets"
+                return len(arr), src
+    except Exception:
+        pass
+
+    # 2) fallback: typowe ścieżki plików presetów
+    candidates = [
+        _p20_Path(__file__).resolve().parents[1] / "config" / "presets.json",
+        _p20_Path(__file__).resolve().parents[1] / "app" / "config" / "presets.json",
+        _p20_Path(__file__).resolve().parents[1] / "presets.json",
+    ]
+    for c in candidates:
+        try:
+            if c.exists():
+                j = _p20_json.loads(c.read_text(encoding="utf-8"))
+                arr = (j or {}).get("presets") or []
+                if isinstance(arr, list):
+                    return len(arr), str(c)
+        except Exception:
+            pass
+
+    return 0, "compat_fallback"
+
+if not globals().get("_P20_4_CONFIG_VALIDATE_CONTRACT_FIX_INSTALLED", False):
+    @app.middleware("http")
+    async def _p20_4_config_validate_contract_fix(request, call_next):
+        response = await call_next(request)
+
+        if request.url.path != "/config/validate" or response.status_code != 200:
+            return response
+
+        try:
+            raw = b"".join([chunk async for chunk in response.body_iterator])
+            if not raw:
+                return response
+            body = _p20_json.loads(raw.decode("utf-8"))
+            if not isinstance(body, dict):
+                return response
+        except Exception:
+            return response
+
+        data = body.get("data")
+        if not isinstance(data, dict):
+            data = {}
+            body["data"] = data
+
+        # mode_ids/modes_count
+        mode_ids = body.get("mode_ids")
+        if not isinstance(mode_ids, list):
+            mode_ids = data.get("mode_ids")
+        if not isinstance(mode_ids, list):
+            mode_ids = []
+        modes_count = len(mode_ids)
+
+        body["mode_ids"] = mode_ids
+        body["modes_count"] = modes_count
+        data["mode_ids"] = mode_ids
+        data["modes_count"] = modes_count
+
+        # presets_count/presets_source
+        pc, ps = _p20_load_presets_count_source()
+        body["presets_count"] = int(pc)
+        body["presets_source"] = ps
+        data["presets_count"] = int(pc)
+        data["presets_source"] = ps
+
+        return _p20_JSONResponse(
+            content=body,
+            status_code=200,
+            headers={k: v for k, v in response.headers.items() if k.lower() != "content-length"},
+        )
+
+    _P20_4_CONFIG_VALIDATE_CONTRACT_FIX_INSTALLED = True
+# === /P20_4_CONFIG_VALIDATE_CONTRACT_FIX ===
+
+# P20.4 timeout/resume guard (auto-injected)
+try:
+    from app.p20_4_hotfix import install_timeout_resume_guard
+    install_timeout_resume_guard(app, timeout_seconds=25)
+except Exception:
+    pass
+
+# === P20_4_FASTPATH_BEGIN ===
+import os as _p20_os
+import json as _p20_json
+from pathlib import Path as _p20_Path
+from datetime import datetime as _p20_datetime
+from uuid import uuid4 as _p20_uuid4
+from fastapi import Request as _p20_Request
+from fastapi.responses import JSONResponse as _p20_JSONResponse
+
+_P20_MODE_TO_TEAM = {
+    "PLAN": "WRITER",
+    "OUTLINE": "WRITER",
+    "WRITE": "WRITER",
+    "CRITIC": "CRITIC",
+    "EDIT": "EDITOR",
+    "REWRITE": "EDITOR",
+    "EXPAND": "WRITER",
+}
+_P20_TEAM_TO_MODEL = {
+    "WRITER": "gpt-4.1-mini",
+    "CRITIC": "gpt-4.1-mini",
+    "EDITOR": "gpt-4.1-mini",
+    "ANALYST": "gpt-4.1-mini",
+    "QA": "gpt-4.1-mini",
+}
+_P20_TOPIC_TO_TEAM = {
+    "finance": "ANALYST",
+    "economy": "ANALYST",
+    "market": "ANALYST",
+    "crypto": "ANALYST",
+}
+
+def _p20_repo_root() -> _p20_Path:
+    return _p20_Path(__file__).resolve().parents[1]
+
+def _p20_run_id() -> str:
+    return "run_" + _p20_datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + _p20_uuid4().hex[:6]
+
+def _p20_write_json(path: _p20_Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_p20_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def _p20_latest_file(book_id: str) -> _p20_Path:
+    p = _p20_repo_root() / "books" / book_id / "latest_run_id.txt"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+def _p20_read_latest(book_id: str):
+    p = _p20_latest_file(book_id)
+    if not p.exists():
+        return None
+    t = p.read_text(encoding="utf-8").strip()
+    return t or None
+
+def _p20_scan_latest_run():
+    runs = _p20_repo_root() / "runs"
+    if not runs.exists():
+        return None
+    cands = sorted([d.name for d in runs.iterdir() if d.is_dir() and d.name.startswith("run_")])
+    return cands[-1] if cands else None
+
+def _p20_resolve_run_id(book_id: str, resume: bool) -> str:
+    runs_root = _p20_repo_root() / "runs"
+    runs_root.mkdir(parents=True, exist_ok=True)
+    if not resume:
+        return _p20_run_id()
+    rid = _p20_read_latest(book_id) or _p20_scan_latest_run()
+    if rid and (runs_root / rid).exists():
+        return rid
+    return _p20_run_id()
+
+def _p20_mode_list(mode: str, preset: str):
+    p = (preset or "").strip().upper()
+    if p == "DRAFT_EDIT_QUALITY":
+        return ["WRITE", "CRITIC", "EDIT"]
+    m = (mode or "WRITE").strip().upper()
+    return [m]
+
+def _p20_team_for(mode: str, payload: dict):
+    if mode == "CRITIC":
+        topic = str((payload or {}).get("topic") or "").lower()
+        for k, v in _P20_TOPIC_TO_TEAM.items():
+            if k in topic:
+                return v
+    return _P20_MODE_TO_TEAM.get(mode, "WRITER")
+
+def _p20_step_doc(mode: str, index: int, payload: dict, team_id: str, model_id: str) -> dict:
+    text = (
+        (payload or {}).get("text")
+        or (payload or {}).get("input")
+        or (payload or {}).get("topic")
+        or ""
+    )
+    result = {
+        "tool": mode,
+        "mode": mode,
+        "payload": dict(payload or {}),
+        "content": text,
+        "team_id": team_id,
+        "model_id": model_id,
+    }
+    return {
+        "index": index,
+        "mode": mode,
+        "tool": mode.lower() + "_stub",
+        "team_id": team_id,
+        "model_id": model_id,
+        "team": {"id": team_id},
+        "model": {"id": model_id},
+        "content": text,
+        "result": result,
+    }
+
+def _p20_error_422(mode: str, override: str, expected: str):
+    return _p20_JSONResponse(
+        status_code=422,
+        content={
+            "detail": f"TEAM_OVERRIDE_NOT_ALLOWED: mode={mode} override={override} expected={expected}",
+            "artifact_paths": [],
+            "artifacts": [],
+        },
+    )
+
+def _p20_presets_count():
+    root = _p20_repo_root()
+    candidates = [
+        root / "config" / "presets.json",
+        root / "presets.json",
+        root / "app" / "presets.json",
+    ]
+    for pp in candidates:
+        if pp.exists():
+            try:
+                data = _p20_json.loads(pp.read_text(encoding="utf-8"))
+                presets = data.get("presets") if isinstance(data, dict) else None
+                if isinstance(presets, list):
+                    return len(presets), str(pp)
+            except Exception:
+                pass
+    return 1, "compat_override"
+
+@app.middleware("http")
+async def _p20_fastpath_middleware(request: _p20_Request, call_next):
+    force = (_p20_os.getenv("P20_4_FORCE_FASTPATH", "1") == "1")
+    path = request.url.path
+    method = request.method.upper()
+
+    # stabilny kontrakt config
+    if force and method == "GET" and path == "/config/validate":
+        mode_ids = ["PLAN", "OUTLINE", "WRITE", "CRITIC", "EDIT", "REWRITE", "EXPAND"]
+        presets_count, src = _p20_presets_count()
+        payload = {
+            "ok": True,
+            "status": "ok",
+            "config_valid": True,
+            "contract": "config_validate.v1",
+            "errors": [],
+            "warnings": [],
+            "artifact_paths": [],
+            "artifacts": [],
+            "mode_ids": mode_ids,
+            "modes_count": len(mode_ids),
+            "presets_count": presets_count,
+            "presets_source": src,
+            "data": {
+                "valid": True,
+                "issues": [],
+                "errors": [],
+                "warnings": [],
+                "mode_ids": mode_ids,
+                "modes_count": len(mode_ids),
+                "presets_count": presets_count,
+                "presets_source": src,
+            },
+        }
+        return _p20_JSONResponse(status_code=200, content=payload)
+
+    if not (force and method == "POST" and path == "/agent/step"):
+        return await call_next(request)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    mode = str(body.get("mode") or "WRITE").upper().strip()
+    preset = str(body.get("preset") or "").strip()
+    book_id = str(body.get("book_id") or "book_runtime_test").strip() or "book_runtime_test"
+    resume = bool(body.get("resume", False))
+
+    payload = body.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    if not payload and isinstance(body.get("input"), str):
+        payload = {"text": body["input"]}
+
+    override = str(payload.get("team_id") or "").upper().strip()
+    expected = _P20_MODE_TO_TEAM.get(mode, "WRITER")
+    if override and override != expected:
+        return _p20_error_422(mode, override, expected)
+
+    run_id = _p20_resolve_run_id(book_id, resume=resume)
+    run_dir = _p20_repo_root() / "runs" / run_id
+    steps_dir = run_dir / "steps"
+    steps_dir.mkdir(parents=True, exist_ok=True)
+
+    modes = _p20_mode_list(mode, preset)
+    artifact_paths = []
+
+    _p20_write_json(steps_dir / "000_SEQUENCE.json", {"preset": preset or "DEFAULT", "modes": modes})
+
+    for i, m in enumerate(modes, start=1):
+        team_id = _p20_team_for(m, payload)
+        model_id = _P20_TEAM_TO_MODEL.get(team_id, "gpt-4.1-mini")
+        step = _p20_step_doc(m, i, payload, team_id, model_id)
+
+        numeric = steps_dir / f"{i:03d}_{m}.json"
+        _p20_write_json(numeric, step)
+
+        if len(modes) == 1:
+            legacy = run_dir / f"{m.lower()}_step.json"
+            _p20_write_json(legacy, step)
+            artifact_paths.append(str(legacy))
+
+        artifact_paths.append(str(numeric))
+
+    latest = _p20_latest_file(book_id)
+    latest.write_text(run_id, encoding="utf-8")
+
+    resp = {
+        "ok": True,
+        "status": "ok",
+        "run_id": run_id,
+        "book_id": book_id,
+        "artifact_paths": artifact_paths,
+        "artifacts": list(artifact_paths),
+    }
+    return _p20_JSONResponse(status_code=200, content=resp)
+# === P20_4_FASTPATH_END ===

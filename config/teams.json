@@ -1,10 +1,55 @@
 {
-  "teams": {
-    "WRITER":     { "model": "gpt-4.1-mini" },
-    "CRITIC":     { "model": "gpt-4.1-mini" },
-    "QA":         { "model": "gpt-4.1-mini" },
-    "CONTINUITY": { "model": "gpt-4.1-mini" },
-    "FACTCHECK":  { "model": "gpt-4.1-mini" },
-    "TRANSLATE":  { "model": "gpt-4.1-mini" }
-  }
+  "teams": [
+    {
+      "id": "CONTINUITY",
+      "policy_id": "version",
+      "modes": [
+        "CANON_CHECK",
+        "CONTINUITY"
+      ]
+    },
+    {
+      "id": "CRITIC",
+      "policy_id": "version",
+      "modes": [
+        "CRITIC"
+      ]
+    },
+    {
+      "id": "FACTCHECK",
+      "policy_id": "version",
+      "modes": [
+        "FACTCHECK"
+      ]
+    },
+    {
+      "id": "QA",
+      "policy_id": "version",
+      "modes": [
+        "QUALITY",
+        "UNIQUENESS"
+      ]
+    },
+    {
+      "id": "TRANSLATE",
+      "policy_id": "version",
+      "modes": [
+        "TRANSLATE"
+      ]
+    },
+    {
+      "id": "WRITER",
+      "policy_id": "version",
+      "modes": [
+        "CANON_EXTRACT",
+        "EDIT",
+        "EXPAND",
+        "OUTLINE",
+        "PLAN",
+        "REWRITE",
+        "STYLE",
+        "WRITE"
+      ]
+    }
+  ]
 }

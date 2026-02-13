@@ -414,3 +414,268 @@ def execute_stub(*args, **kwargs) -> List[str]:
     (book_dir / "latest.txt").write_text(latest_text, encoding="utf-8")
 
     return artifact_paths
+
+# === P26_HOTFIX_STUB_COMPAT_V1 ===
+from pathlib import Path as _P26Path
+import json as _p26_json
+import os as _p26_os
+
+try:
+    _p26_execute_stub_original = execute_stub
+except Exception:
+    _p26_execute_stub_original = None
+
+def _p26_team_for_mode(mode_name: str) -> str:
+    u = (mode_name or "").upper()
+    if u == "CRITIC":
+        return "CRITIC"
+    if u in {"QUALITY", "QA"}:
+        return "QA"
+    if u in {"CONTINUITY", "CANON_CHECK"}:
+        return "CONTINUITY"
+    if u == "FACTCHECK":
+        return "FACTCHECK"
+    if u == "TRANSLATE":
+        return "TRANSLATE"
+    return "WRITER"
+
+if callable(_p26_execute_stub_original):
+    def execute_stub(*args, **kwargs):
+        artifacts = _p26_execute_stub_original(*args, **kwargs)
+
+        req_model = _p26_os.getenv("WRITE_MODEL_FORCE") or _p26_os.getenv("WRITE_MODEL") or "gpt-4.1-mini"
+
+        run_id = kwargs.get("run_id")
+        if run_id is None and len(args) >= 1 and isinstance(args[0], str):
+            run_id = args[0]
+
+        # Dopnij _requested_model do artefaktów
+        try:
+            if isinstance(artifacts, str):
+                art_list = [artifacts]
+            elif isinstance(artifacts, dict):
+                art_list = list(artifacts.values())
+            elif isinstance(artifacts, list):
+                art_list = artifacts
+            else:
+                art_list = []
+
+            for ap in art_list:
+                p = _P26Path(str(ap))
+                if not p.exists():
+                    continue
+                try:
+                    obj = _p26_json.loads(p.read_text(encoding="utf-8"))
+                    inp = obj.get("input")
+                    if not isinstance(inp, dict):
+                        inp = {}
+                    inp["_requested_model"] = req_model
+                    obj["input"] = inp
+                    p.write_text(_p26_json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Dopnij team + effective_policy w stepach (w tym 000_SEQUENCE.json)
+        try:
+            if run_id:
+                steps_dir = _P26Path("runs") / run_id / "steps"
+                if steps_dir.exists():
+                    for sp in sorted(steps_dir.glob("*.json")):
+                        try:
+                            obj = _p26_json.loads(sp.read_text(encoding="utf-8"))
+                        except Exception:
+                            continue
+                        team = obj.get("team")
+                        if not isinstance(team, dict):
+                            team = {}
+                        mode_name = (obj.get("mode") or obj.get("tool") or "").upper()
+                        tid = team.get("id") or team.get("team_id") or _p26_team_for_mode(mode_name)
+                        team["id"] = tid
+                        team["team_id"] = tid
+                        obj["team"] = team
+                        if "effective_policy" not in obj or not isinstance(obj.get("effective_policy"), dict):
+                            obj["effective_policy"] = {"model": req_model}
+                        sp.write_text(_p26_json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+        return artifacts
+
+
+
+### P26_COMPAT_EXECUTE_STUB_START ###
+import os as _p26_os
+import json as _p26_json
+from pathlib import Path as _p26_Path
+
+_p26_execute_stub_orig = execute_stub
+
+def execute_stub(*args, **kwargs):
+    arts = _p26_execute_stub_orig(*args, **kwargs)
+    try:
+        forced = _p26_os.getenv("WRITE_MODEL_FORCE") or _p26_os.getenv("WRITE_MODEL") or "gpt-4.1-mini"
+        mode_to_team = {
+            "WRITE": "WRITER",
+            "EDIT": "WRITER",
+            "EXPAND": "WRITER",
+            "SUMMARIZE": "WRITER",
+            "CRITIC": "CRITIC",
+            "QUALITY": "QA",
+            "FACTCHECK": "FACTCHECK",
+            "CONTINUITY": "CONTINUITY",
+            "CANON_CHECK": "CONTINUITY",
+            "CANON_EXTRACT": "CONTINUITY",
+            "TRANSLATE": "TRANSLATE",
+        }
+
+        for ap in (arts or []):
+            p = _p26_Path(ap)
+            if not p.exists():
+                continue
+            try:
+                doc = _p26_json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+
+            inp = doc.setdefault("input", {})
+            if isinstance(inp, dict):
+                inp["_requested_model"] = inp.get("_requested_model") or forced
+                req_model = inp.get("_requested_model") or forced
+            else:
+                req_model = forced
+
+            result = doc.setdefault("result", {})
+            payload = result.setdefault("payload", {})
+            meta = payload.setdefault("meta", {})
+            meta["requested_model"] = req_model
+
+            team = doc.setdefault("team", {})
+            if p.name.endswith("_SEQUENCE.json"):
+                team.setdefault("id", "SYSTEM")
+                team.setdefault("policy_id", "SYSTEM")
+            else:
+                mode = str(doc.get("mode") or inp.get("mode") or "").upper()
+                if not (team.get("id") or team.get("team_id")):
+                    team["id"] = mode_to_team.get(mode, "WRITER")
+                if not team.get("policy_id"):
+                    team["policy_id"] = f'{team.get("id","WRITER")}_DEFAULT'
+
+            p.write_text(_p26_json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    return arts
+### P26_COMPAT_EXECUTE_STUB_END ###
+
+# === P26_HOTFIX_V3_EXECUTE_STUB_POSTFIX ===
+import json as _p26_json
+from pathlib import Path as _p26_Path
+
+if not globals().get("_P26_EXECUTE_STUB_WRAPPED", False):
+    _P26_EXECUTE_STUB_WRAPPED = True
+    _P26_EXECUTE_STUB_ORIG = execute_stub
+
+    def _p26_find_run_id(args, kwargs, out):
+        rid = kwargs.get("run_id")
+        if rid:
+            return str(rid)
+
+        if args:
+            first = args[0]
+            if isinstance(first, dict):
+                for k in ("run_id", "RUN_ID"):
+                    v = first.get(k)
+                    if v:
+                        return str(v)
+
+        candidates = []
+
+        def walk(x):
+            if isinstance(x, dict):
+                for v in x.values():
+                    walk(v)
+            elif isinstance(x, (list, tuple, set)):
+                for v in x:
+                    walk(v)
+            elif isinstance(x, str):
+                s = x.replace("\\", "/")
+                parts = [p for p in s.split("/") if p]
+                if "runs" in parts:
+                    i = parts.index("runs")
+                    if i + 1 < len(parts):
+                        candidates.append(parts[i + 1])
+
+        walk(out)
+        if candidates:
+            return candidates[-1]
+
+        runs = _p26_Path("runs")
+        if runs.exists():
+            ds = [d for d in runs.iterdir() if d.is_dir()]
+            if ds:
+                ds.sort(key=lambda d: d.stat().st_mtime)
+                return ds[-1].name
+        return None
+
+    def _p26_fix_step_file(fp: _p26_Path):
+        try:
+            obj = _p26_json.loads(fp.read_text(encoding="utf-8"))
+        except Exception:
+            return
+
+        if not isinstance(obj, dict):
+            return
+
+        team = obj.get("team")
+        if not isinstance(team, dict):
+            team = {}
+
+        team_id = team.get("id") or team.get("team_id") or obj.get("team_id") or obj.get("effective_team") or "SYSTEM"
+        team["id"] = str(team_id)
+
+        policy_id = team.get("policy_id")
+        meta_policy = None
+        try:
+            meta_policy = (((obj.get("result") or {}).get("payload") or {}).get("meta") or {}).get("policy_id")
+        except Exception:
+            meta_policy = None
+
+        if not policy_id:
+            policy_id = meta_policy or obj.get("policy_id") or "DEFAULT"
+        team["policy_id"] = str(policy_id)
+
+        obj["team"] = team
+
+        result = obj.get("result")
+        if not isinstance(result, dict):
+            result = {}
+            obj["result"] = result
+
+        payload = result.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+            result["payload"] = payload
+
+        meta = payload.get("meta")
+        if not isinstance(meta, dict):
+            meta = {}
+            payload["meta"] = meta
+
+        meta.setdefault("policy_id", team["policy_id"])
+        meta.setdefault("team_id", team["id"])
+
+        fp.write_text(_p26_json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def execute_stub(*args, **kwargs):
+        out = _P26_EXECUTE_STUB_ORIG(*args, **kwargs)
+        try:
+            rid = _p26_find_run_id(args, kwargs, out)
+            if rid:
+                step_dir = _p26_Path("runs") / str(rid) / "steps"
+                if step_dir.exists():
+                    for fp in sorted(step_dir.glob("*.json")):
+                        _p26_fix_step_file(fp)
+        except Exception:
+            pass
+        return out

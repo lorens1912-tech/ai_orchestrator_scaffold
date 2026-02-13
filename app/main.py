@@ -1094,3 +1094,11 @@ try:
 except Exception:
     pass
 # --- /AGENT_STEP_COMPAT_HOOK ---
+
+# --- P20_4_HOTFIX_INSTALL ---
+try:
+    from app.p20_4_hotfix import install as _p20_4_install
+    _p20_4_install(app)
+except Exception as _p20_4_e:
+    print(f"P20_4_HOTFIX_INSTALL_ERROR: {_p20_4_e}")
+# --- /P20_4_HOTFIX_INSTALL ---

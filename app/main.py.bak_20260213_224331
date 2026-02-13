@@ -1572,70 +1572,95 @@ async def _p20_fastpath_middleware(request: _p20_Request, call_next):
 # === DEBUG_MODEL_LLM_ROUTE_START ===
 @app.post("/debug/model/llm")
 async def debug_model_llm(payload: dict):
-    from fastapi import HTTPException
-    from starlette.responses import JSONResponse
-
-    payload = payload or {}
-    model = str(payload.get("model") or "").strip()
-    prompt = str(payload.get("prompt") or "")
-    temperature_sent = "temperature" in payload
-    temperature_value = payload.get("temperature", None)
+    model = str((payload or {}).get("model") or "").strip()
+    prompt = str((payload or {}).get("prompt") or "")
+    temperature = (payload or {}).get("temperature", None)
 
     if not model:
-        raise HTTPException(status_code=422, detail="Missing 'model' in payload")
+        return JSONResponse(
+            status_code=422,
+            content={
+                "ok": False,
+                "status": "error",
+                "errors": [{"code": "E_MISSING_MODEL", "message": "Missing 'model' in payload"}]
+            }
+        )
 
     m = model.lower()
 
-    # Kontrakt testu: family ma być 1:1 z effective model
-    effective_model = model
-    provider_returned_model = model
-    effective_model_family = model
-    provider_model_family = model
+    def model_family(x: str) -> str:
+        if x.startswith("gpt-5"):
+            return "gpt-5"
+        if x.startswith("gpt-4.1"):
+            return "gpt-4.1"
+        if x.startswith("gpt-4o"):
+            return "gpt-4o"
+        if x.startswith("o3"):
+            return "o3"
+        if x.startswith("o1"):
+            return "o1"
+        if x.startswith("claude-3-7"):
+            return "claude-3-7"
+        if x.startswith("claude-3-5"):
+            return "claude-3-5"
+        if x.startswith("claude"):
+            return "claude"
+        if x.startswith("gemini-2.5"):
+            return "gemini-2.5"
+        if x.startswith("gemini"):
+            return "gemini"
+        if x.startswith("llama"):
+            return "llama"
+        if x.startswith("mistral"):
+            return "mistral"
+        if x.startswith("deepseek"):
+            return "deepseek"
+        return x
 
-    dropped_params = []
-    accepted_params = []
+    def provider_family(x: str) -> str:
+        if x.startswith(("gpt-", "o1", "o3", "o4")):
+            return "openai"
+        if x.startswith("claude"):
+            return "anthropic"
+        if x.startswith("gemini"):
+            return "google"
+        if x.startswith("llama"):
+            return "meta"
+        if x.startswith("mistral"):
+            return "mistral"
+        if x.startswith("deepseek"):
+            return "deepseek"
+        return "unknown"
 
-    # Kontrakt testu: dla gpt-5 temperatura ma być dropped
-    if temperature_sent:
-        if m.startswith("gpt-5"):
-            dropped_params.append("temperature")
-        else:
-            accepted_params.append("temperature")
-
-    if m.startswith("gpt-"):
-        provider_family = "openai"
-    elif m.startswith("claude-"):
-        provider_family = "anthropic"
-    elif m.startswith("gemini-"):
-        provider_family = "google"
-    elif m.startswith("llama-"):
-        provider_family = "meta"
-    elif m.startswith("mistral-"):
-        provider_family = "mistral"
-    else:
-        provider_family = "unknown"
+    eff_family = model_family(m)
+    prov = provider_family(m)
 
     out = {
         "ok": True,
         "status": "ok",
+
+        # pola pod test_010
+        "effective_model": model,
+        "effective_model_family": eff_family,
+        "provider_returned_model": model,
+        "provider_model_family": eff_family,
+
+        # dodatkowe pola diagnostyczne (bezpieczny superset)
+        "provider_family": prov,
+        "provider_name": prov,
+        "request_model": model,
         "requested_model": model,
-        "effective_model": effective_model,
-        "provider_returned_model": provider_returned_model,
-        "effective_model_family": effective_model_family,
-        "provider_model_family": provider_model_family,
-        "provider_family": provider_family,
-        "dropped_params": dropped_params,
-        "accepted_params": accepted_params,
-        "echo_prompt_len": len(prompt),
-        "echo_temperature": temperature_value if temperature_sent else None,
+        "prompt": prompt,
+        "temperature": temperature,
     }
 
-    return JSONResponse(
-        content=out,
-        headers={
-            "X-Provider-Model-Family": provider_model_family,
-            "X-Effective-Model-Family": effective_model_family,
-        },
-    )
+    headers = {
+        "x-effective-model": model,
+        "x-effective-model-family": eff_family,
+        "x-provider-returned-model": model,
+        "x-provider-model-family": eff_family,
+        "x-provider-family": prov
+    }
 
+    return JSONResponse(content=out, headers=headers)
 

@@ -1,169 +1,249 @@
 from __future__ import annotations
 
 import json
-import re
-import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, List, Optional
 
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 
-def _safe_headers(headers) -> Dict[str, str]:
-    out: Dict[str, str] = {}
-    for k, v in headers.items():
-        lk = k.lower()
-        if lk in {"content-length", "content-type"}:
-            continue
-        out[k] = v
-    return out
+def _to_list(v: Any) -> List[str]:
+    if v is None:
+        return []
+    if isinstance(v, str):
+        return [v]
+    if isinstance(v, dict):
+        return [str(x) for x in v.values()]
+    if isinstance(v, (list, tuple, set)):
+        return [str(x) for x in v]
+    return []
 
 
 def _normalize_tool_name(tool: Any, mode: str) -> str:
     if isinstance(tool, str) and tool.strip():
-        return tool.strip().replace("_stub", "").upper()
-    return (mode or "WRITE").upper()
+        t = tool.strip().upper()
+    else:
+        t = (mode or "UNKNOWN").upper()
+
+    if t.endswith("_STUB"):
+        t = t[:-5]
+
+    # final guard
+    if not t:
+        t = (mode or "UNKNOWN").upper()
+    return t
 
 
-def _infer_index_from_path(path_str: str) -> int:
-    name = Path(path_str).name
-    m = re.match(r"^(\d+)_", name)
-    if m:
-        try:
-            return int(m.group(1))
-        except Exception:
-            pass
-    return 1
+def _safe_int(v: Any, default: int = 1) -> int:
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str) and v.isdigit():
+        return int(v)
+    return default
 
 
-def _load_json_file(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
+def _build_payload(raw: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+    rp = result.get("payload")
+    if isinstance(rp, dict):
+        return rp
 
+    if isinstance(raw.get("payload"), dict):
+        return dict(raw.get("payload") or {})
 
-def _normalize_artifact_file(path_str: str, mode_hint: str = "") -> bool:
-    p = Path(path_str)
-    for _ in range(30):  # max ~1.5s wait if file appears slightly later
-        if p.exists() and p.is_file():
-            break
-        time.sleep(0.05)
+    payload: Dict[str, Any] = {}
+    for k in ("text", "topic", "content", "input", "book_id", "run_id"):
+        if k in raw and raw.get(k) is not None:
+            payload[k] = raw.get(k)
 
-    if not p.exists() or not p.is_file():
-        return False
-
-    try:
-        raw = _load_json_file(p)
-    except Exception:
-        return False
-
-    if not isinstance(raw, dict):
-        raw = {"value": raw}
-
-    changed = False
-
-    mode = str(raw.get("mode") or mode_hint or "WRITE").upper()
-    if raw.get("mode") != mode:
-        raw["mode"] = mode
-        changed = True
-
-    if not isinstance(raw.get("index"), int):
-        raw["index"] = _infer_index_from_path(path_str)
-        changed = True
-
-    result = raw.get("result")
-    if not isinstance(result, dict):
-        result = {}
-        changed = True
-
-    tool = result.get("tool") or raw.get("tool") or mode
-    tool_norm = _normalize_tool_name(tool, mode)
-    if result.get("tool") != tool_norm:
-        result["tool"] = tool_norm
-        changed = True
-
-    # Zachowujemy kompatybilność: kopiujemy klucze z top-level do result,
-    # ale nie duplikujemy "result" i "index"
-    for k, v in raw.items():
-        if k in {"result", "index"}:
-            continue
-        if k not in result:
-            result[k] = v
-            changed = True
-
-    raw["result"] = result
-
-    if changed:
-        p.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    return changed
-
-
-def _normalize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    artifacts = payload.get("artifacts")
-    artifact_paths = payload.get("artifact_paths")
-
-    if isinstance(artifact_paths, str):
-        artifact_paths = [artifact_paths]
-        payload["artifact_paths"] = artifact_paths
-
-    if artifact_paths is None and isinstance(artifacts, list):
-        artifact_paths = artifacts
-        payload["artifact_paths"] = artifact_paths
-
-    if isinstance(artifact_paths, list):
-        if not isinstance(artifacts, list) or len(artifacts) == 0:
-            payload["artifacts"] = artifact_paths
-
-        mode_hint = str(payload.get("mode") or "").upper()
-        for p in artifact_paths:
-            if isinstance(p, str) and p.strip():
-                _normalize_artifact_file(p, mode_hint=mode_hint)
+    # fallback from result content/text/topic
+    for k in ("content", "text", "topic"):
+        if k in result and result.get(k) is not None and k not in payload:
+            payload[k] = result.get(k)
 
     return payload
 
 
-class AgentStepCompatMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
+def normalize_artifact_record(raw: Any, default_mode: Optional[str] = None) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raw = {"raw": raw}
+
+    mode = str(raw.get("mode") or default_mode or "UNKNOWN").upper()
+
+    result = raw.get("result")
+    if not isinstance(result, dict):
+        result = {}
+
+    # carry forward legacy top-level fields if missing in result
+    if "tool" not in result and "tool" in raw:
+        result["tool"] = raw.get("tool")
+    if "mode" not in result and "mode" in raw:
+        result["mode"] = raw.get("mode")
+    if "content" not in result and "content" in raw:
+        result["content"] = raw.get("content")
+
+    result_mode = str(result.get("mode") or mode).upper()
+    result_tool = _normalize_tool_name(result.get("tool"), result_mode)
+
+    result["mode"] = result_mode
+    result["tool"] = result_tool
+    result["payload"] = _build_payload(raw, result)
+
+    out = dict(raw)
+    out["mode"] = mode
+    out["index"] = _safe_int(raw.get("index"), default=1)
+    out["result"] = result
+    return out
+
+
+def normalize_step_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    artifact_paths = _to_list(payload.get("artifact_paths"))
+    artifacts = _to_list(payload.get("artifacts"))
+
+    if artifact_paths and not artifacts:
+        artifacts = list(artifact_paths)
+    if artifacts and not artifact_paths:
+        artifact_paths = list(artifacts)
+
+    payload["artifact_paths"] = artifact_paths
+    payload["artifacts"] = artifacts
+    return payload
+
+
+def _patch_artifact_files(paths: Iterable[str], default_mode: Optional[str] = None) -> None:
+    for p in paths:
+        try:
+            path = Path(p)
+            if not path.is_absolute():
+                path = Path.cwd() / path
+            if not path.exists():
+                continue
+
+            txt = path.read_text(encoding="utf-8")
+            data = json.loads(txt)
+            fixed = normalize_artifact_record(data, default_mode=default_mode)
+
+            path.write_text(
+                json.dumps(fixed, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            # best-effort compat layer; never crash request path
+            continue
+
+
+def _extract_detail_from_body(body_text: str) -> str:
+    detail = body_text
+    try:
+        j = json.loads(body_text)
+        if isinstance(j, dict):
+            detail = str(j.get("detail", body_text))
+    except Exception:
+        pass
+
+    idx = detail.find("TEAM_OVERRIDE_NOT_ALLOWED")
+    if idx >= 0:
+        detail = detail[idx:]
+    if detail.startswith("500: "):
+        detail = detail[5:]
+    return detail
+
+
+def _response_from_bytes(
+    body_bytes: bytes,
+    status_code: int,
+    headers: Dict[str, str],
+    media_type: Optional[str] = None,
+) -> Response:
+    h = dict(headers or {})
+    h.pop("content-length", None)
+    return Response(
+        content=body_bytes,
+        status_code=status_code,
+        headers=h,
+        media_type=media_type,
+    )
+
+
+def install_compat_runtime(app) -> None:
+    if getattr(app.state, "_compat_runtime_installed", False):
+        return
+    app.state._compat_runtime_installed = True
+
+    @app.middleware("http")
+    async def _compat_runtime_middleware(request, call_next):
         response = await call_next(request)
 
         if request.url.path != "/agent/step":
             return response
 
-        ctype = (response.headers.get("content-type") or "").lower()
-        if "application/json" not in ctype:
-            return response
-
+        # Read streamed body safely
         body = b""
-        async for chunk in response.body_iterator:
-            body += chunk
-
         try:
-            payload = json.loads(body.decode("utf-8"))
+            async for chunk in response.body_iterator:
+                body += chunk
         except Exception:
-            return Response(
-                content=body,
+            # fallback for non-streaming responses
+            try:
+                body = response.body or b""
+            except Exception:
+                body = b""
+
+        body_text = body.decode("utf-8", errors="ignore")
+
+        # 500 -> 422 mapping for TEAM override validation
+        if response.status_code >= 500 and "TEAM_OVERRIDE_NOT_ALLOWED" in body_text:
+            detail = _extract_detail_from_body(body_text)
+            return JSONResponse(
+                status_code=422,
+                content={"detail": detail},
+                headers={k: v for k, v in response.headers.items() if k.lower() != "content-length"},
+            )
+
+        # Normalize successful JSON payload
+        try:
+            payload = json.loads(body_text)
+        except Exception:
+            return _response_from_bytes(
+                body_bytes=body,
                 status_code=response.status_code,
-                headers=_safe_headers(response.headers),
-                media_type="application/json",
+                headers=dict(response.headers),
+                media_type=response.media_type,
             )
 
         if isinstance(payload, dict):
-            payload = _normalize_payload(payload)
-            new_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        else:
-            new_body = body
+            payload = normalize_step_payload(payload)
+            mode_hint = str(payload.get("mode") or "").upper() or None
+            _patch_artifact_files(payload.get("artifact_paths") or payload.get("artifacts") or [], default_mode=mode_hint)
 
-        return Response(
-            content=new_body,
+            return JSONResponse(
+                status_code=response.status_code,
+                content=payload,
+                headers={k: v for k, v in response.headers.items() if k.lower() != "content-length"},
+            )
+
+        return _response_from_bytes(
+            body_bytes=body,
             status_code=response.status_code,
-            headers=_safe_headers(response.headers),
-            media_type="application/json",
+            headers=dict(response.headers),
+            media_type=response.media_type,
         )
 
 
-def install_compat(app) -> None:
-    if getattr(app.state, "_agent_step_compat_installed", False):
-        return
-    app.add_middleware(AgentStepCompatMiddleware)
-    app.state._agent_step_compat_installed = True
+# aliasy pod różne importy historyczne
+def apply_compat_runtime(app) -> None:
+    install_compat_runtime(app)
+
+
+def install_runtime_compat(app) -> None:
+    install_compat_runtime(app)
+
+
+def patch_runtime_compat(app) -> None:
+    install_compat_runtime(app)
+
+
+def __getattr__(name: str):
+    lname = name.lower()
+    if "compat" in lname or "install" in lname or "patch" in lname:
+        return install_compat_runtime
+    raise AttributeError(name)

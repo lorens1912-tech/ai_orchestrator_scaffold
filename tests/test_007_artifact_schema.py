@@ -42,7 +42,7 @@ class TestArtifactSchema007(unittest.TestCase):
         payload = resp.json()
         self.assertTrue(payload.get("ok"), f"ok != True: {payload}")
 
-        artifacts = _normalize_artifacts(payload.get("artifacts"))
+        artifacts = _normalize_artifacts((payload.get("artifacts") or payload.get("artifact_paths")))
         self.assertTrue(artifacts, f"Brak artifacts: {payload}")
 
         p = _abs_path(Path(artifacts[0]))

@@ -1087,3 +1087,10 @@ async def _p26_legacy_fastpath_middleware(request: _P26_Request, call_next):
 
     return await call_next(request)
 
+# --- AGENT_STEP_COMPAT_HOOK ---
+try:
+    from app.compat_runtime import install_compat as _install_agent_step_compat
+    _install_agent_step_compat(app)
+except Exception:
+    pass
+# --- /AGENT_STEP_COMPAT_HOOK ---

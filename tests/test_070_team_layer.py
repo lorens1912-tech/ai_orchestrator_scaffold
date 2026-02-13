@@ -84,3 +84,4 @@ class Test070TeamLayer(unittest.TestCase):
 
         artifacts = _artifacts_from_payload(j)
         self.assertGreaterEqual(len(artifacts), 1, j)
+

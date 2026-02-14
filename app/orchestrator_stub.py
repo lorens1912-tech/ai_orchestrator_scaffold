@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import copy
@@ -7,7 +6,6 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
-from uuid import uuid4
 
 TOOL_BY_MODE: Dict[str, str] = {
     "PLAN": "plan",
@@ -29,78 +27,86 @@ TOOL_BY_MODE: Dict[str, str] = {
 MODE_TO_TOOL = TOOL_BY_MODE
 
 
+class ResolvedModes(dict):
+    """
+    Dict-like + tuple-unpack compatible container:
+    mode, strict_team, team_id = resolve_modes(...)
+    """
+
+    def __iter__(self):
+        yield self.get("mode")
+        yield self.get("strict_team")
+        yield self.get("team_id")
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _deep_dict(value: Any) -> Dict[str, Any]:
-    if isinstance(value, dict):
-        return copy.deepcopy(value)
-    return {}
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return copy.deepcopy(value) if isinstance(value, dict) else {}
 
 
 def _first_non_empty_str(*values: Any) -> Optional[str]:
-    for value in values:
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+    for v in values:
+        if isinstance(v, str) and v.strip():
+            return v.strip()
     return None
 
 
-def _team_id_from_payload(payload: Dict[str, Any]) -> Optional[str]:
-    team = _deep_dict(payload.get("team"))
-    runtime = _deep_dict(payload.get("runtime"))
-    team_runtime = _deep_dict(payload.get("team_runtime"))
+def _deep_get(dct: Any, *path: str) -> Any:
+    cur = dct
+    for key in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def _effective_body(envelope: Dict[str, Any]) -> Dict[str, Any]:
+    inner = envelope.get("payload")
+    if isinstance(inner, dict):
+        return _as_dict(inner)
+    return _as_dict(envelope)
+
+
+def _extract_team_id(envelope: Dict[str, Any], body: Dict[str, Any]) -> Optional[str]:
     return _first_non_empty_str(
-        payload.get("_team_id"),
-        payload.get("team_id"),
-        team.get("id"),
-        runtime.get("team_id"),
-        team_runtime.get("team_id"),
+        _deep_get(body, "_team_id"),
+        _deep_get(body, "team_id"),
+        _deep_get(body, "team", "id"),
+        _deep_get(body, "runtime", "team_id"),
+        _deep_get(body, "team_runtime", "team_id"),
+        _deep_get(envelope, "_team_id"),
+        _deep_get(envelope, "team_id"),
+        _deep_get(envelope, "team", "id"),
+        _deep_get(envelope, "runtime", "team_id"),
+        _deep_get(envelope, "team_runtime", "team_id"),
     )
 
 
-def _team_runtime_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    value = payload.get("_team_runtime")
-    if isinstance(value, dict):
-        return copy.deepcopy(value)
-
-    for key in ("team_runtime", "runtime"):
-        candidate = payload.get(key)
-        if isinstance(candidate, dict):
-            return copy.deepcopy(candidate)
-
-    return {}
-
-
-def _runtime_memory_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    for key in ("_runtime_memory", "runtime_memory", "memory"):
-        candidate = payload.get(key)
-        if isinstance(candidate, dict):
-            return copy.deepcopy(candidate)
-    return {}
+def _extract_team_runtime(envelope: Dict[str, Any], body: Dict[str, Any]) -> Dict[str, Any]:
+    return (
+        _as_dict(body.get("_team_runtime"))
+        or _as_dict(body.get("team_runtime"))
+        or _as_dict(body.get("runtime"))
+        or _as_dict(envelope.get("_team_runtime"))
+        or _as_dict(envelope.get("team_runtime"))
+        or _as_dict(envelope.get("runtime"))
+        or {}
+    )
 
 
-def _normalize_input(payload: Dict[str, Any]) -> Dict[str, Any]:
-    normalized = _deep_dict(payload.get("input"))
-
-    team_id = _team_id_from_payload(payload)
-    if team_id and not normalized.get("_team_id"):
-        normalized["_team_id"] = team_id
-
-    team_runtime = _team_runtime_from_payload(payload)
-    if team_runtime and "_team_runtime" not in normalized:
-        normalized["_team_runtime"] = team_runtime
-
-    runtime_memory = _runtime_memory_from_payload(payload)
-    if runtime_memory and "_runtime_memory" not in normalized:
-        normalized["_runtime_memory"] = runtime_memory
-
-    return normalized
-
-
-def _resolve_mode(payload: Dict[str, Any], explicit_mode: Optional[str]) -> str:
-    mode = _first_non_empty_str(payload.get("mode"), explicit_mode) or "WRITE"
-    return mode.upper()
+def _extract_runtime_memory(envelope: Dict[str, Any], body: Dict[str, Any]) -> Dict[str, Any]:
+    return (
+        _as_dict(body.get("_runtime_memory"))
+        or _as_dict(body.get("runtime_memory"))
+        or _as_dict(body.get("memory"))
+        or _as_dict(envelope.get("_runtime_memory"))
+        or _as_dict(envelope.get("runtime_memory"))
+        or _as_dict(envelope.get("memory"))
+        or {}
+    )
 
 
 def _safe_mode_token(mode: str) -> str:
@@ -108,23 +114,40 @@ def _safe_mode_token(mode: str) -> str:
     return safe or "WRITE"
 
 
-def _resolve_run_id(payload: Dict[str, Any], kwargs: Dict[str, Any]) -> str:
-    direct = _first_non_empty_str(payload.get("run_id"), kwargs.get("run_id"))
+def _resolve_mode(envelope: Dict[str, Any], body: Dict[str, Any], explicit_mode: Optional[str]) -> str:
+    mode = (
+        _first_non_empty_str(
+            explicit_mode,
+            envelope.get("mode"),
+            body.get("mode"),
+        )
+        or "WRITE"
+    )
+    return mode.upper()
+
+
+def _resolve_run_id(envelope: Dict[str, Any], body: Dict[str, Any], kwargs: Dict[str, Any]) -> str:
+    direct = _first_non_empty_str(
+        envelope.get("run_id"),
+        body.get("run_id"),
+        kwargs.get("run_id"),
+    )
     if direct:
         return direct
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    return f"run_{stamp}_{uuid4().hex[:8]}"
+    suffix = os.urandom(4).hex()
+    return f"run_{stamp}_{suffix}"
 
 
-def _resolve_run_dir(payload: Dict[str, Any], kwargs: Dict[str, Any], run_id: str) -> Path:
-    explicit_run_dir = kwargs.get("run_dir") or payload.get("run_dir")
+def _resolve_run_dir(envelope: Dict[str, Any], kwargs: Dict[str, Any], run_id: str) -> Path:
+    explicit_run_dir = kwargs.get("run_dir") or envelope.get("run_dir")
     if isinstance(explicit_run_dir, str) and explicit_run_dir.strip():
         return Path(explicit_run_dir)
 
     runs_root = (
         kwargs.get("runs_root")
-        or payload.get("runs_root")
+        or envelope.get("runs_root")
         or os.environ.get("RUNS_DIR")
         or "runs"
     )
@@ -132,10 +155,10 @@ def _resolve_run_dir(payload: Dict[str, Any], kwargs: Dict[str, Any], run_id: st
 
 
 def _next_step_index(steps_dir: Path) -> int:
-    max_idx = 0
     if not steps_dir.exists():
         return 1
 
+    max_idx = 0
     for file in steps_dir.glob("*.json"):
         stem = file.stem
         prefix = stem.split("_", 1)[0]
@@ -151,49 +174,101 @@ def _write_json(path: Path, data: Dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _build_output(payload: Dict[str, Any], mode: str) -> Dict[str, Any]:
-    output = payload.get("output")
+def _build_output(envelope: Dict[str, Any], body: Dict[str, Any], mode: str) -> Dict[str, Any]:
+    output = body.get("output")
     if isinstance(output, dict):
         return copy.deepcopy(output)
 
-    text = payload.get("text")
+    text = body.get("text")
     if isinstance(text, str):
         return {"text": text, "mode": mode}
 
+    env_output = envelope.get("output")
+    if isinstance(env_output, dict):
+        return copy.deepcopy(env_output)
+
     return {"mode": mode}
+
+
+def _extract_envelope_and_mode(args: tuple[Any, ...], kwargs: Dict[str, Any]) -> tuple[Dict[str, Any], Optional[str]]:
+    explicit_mode = kwargs.get("mode")
+    envelope: Dict[str, Any] = {}
+
+    if args:
+        first = args[0]
+        if isinstance(first, dict):
+            envelope = copy.deepcopy(first)
+        elif isinstance(first, str):
+            explicit_mode = explicit_mode or first
+            if len(args) > 1 and isinstance(args[1], dict):
+                envelope = copy.deepcopy(args[1])
+
+    kw_payload = kwargs.get("payload")
+    if isinstance(kw_payload, dict):
+        envelope = copy.deepcopy(kw_payload)
+
+    return envelope, explicit_mode
+
+
+def resolve_modes(*args: Any, **kwargs: Any) -> ResolvedModes:
+    envelope, explicit_mode = _extract_envelope_and_mode(args, kwargs)
+    body = _effective_body(envelope)
+
+    mode = _resolve_mode(envelope, body, explicit_mode)
+    team_id = _extract_team_id(envelope, body)
+    team_runtime = _extract_team_runtime(envelope, body)
+    runtime_memory = _extract_runtime_memory(envelope, body)
+
+    if team_id and isinstance(team_runtime, dict) and team_runtime:
+        strict_team = True
+    else:
+        strict_team = bool(team_id)
+
+    return ResolvedModes(
+        mode=mode,
+        strict_team=strict_team,
+        team_id=team_id,
+        team_runtime=team_runtime,
+        runtime_memory=runtime_memory,
+    )
+
+
+def _normalize_input(envelope: Dict[str, Any], body: Dict[str, Any], resolved: ResolvedModes) -> Dict[str, Any]:
+    inp = _as_dict(body.get("input")) or _as_dict(envelope.get("input")) or {}
+
+    team_id = resolved.get("team_id")
+    if team_id and not inp.get("_team_id"):
+        inp["_team_id"] = team_id
+
+    team_runtime = _as_dict(resolved.get("team_runtime"))
+    if team_runtime and "_team_runtime" not in inp:
+        inp["_team_runtime"] = team_runtime
+
+    runtime_memory = _as_dict(resolved.get("runtime_memory"))
+    if runtime_memory and "_runtime_memory" not in inp:
+        inp["_runtime_memory"] = runtime_memory
+
+    return inp
 
 
 def execute_stub(*args: Any, **kwargs: Any) -> Dict[str, Any]:
     """
     Backward-compatible orchestrator stub entrypoint.
-
     Supported forms:
     - execute_stub(payload_dict)
     - execute_stub("WRITE", payload_dict)
     - execute_stub(payload=payload_dict, mode="WRITE")
     """
-    explicit_mode = kwargs.get("mode")
-    payload: Dict[str, Any] = {}
+    envelope, explicit_mode = _extract_envelope_and_mode(args, kwargs)
+    body = _effective_body(envelope)
 
-    if args:
-        first = args[0]
-        if isinstance(first, dict):
-            payload = copy.deepcopy(first)
-        elif isinstance(first, str):
-            explicit_mode = explicit_mode or first
-            if len(args) > 1 and isinstance(args[1], dict):
-                payload = copy.deepcopy(args[1])
-
-    kw_payload = kwargs.get("payload")
-    if isinstance(kw_payload, dict):
-        payload = copy.deepcopy(kw_payload)
-
-    mode = _resolve_mode(payload, explicit_mode)
+    resolved = resolve_modes(envelope, mode=explicit_mode)
+    mode = str(resolved.get("mode") or "WRITE").upper()
     mode_token = _safe_mode_token(mode)
 
-    normalized_input = _normalize_input(payload)
-    run_id = _resolve_run_id(payload, kwargs)
-    run_dir = _resolve_run_dir(payload, kwargs, run_id)
+    normalized_input = _normalize_input(envelope, body, resolved)
+    run_id = _resolve_run_id(envelope, body, kwargs)
+    run_dir = _resolve_run_dir(envelope, kwargs, run_id)
 
     artifacts_dir = run_dir / "artifacts"
     steps_dir = artifacts_dir / "steps"
@@ -202,14 +277,23 @@ def execute_stub(*args: Any, **kwargs: Any) -> Dict[str, Any]:
     step_file = steps_dir / f"{step_index:03d}_{mode_token}.json"
     flat_file = artifacts_dir / f"{mode_token.lower()}_step.json"
 
+    tool_name = (
+        _first_non_empty_str(
+            body.get("tool"),
+            envelope.get("tool"),
+            TOOL_BY_MODE.get(mode),
+        )
+        or mode.lower()
+    )
+
     step_record: Dict[str, Any] = {
         "run_id": run_id,
         "mode": mode,
-        "tool": payload.get("tool") or TOOL_BY_MODE.get(mode, mode.lower()),
+        "tool": tool_name,
         "status": "ok",
         "timestamp": _utc_now_iso(),
         "input": normalized_input,
-        "output": _build_output(payload, mode),
+        "output": _build_output(envelope, body, mode),
         "meta": {
             "team_id": normalized_input.get("_team_id"),
             "step_index": step_index,
@@ -226,7 +310,7 @@ def execute_stub(*args: Any, **kwargs: Any) -> Dict[str, Any]:
         "mode": mode,
         "input": normalized_input,
         "artifact": step_record,
-        "artifacts": [step_record],
+        "artifacts": [str(step_file)],
         "result": {
             "run_id": run_id,
             "artifact": step_record,
@@ -263,6 +347,8 @@ def run_orchestrator_step(*args: Any, **kwargs: Any) -> Dict[str, Any]:
 __all__ = [
     "TOOL_BY_MODE",
     "MODE_TO_TOOL",
+    "ResolvedModes",
+    "resolve_modes",
     "execute_stub",
     "execute",
     "run_step",

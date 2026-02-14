@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+
 TOOL_BY_MODE: Dict[str, str] = {
     "PLAN": "plan",
     "OUTLINE": "outline",
@@ -25,18 +26,6 @@ TOOL_BY_MODE: Dict[str, str] = {
     "CANON_EXTRACT": "canon_extract",
 }
 MODE_TO_TOOL = TOOL_BY_MODE
-
-
-class ResolvedModes(dict):
-    """
-    Dict-like + tuple-unpack compatible container:
-    mode, strict_team, team_id = resolve_modes(...)
-    """
-
-    def __iter__(self):
-        yield self.get("mode")
-        yield self.get("strict_team")
-        yield self.get("team_id")
 
 
 def _utc_now_iso() -> str:
@@ -109,21 +98,21 @@ def _extract_runtime_memory(envelope: Dict[str, Any], body: Dict[str, Any]) -> D
     )
 
 
-def _safe_mode_token(mode: str) -> str:
-    safe = "".join(ch for ch in mode.upper() if ch.isalnum() or ch == "_")
-    return safe or "WRITE"
-
-
 def _resolve_mode(envelope: Dict[str, Any], body: Dict[str, Any], explicit_mode: Optional[str]) -> str:
     mode = (
         _first_non_empty_str(
-            explicit_mode,
             envelope.get("mode"),
             body.get("mode"),
+            explicit_mode,
         )
         or "WRITE"
     )
     return mode.upper()
+
+
+def _safe_mode_token(mode: str) -> str:
+    safe = "".join(ch for ch in mode.upper() if ch.isalnum() or ch == "_")
+    return safe or "WRITE"
 
 
 def _resolve_run_id(envelope: Dict[str, Any], body: Dict[str, Any], kwargs: Dict[str, Any]) -> str:
@@ -136,8 +125,9 @@ def _resolve_run_id(envelope: Dict[str, Any], body: Dict[str, Any], kwargs: Dict
         return direct
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    suffix = os.urandom(4).hex()
-    return f"run_{stamp}_{suffix}"
+    from uuid import uuid4
+
+    return f"run_{stamp}_{uuid4().hex[:8]}"
 
 
 def _resolve_run_dir(envelope: Dict[str, Any], kwargs: Dict[str, Any], run_id: str) -> Path:
@@ -190,7 +180,71 @@ def _build_output(envelope: Dict[str, Any], body: Dict[str, Any], mode: str) -> 
     return {"mode": mode}
 
 
-def _extract_envelope_and_mode(args: tuple[Any, ...], kwargs: Dict[str, Any]) -> tuple[Dict[str, Any], Optional[str]]:
+def resolve_modes(
+    mode: Optional[str] = None,
+    payload: Optional[Dict[str, Any]] = None,
+    strict_team: Optional[bool] = None,
+    team_id: Optional[str] = None,
+    team_runtime: Optional[Dict[str, Any]] = None,
+    runtime_memory: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    p = _as_dict(payload)
+    body = _effective_body(p)
+
+    resolved_mode = (mode or _resolve_mode(p, body, None)).upper()
+    resolved_team_id = _first_non_empty_str(
+        team_id,
+        _extract_team_id(p, body),
+    )
+    resolved_team_runtime = _as_dict(team_runtime) or _extract_team_runtime(p, body)
+    resolved_runtime_memory = _as_dict(runtime_memory) or _extract_runtime_memory(p, body)
+
+    if strict_team is None:
+        strict_team = bool(resolved_team_id)
+
+    return {
+        "mode": resolved_mode,
+        "strict_team": bool(strict_team),
+        "team_id": resolved_team_id,
+        "team_runtime": resolved_team_runtime,
+        "runtime_memory": resolved_runtime_memory,
+        "tool": TOOL_BY_MODE.get(resolved_mode, resolved_mode.lower()),
+    }
+
+
+def _normalize_input(
+    envelope: Dict[str, Any],
+    body: Dict[str, Any],
+    resolved: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    inp = _as_dict(body.get("input")) or _as_dict(envelope.get("input")) or {}
+
+    team_id = _first_non_empty_str(
+        (resolved or {}).get("team_id"),
+        _extract_team_id(envelope, body),
+    )
+    if team_id and not inp.get("_team_id"):
+        inp["_team_id"] = team_id
+
+    team_runtime = _as_dict((resolved or {}).get("team_runtime")) or _extract_team_runtime(envelope, body)
+    if team_runtime and "_team_runtime" not in inp:
+        inp["_team_runtime"] = team_runtime
+
+    runtime_memory = _as_dict((resolved or {}).get("runtime_memory")) or _extract_runtime_memory(envelope, body)
+    if runtime_memory and "_runtime_memory" not in inp:
+        inp["_runtime_memory"] = runtime_memory
+
+    return inp
+
+
+def execute_stub(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+    """
+    Backward-compatible orchestrator stub entrypoint.
+    Supported forms:
+    - execute_stub(payload_dict)
+    - execute_stub("WRITE", payload_dict)
+    - execute_stub(payload=payload_dict, mode="WRITE")
+    """
     explicit_mode = kwargs.get("mode")
     envelope: Dict[str, Any] = {}
 
@@ -207,66 +261,12 @@ def _extract_envelope_and_mode(args: tuple[Any, ...], kwargs: Dict[str, Any]) ->
     if isinstance(kw_payload, dict):
         envelope = copy.deepcopy(kw_payload)
 
-    return envelope, explicit_mode
-
-
-def resolve_modes(*args: Any, **kwargs: Any) -> ResolvedModes:
-    envelope, explicit_mode = _extract_envelope_and_mode(args, kwargs)
     body = _effective_body(envelope)
-
     mode = _resolve_mode(envelope, body, explicit_mode)
-    team_id = _extract_team_id(envelope, body)
-    team_runtime = _extract_team_runtime(envelope, body)
-    runtime_memory = _extract_runtime_memory(envelope, body)
-
-    if team_id and isinstance(team_runtime, dict) and team_runtime:
-        strict_team = True
-    else:
-        strict_team = bool(team_id)
-
-    return ResolvedModes(
-        mode=mode,
-        strict_team=strict_team,
-        team_id=team_id,
-        team_runtime=team_runtime,
-        runtime_memory=runtime_memory,
-    )
-
-
-def _normalize_input(envelope: Dict[str, Any], body: Dict[str, Any], resolved: ResolvedModes) -> Dict[str, Any]:
-    inp = _as_dict(body.get("input")) or _as_dict(envelope.get("input")) or {}
-
-    team_id = resolved.get("team_id")
-    if team_id and not inp.get("_team_id"):
-        inp["_team_id"] = team_id
-
-    team_runtime = _as_dict(resolved.get("team_runtime"))
-    if team_runtime and "_team_runtime" not in inp:
-        inp["_team_runtime"] = team_runtime
-
-    runtime_memory = _as_dict(resolved.get("runtime_memory"))
-    if runtime_memory and "_runtime_memory" not in inp:
-        inp["_runtime_memory"] = runtime_memory
-
-    return inp
-
-
-def execute_stub(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-    """
-    Backward-compatible orchestrator stub entrypoint.
-    Supported forms:
-    - execute_stub(payload_dict)
-    - execute_stub("WRITE", payload_dict)
-    - execute_stub(payload=payload_dict, mode="WRITE")
-    """
-    envelope, explicit_mode = _extract_envelope_and_mode(args, kwargs)
-    body = _effective_body(envelope)
-
-    resolved = resolve_modes(envelope, mode=explicit_mode)
-    mode = str(resolved.get("mode") or "WRITE").upper()
     mode_token = _safe_mode_token(mode)
 
-    normalized_input = _normalize_input(envelope, body, resolved)
+    resolved = resolve_modes(mode=mode, payload=envelope)
+    normalized_input = _normalize_input(envelope, body, resolved=resolved)
     run_id = _resolve_run_id(envelope, body, kwargs)
     run_dir = _resolve_run_dir(envelope, kwargs, run_id)
 
@@ -281,6 +281,7 @@ def execute_stub(*args: Any, **kwargs: Any) -> Dict[str, Any]:
         _first_non_empty_str(
             body.get("tool"),
             envelope.get("tool"),
+            resolved.get("tool"),
             TOOL_BY_MODE.get(mode),
         )
         or mode.lower()
@@ -297,6 +298,7 @@ def execute_stub(*args: Any, **kwargs: Any) -> Dict[str, Any]:
         "meta": {
             "team_id": normalized_input.get("_team_id"),
             "step_index": step_index,
+            "strict_team": bool(resolved.get("strict_team")),
         },
     }
 
@@ -318,7 +320,9 @@ def execute_stub(*args: Any, **kwargs: Any) -> Dict[str, Any]:
                 "flat": str(flat_file),
                 "step": str(step_file),
             },
+            "resolved": resolved,
         },
+        "resolved": resolved,
         "artifact_paths": {
             "flat": str(flat_file),
             "step": str(step_file),
@@ -347,7 +351,6 @@ def run_orchestrator_step(*args: Any, **kwargs: Any) -> Dict[str, Any]:
 __all__ = [
     "TOOL_BY_MODE",
     "MODE_TO_TOOL",
-    "ResolvedModes",
     "resolve_modes",
     "execute_stub",
     "execute",

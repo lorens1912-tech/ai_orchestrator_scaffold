@@ -26,12 +26,20 @@ function Normalize-Path([string]$p) {
 }
 
 function Get-DirtyPaths {
-  $lines = git status --porcelain=v1
-  $out = @()
+  $lines = @(git status --porcelain=v1 2>$null)
+  if ($LASTEXITCODE -ne 0) { throw "P041_GIT_STATUS_FAILED" }
+
+  $out = New-Object System.Collections.Generic.List[string]
   foreach ($l in $lines) {
     if ([string]::IsNullOrWhiteSpace($l)) { continue }
-    if ($l.Length -ge 4) { $out += (Normalize-Path $l.Substring(3)) }
+    if ($l.Length -ge 4) {
+      $path = Normalize-Path $l.Substring(3)
+      if (-not [string]::IsNullOrWhiteSpace($path)) {
+        [void]$out.Add($path)
+      }
+    }
   }
+
   return @($out | Sort-Object -Unique)
 }
 
@@ -45,14 +53,16 @@ function Sanitize-KnownRuntime {
 }
 
 function Assert-CleanOrFail([string]$phase) {
-  $dirty = Get-DirtyPaths
+  $dirty = @(Get-DirtyPaths)
+  $dirty = @($dirty | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+
   if ($dirty.Count -gt 0) {
     $dirty | Set-Content $dirtyReport -Encoding UTF8
     throw "P041_${phase}_WORKTREE_NOT_CLEAN"
   }
 }
 
-# PRECHECK: auto-sanitize + twarde clean
+# PRECHECK
 Sanitize-KnownRuntime
 Assert-CleanOrFail "PRECHECK"
 
@@ -75,7 +85,7 @@ if ($LASTEXITCODE -ne 0) { throw "P041_BASELINE_TESTS_FAILED" }
 .\scripts\p14_continuous_release_guard.ps1
 if ($LASTEXITCODE -ne 0) { throw "P041_P14_GUARD_FAILED" }
 
-# POSTCHECK: po testach/guard auto-sanitize + twarde clean
+# POSTCHECK
 Sanitize-KnownRuntime
 Assert-CleanOrFail "POSTCHECK"
 

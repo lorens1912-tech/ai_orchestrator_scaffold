@@ -501,6 +501,30 @@ async def _p26_legacy_bridge_agent_step(request: _P26Request, call_next):
                 raw = _p26_json.dumps(body, ensure_ascii=False).encode("utf-8")
 
             async def _receive():
+                # P1022_TEAM_RUNTIME_BRIDGE_V2
+                try:
+                    _payload = getattr(req, 'payload', None) if 'req' in locals() else None
+                    if isinstance(_payload, dict):
+                        _team_id = _payload.get('team_id')
+                    else:
+                        _team_id = None
+                    if _team_id and ('artifacts' in locals()) and isinstance(artifacts, list):
+                        import os, json
+                        for _ap in artifacts:
+                            _p = str(_ap)
+                            if not os.path.exists(_p):
+                                continue
+                            with open(_p, 'r', encoding='utf-8') as _rf:
+                                _obj = json.load(_rf)
+                            _inp = _obj.get('input')
+                            if not isinstance(_inp, dict):
+                                _inp = {}
+                            _inp['_team_id'] = _team_id
+                            _obj['input'] = _inp
+                            with open(_p, 'w', encoding='utf-8') as _wf:
+                                json.dump(_obj, _wf, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
                 return {"type": "http.request", "body": raw, "more_body": False}
             request._receive = _receive
 

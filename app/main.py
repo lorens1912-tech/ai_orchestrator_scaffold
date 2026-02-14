@@ -2067,74 +2067,91 @@ async def bible_runtime_bridge_middleware(request, call_next):
 @app.middleware("http")
 async def _p041_quality_contract_bridge(request, call_next):
     response = await call_next(request)
-
-    if request.method != "POST" or request.url.path != "/agent/step":
-        return response
-
-    ctype = (response.headers.get("content-type") or "").lower()
-    if "application/json" not in ctype:
-        return response
-
-    body = b""
-    async for chunk in response.body_iterator:
-        body += chunk
-
     try:
+        if request.url.path != "/agent/step":
+            return response
+
+        ctype = (response.headers.get("content-type") or "").lower()
+        if "application/json" not in ctype:
+            return response
+
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk)
+        body = b"".join(chunks)
+
         import json
         from pathlib import Path
+        from starlette.responses import Response
 
         payload = json.loads(body.decode("utf-8"))
         arts = payload.get("artifacts") or []
         if isinstance(arts, str):
             arts = [arts]
 
-        if arts:
-            p = Path(arts[0])
-            if not p.is_absolute():
-                p = (Path.cwd() / p).resolve()
+        for a in arts:
+            ap = Path(str(a)).resolve()
+            if not ap.exists():
+                continue
 
-            if p.exists():
-                data = json.loads(p.read_text(encoding="utf-8"))
-                if str(data.get("mode", "")).upper() == "QUALITY":
-                    result = data.setdefault("result", {})
-                    pl = result.setdefault("payload", {})
+            data = json.loads(ap.read_text(encoding="utf-8"))
+            if str(data.get("mode", "")).upper() != "QUALITY":
+                continue
 
-                    if not isinstance(pl, dict):
-                        pl = {"text": str(pl)}
+            result = data.get("result")
+            if not isinstance(result, dict):
+                result = {}
+                data["result"] = result
 
-                    if "DECISION" not in pl:
-                        src_text = str(pl.get("text") or "")
-                        dec = ""
+            pl = result.get("payload")
+            if not isinstance(pl, dict):
+                pl = {}
+            else:
+                pl = dict(pl)
 
-                        try:
-                            from app.quality_rules import evaluate_quality
-                            q = evaluate_quality(src_text, min_words=50)
-                            dec = str(q.get("decision") or q.get("DECISION") or "").upper()
-                        except Exception:
-                            dec = ""
+            # QUALITY contract: brak tekstu edytowalnego
+            pl.pop("text", None)
+            pl.pop("input", None)
+            pl.pop("content", None)
 
-                        if dec == "FAIL":
-                            dec = "REJECT"
+            dec = str(pl.get("DECISION") or pl.get("decision") or "").upper().strip()
+            if dec in {"PASS", "OK", "SUCCESS"}:
+                dec = "ACCEPT"
+            elif dec in {"FAIL", "FAILED", "ERROR"}:
+                dec = "REJECT"
+            if dec not in {"ACCEPT", "REVISE", "REJECT"}:
+                dec = "REJECT"
+            pl["DECISION"] = dec
 
-                        if dec not in {"ACCEPT", "REVISE", "REJECT"}:
-                            dec = "REVISE" if src_text.strip() else "REJECT"
+            reasons = pl.get("REASONS")
+            if reasons is None:
+                reasons = pl.get("reasons")
+            if reasons is None:
+                reasons = []
+            elif isinstance(reasons, list):
+                reasons = [str(x).strip() for x in reasons if str(x).strip()]
+            elif isinstance(reasons, (tuple, set)):
+                reasons = [str(x).strip() for x in reasons if str(x).strip()]
+            else:
+                r = str(reasons).strip()
+                reasons = [r] if r else []
+            pl["REASONS"] = reasons[:7]
 
-                        pl["DECISION"] = dec
-                        result["payload"] = pl
-                        data["result"] = result
+            result["tool"] = "QUALITY"
+            result["payload"] = pl
+            data["result"] = result
+            ap.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            break
 
-                        p.write_text(
-                            json.dumps(data, ensure_ascii=False, indent=2),
-                            encoding="utf-8"
-                        )
+        headers = dict(response.headers)
+        headers.pop("content-length", None)
+        return Response(
+            content=body,
+            status_code=response.status_code,
+            headers=headers,
+            media_type=response.media_type
+        )
     except Exception:
-        pass
-
-    from starlette.responses import Response
-    return Response(
-        content=body,
-        status_code=response.status_code,
-        headers=dict(response.headers),
-        media_type=response.media_type
-    )
+        return response
 # P041_QUALITY_CONTRACT_BRIDGE_END
+

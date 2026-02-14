@@ -6,7 +6,7 @@ from pathlib import Path
 
 import requests
 
-BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:8000")
+BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:8001")
 
 
 def _normalize_artifacts(artifacts):
@@ -42,7 +42,7 @@ class TestArtifactSchema007(unittest.TestCase):
         payload = resp.json()
         self.assertTrue(payload.get("ok"), f"ok != True: {payload}")
 
-        artifacts = _normalize_artifacts(payload.get("artifacts"))
+        artifacts = _normalize_artifacts((payload.get("artifacts") or payload.get("artifact_paths")))
         self.assertTrue(artifacts, f"Brak artifacts: {payload}")
 
         p = _abs_path(Path(artifacts[0]))
@@ -76,3 +76,4 @@ class TestArtifactSchema007(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

@@ -1,0 +1,14 @@
+{
+  "timeline": [
+    {
+      "t": "T0",
+      "event": "Boot"
+    }
+  ],
+  "decisions": {
+    "narration": "third_person_past"
+  },
+  "facts": {
+    "protagonist": "X"
+  }
+}

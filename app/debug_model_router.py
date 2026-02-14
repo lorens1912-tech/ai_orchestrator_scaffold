@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from app.model_policy import resolve_model
 from app.llm_provider_openai import call_text
+from app.openai_direct import call_text_direct
 from app.model_utils import model_family
 
 
@@ -28,6 +29,7 @@ def debug_resolve(
     d = resolve_model(requested_model=requested, header_model=x_model, preset_model=preset)
     return {"decision": d.to_dict(), "effective_model_family": model_family(d.effective_model)}
 
+from app.llm_call_openai_live import call_text
 
 @router.post("/llm")
 def debug_llm(body: LlmPingIn, resp: Response, x_model: str | None = Header(default=None)):
@@ -42,7 +44,7 @@ def debug_llm(body: LlmPingIn, resp: Response, x_model: str | None = Header(defa
     resp.headers["X-Temperature-Requested"] = "" if body.temperature is None else str(body.temperature)
 
     try:
-        out = call_text(prompt=body.prompt, model=d.effective_model, temperature=body.temperature)
+        out = call_text_direct(prompt=body.prompt, model=d.effective_model, temperature=body.temperature)
         provider_model = out.get("provider_returned_model") or ""
         prov_family = model_family(provider_model) or ""
 
@@ -62,13 +64,13 @@ def debug_llm(body: LlmPingIn, resp: Response, x_model: str | None = Header(defa
             "allowlist_ok": d.allowlist_ok,
             "note": d.note,
             "provider_returned_model": provider_model,
-            "provider_model_family": prov_family,
+            "provider_family": out.get("provider_family"), "provider_model_family": prov_family,
             "raw_type": out.get("raw_type"),
             "params": params,
             "dropped_params": dropped,
             "retried": out.get("retried", False),
             "text": out.get("text"),
-        }
+        "usage": out.get("usage"), }
 
     except Exception as e:
         tb = traceback.format_exc(limit=30)

@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import requests
 
-BASE = "http://127.0.0.1:8000"
+BASE = "http://127.0.0.1:8001"
 ROOT = Path(__file__).resolve().parents[1]
 
 def test_steps_have_team_and_policy():
@@ -23,3 +23,4 @@ def test_steps_have_team_and_policy():
         # policy może być w team albo w meta resultu — zależnie jak trzymasz
         policy = team.get("policy_id") or ((obj.get("result") or {}).get("payload") or {}).get("meta", {}).get("policy_id")
         assert policy is not None, f"{p.name} missing policy_id"
+

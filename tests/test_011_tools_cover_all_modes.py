@@ -4,7 +4,7 @@ import requests
 
 from app.tools import TOOLS
 
-BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:8000")
+BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:8001")
 
 
 class TestToolsCoverAllModes011(unittest.TestCase):
@@ -24,3 +24,4 @@ class TestToolsCoverAllModes011(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

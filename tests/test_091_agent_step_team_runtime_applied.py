@@ -3,7 +3,7 @@ import hashlib
 from pathlib import Path
 import requests
 
-BASE = "http://127.0.0.1:8000"
+BASE = "http://127.0.0.1:8001"
 
 def sha1(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
@@ -41,3 +41,4 @@ def test_agent_step_applies_team_runtime_to_payload():
         assert prompts.get("system_sha1") == sha1(sys_p.read_text(encoding="utf-8"))
     if mode_p.exists():
         assert prompts.get("mode_sha1") == sha1(mode_p.read_text(encoding="utf-8"))
+

@@ -1,0 +1,6 @@
+ M .gitignore
+?? HANDOFF_EXIT_20260207_201721.md
+?? audits/
+?? docs/REPO_CLEANUP_POLICY_P13.md
+?? reports/
+?? tests/test_p13_regression.py

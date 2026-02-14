@@ -1,6 +1,6 @@
 import os, json, requests
 
-BASE = "http://127.0.0.1:8000"
+BASE = "http://127.0.0.1:8001"
 
 def test_health():
     r = requests.get(f"{BASE}/health", timeout=5)
@@ -25,3 +25,4 @@ def test_pipeline_tools():
     assert os.path.exists(p)
     txt = open(p, "r", encoding="utf-8").read()
     assert '"tool": "WRITE"' in txt
+

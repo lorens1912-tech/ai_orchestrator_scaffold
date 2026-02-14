@@ -1,7 +1,7 @@
 import unittest
 import requests
 
-BASE = "http://127.0.0.1:8000"
+BASE = "http://127.0.0.1:8001"
 
 
 def _extract_preset_ids(j: dict) -> list:
@@ -38,3 +38,4 @@ class Test102ConfigPresetsEndpoint(unittest.TestCase):
 
         self.assertIn("ORCH_STANDARD", preset_ids, preset_ids)
         self.assertIn("ORCH_STOP_TEST", preset_ids, preset_ids)
+

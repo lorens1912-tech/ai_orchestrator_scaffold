@@ -1,6 +1,6 @@
 import requests
 
-BASE = "http://127.0.0.1:8000"
+BASE = "http://127.0.0.1:8001"
 
 def test_agent_step_rejects_invalid_team_id():
     r = requests.post(f"{BASE}/agent/step", json={
@@ -10,3 +10,4 @@ def test_agent_step_rejects_invalid_team_id():
         "resume": False
     }, timeout=30)
     assert r.status_code == 400
+

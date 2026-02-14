@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+set -eu
+
+repo_root="$(git rev-parse --show-toplevel)"
+script="$repo_root/scripts/p14_continuous_release_guard.ps1"
+
+if [ ! -f "$script" ]; then
+  echo "P14 guard missing: $script"
+  exit 1
+fi
+
+if command -v cygpath >/dev/null 2>&1; then
+  script_win="$(cygpath -w "$script")"
+else
+  script_win="$script"
+fi
+
+pwsh -NoProfile -ExecutionPolicy Bypass -File "$script_win"
+rc=$?
+if [ $rc -ne 0 ]; then
+  echo "Pre-push blocked by P14 release guard."
+fi
+exit $rc

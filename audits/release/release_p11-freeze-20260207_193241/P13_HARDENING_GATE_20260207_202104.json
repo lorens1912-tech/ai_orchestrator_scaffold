@@ -1,0 +1,14 @@
+{
+  "TIMESTAMP": "2026-02-07T20:21:08",
+  "BRANCH": "hardening/p13-20260207_201034",
+  "HEAD": "a17a10a",
+  "COMPILE_OK": true,
+  "HEALTH_OK": true,
+  "PRESETS_OK": true,
+  "PRESETS_SOURCE": "config_registry",
+  "PRESETS_COUNT": 6,
+  "OPENAPI_OK": true,
+  "DUPLICATE_ROUTE_COUNT": 0,
+  "UNITTEST_OK": true,
+  "P13_GATE_PASS": true
+}

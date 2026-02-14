@@ -1,7 +1,7 @@
 import unittest
 import requests
 
-BASE = "http://127.0.0.1:8000"
+BASE = "http://127.0.0.1:8001"
 
 class Test103OrchRetryOnQuality(unittest.TestCase):
     def test_orch_retry_injects_edit_and_second_quality(self):
@@ -29,3 +29,4 @@ class Test103OrchRetryOnQuality(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

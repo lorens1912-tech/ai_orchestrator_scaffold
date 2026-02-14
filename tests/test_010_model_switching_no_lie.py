@@ -1,7 +1,7 @@
 import os
 import requests
 
-BASE = os.getenv("BASE_URL", "http://127.0.0.1:8000")
+BASE = os.getenv("BASE_URL", "http://127.0.0.1:8001")
 
 
 def _post(model: str, prompt: str = "ping", temperature=0.0):
@@ -31,3 +31,4 @@ def test_model_switching_per_request_matches_provider_family():
 
     # dwa requesty pod rząd, bez restartu, dwie różne rodziny
     assert a["provider_model_family"] != b["provider_model_family"]
+

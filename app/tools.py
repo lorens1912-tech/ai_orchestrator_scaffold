@@ -1,5 +1,59 @@
 from __future__ import annotations
 
+
+def _p15_hardfail_quality_payload(payload):
+    try:
+        if not isinstance(payload, dict):
+            return payload
+
+        reasons = payload.get("REASONS") or payload.get("reasons") or []
+        if not isinstance(reasons, list):
+            reasons = [reasons]
+
+        flags = payload.get("FLAGS") or payload.get("flags") or {}
+        if not isinstance(flags, dict):
+            flags = {}
+
+        stats = payload.get("STATS") or payload.get("stats") or {}
+        if not isinstance(stats, dict):
+            stats = {}
+
+        too_short = bool(flags.get("too_short", False)) or any("MIN_WORDS" in str(r).upper() for r in reasons)
+
+        if too_short:
+            payload["DECISION"] = "FAIL"
+            payload["BLOCK_PIPELINE"] = True
+
+            if not any("MIN_WORDS" in str(r).upper() for r in reasons):
+                words = stats.get("words", 0)
+                reasons.insert(0, f"MIN_WORDS: Words={words}.")
+            payload["REASONS"] = reasons
+
+            must_fix = payload.get("MUST_FIX") or payload.get("must_fix") or []
+            if not isinstance(must_fix, list):
+                must_fix = [must_fix]
+
+            found = False
+            for item in must_fix:
+                if isinstance(item, dict) and str(item.get("id", "")).upper() == "MIN_WORDS":
+                    item["severity"] = "FAIL"
+                    found = True
+
+            if not found:
+                must_fix.insert(0, {
+                    "id": "MIN_WORDS",
+                    "severity": "FAIL",
+                    "title": "Za mało słów",
+                    "detail": "Hard-fail P15",
+                    "hint": "Rozwiń tekst do minimum."
+                })
+            payload["MUST_FIX"] = must_fix
+
+        return payload
+    except Exception:
+        return payload
+
+
 import os
 import json
 import re
@@ -77,7 +131,7 @@ def tool_edit(payload):
     """
     import re
 
-    payload = payload or {}
+    payload = _p15_hardfail_quality_payload(payload) or {}
     text = payload.get("text") or ""
     instructions = (payload.get("instructions") or "").lower()
 
@@ -146,6 +200,8 @@ def tool_quality(payload: Dict[str, Any]) -> Dict[str, Any]:
     r = evaluate_quality(text, min_words=int(payload.get("min_words") or 200), forbid_lists=bool(payload.get("forbid_lists", True)))
     return {"tool":"QUALITY","payload":{
         "DECISION": r["decision"],
+        "BLOCK_PIPELINE": (str(r["decision"]).upper() == "FAIL"),
+        "BLOCK_PIPELINE": (str(r["decision"]).upper() == "FAIL"),
         "REASONS": r["reasons"],
         "MUST_FIX": r["must_fix"],
         "STATS": r["stats"],
@@ -241,7 +297,7 @@ def tool_canon_check(payload):
     scene_ref = str((payload or {}).get("scene_ref") or (payload or {}).get("scene") or "")
     canon = load_canon(book_id)
     report = canon_check(text=text, canon=canon, scene_ref=scene_ref)
-    return {"tool": "CANON_CHECK", "payload": report}
+    return {"tool": "CANON_CHECK", "payload": _p15_hardfail_quality_payload(report)}
 
 TOOLS = {
   "PLAN": tool_plan,
@@ -263,7 +319,7 @@ TOOLS = {
 # AUTOFIX_V2: domyka test_031 (meta.applied_issue_types) + test_033 (UNKNOWN_ENTITIES=[]) + OUTLINE tool.
 
 def tool_outline(payload):
-    payload = payload or {}
+    payload = _p15_hardfail_quality_payload(payload) or {}
     text = str(payload.get("text") or payload.get("input") or "").strip()
     if not text:
         text = "Temat: (brak)"
@@ -271,7 +327,7 @@ def tool_outline(payload):
     return {"tool": "OUTLINE", "payload": {"text": out}}
 
 def tool_rewrite(payload):
-    payload = payload or {}
+    payload = _p15_hardfail_quality_payload(payload) or {}
     text = str(payload.get("text") or payload.get("input") or "").strip()
     issues = payload.get("ISSUES") or payload.get("issues") or []
     if not isinstance(issues, list):
@@ -316,7 +372,7 @@ def tool_rewrite(payload):
     }
 
 def tool_continuity(payload):
-    payload = payload or {}
+    payload = _p15_hardfail_quality_payload(payload) or {}
     text = str(payload.get("text") or payload.get("input") or "").strip()
     book_id = str(payload.get("_book_id") or payload.get("book_id") or "").strip()
 
@@ -328,7 +384,7 @@ def tool_continuity(payload):
         "SCORE": 100
     }
     if not text or not book_id:
-        return {"tool": "CONTINUITY", "payload": base}
+        return {"tool": "CONTINUITY", "payload": _p15_hardfail_quality_payload(base)}
 
     from pathlib import Path
     import json
@@ -337,12 +393,12 @@ def tool_continuity(payload):
     root = Path(__file__).resolve().parents[1]
     bible_path = root / "books" / book_id / "book_bible.json"
     if not bible_path.exists():
-        return {"tool": "CONTINUITY", "payload": base}
+        return {"tool": "CONTINUITY", "payload": _p15_hardfail_quality_payload(base)}
 
     try:
         bible = json.loads(bible_path.read_text(encoding="utf-8"))
     except Exception:
-        return {"tool": "CONTINUITY", "payload": base}
+        return {"tool": "CONTINUITY", "payload": _p15_hardfail_quality_payload(base)}
 
     rules = bible.get("continuity_rules") if isinstance(bible, dict) else {}
     if not isinstance(rules, dict):
@@ -373,7 +429,7 @@ def tool_continuity(payload):
 
     # test_033: pusty kanon + force_unknown_entities=False => cisza i puste listy
     if not known and not force_unknown:
-        return {"tool": "CONTINUITY", "payload": base}
+        return {"tool": "CONTINUITY", "payload": _p15_hardfail_quality_payload(base)}
 
     candidates = re.findall(r"\b[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+(?:\s+[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+)?\b", text)
     dedup, seen = [], set()
@@ -401,7 +457,7 @@ def tool_continuity(payload):
         base["SCORE"] = 100 - min(60, 10 * len(issues))
         base["SUMMARY"] = "CONTINUITY v1 (unknown entities)"
 
-    return {"tool": "CONTINUITY", "payload": base}
+    return {"tool": "CONTINUITY", "payload": _p15_hardfail_quality_payload(base)}
 
 # Dopnij TOOLS (żeby nie było KeyError i żeby handler był realny)
 try:
@@ -418,3 +474,85 @@ except Exception:
     pass
 
 # === AUTOFIX_V1_END ===
+
+
+# P15_HARDFAIL_RUNTIME_WRAP_START
+def _p15_apply_hardfail_quality(out):
+    try:
+        if not isinstance(out, dict):
+            return out
+        if str(out.get("tool", "")).upper() != "QUALITY":
+            return out
+
+        p = out.get("payload")
+        if not isinstance(p, dict):
+            return out
+
+        reasons = p.get("REASONS") or p.get("reasons") or []
+        if not isinstance(reasons, list):
+            reasons = [reasons]
+
+        flags = p.get("FLAGS") or p.get("flags") or {}
+        if not isinstance(flags, dict):
+            flags = {}
+
+        stats = p.get("STATS") or p.get("stats") or {}
+        if not isinstance(stats, dict):
+            stats = {}
+
+        too_short = bool(flags.get("too_short", False)) or any("MIN_WORDS" in str(r).upper() for r in reasons)
+
+        if too_short:
+            p["DECISION"] = "FAIL"
+            p["BLOCK_PIPELINE"] = True
+
+            if not any("MIN_WORDS" in str(r).upper() for r in reasons):
+                reasons.insert(0, f"MIN_WORDS: Words={stats.get('words', 0)}.")
+            p["REASONS"] = reasons
+
+            must_fix = p.get("MUST_FIX") or p.get("must_fix") or []
+            if not isinstance(must_fix, list):
+                must_fix = [must_fix]
+
+            found = False
+            for it in must_fix:
+                if isinstance(it, dict) and str(it.get("id", "")).upper() == "MIN_WORDS":
+                    it["severity"] = "FAIL"
+                    found = True
+
+            if not found:
+                must_fix.insert(0, {
+                    "id": "MIN_WORDS",
+                    "severity": "FAIL",
+                    "title": "Za mało słów",
+                    "detail": "Hard-fail P15",
+                    "hint": "Rozwiń tekst do minimum."
+                })
+            p["MUST_FIX"] = must_fix
+            out["payload"] = p
+
+        return out
+    except Exception:
+        return out
+
+
+def _p15_wrap_quality_callable(fn):
+    def _wrapped(*args, **kwargs):
+        return _p15_apply_hardfail_quality(fn(*args, **kwargs))
+    _wrapped.__name__ = getattr(fn, "__name__", "wrapped_quality_fn")
+    _wrapped.__doc__ = getattr(fn, "__doc__", None)
+    return _wrapped
+
+
+for _n, _v in list(globals().items()):
+    if _n.startswith("_p15_"):
+        continue
+    if "quality" not in _n.lower():
+        continue
+    if not callable(_v):
+        continue
+    if getattr(_v, "__module__", None) != __name__:
+        continue
+    globals()[_n] = _p15_wrap_quality_callable(_v)
+# P15_HARDFAIL_RUNTIME_WRAP_END
+

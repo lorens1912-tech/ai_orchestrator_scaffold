@@ -56,6 +56,11 @@
       "id": "CANON_CHECK",
       "label": "Canon Check",
       "default_team": "CONTINUITY_KEEPER"
+    },
+    {
+      "id": "CANON_EXTRACT",
+      "description": "Extract hard canon facts/decisions and persist into run canon.json",
+      "tool": "CANON_EXTRACT"
     }
   ]
 }

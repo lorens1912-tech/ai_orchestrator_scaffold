@@ -19,3 +19,8 @@ _p15_smoke_eval.py
 config/auto_retry_policy.json
 
 config/auto_retry_policy.json
+app/main.py.bak_*
+books/*/latest_run_id.txt
+data/bibles_compat_040/*.json
+data/compat_bible_store/*.json
+reports/P040_*.txt

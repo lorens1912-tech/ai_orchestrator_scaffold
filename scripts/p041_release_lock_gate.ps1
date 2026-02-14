@@ -3,10 +3,17 @@ $ErrorActionPreference = "Stop"
 Set-Location C:\AI\ai_orchestrator_scaffold
 
 $ts = Get-Date -Format "yyyyMMdd_HHmmss"
-$reportDir = ".\reports\release_lock"
-New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
-$report = "$reportDir\P041_RELEASE_LOCK_$ts.md"
-$dirtyReport = "$reportDir\P041_RELEASE_LOCK_DIRTY_$ts.txt"
+$tempRoot = Join-Path $env:TEMP "agentai_release_lock"
+New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+$report = Join-Path $tempRoot "P041_RELEASE_LOCK_$ts.md"
+$dirtyReport = Join-Path $tempRoot "P041_RELEASE_LOCK_DIRTY_$ts.txt"
+
+# PRECHECK: repo musi być czyste przed gate
+$dirtyPre = (git status --porcelain | Out-String).Trim()
+if (-not [string]::IsNullOrWhiteSpace($dirtyPre)) {
+  git status --porcelain | Set-Content $dirtyReport -Encoding UTF8
+  throw "P041_PRECHECK_WORKTREE_NOT_CLEAN"
+}
 
 python -m py_compile .\app\main.py
 python -m py_compile .\app\quality_contract.py
@@ -27,15 +34,20 @@ if ($LASTEXITCODE -ne 0) { throw "P041_BASELINE_TESTS_FAILED" }
 .\scripts\p14_continuous_release_guard.ps1
 if ($LASTEXITCODE -ne 0) { throw "P041_P14_GUARD_FAILED" }
 
-$dirty = (git status --porcelain | Out-String).Trim()
-if (-not [string]::IsNullOrWhiteSpace($dirty)) {
+# POSTCHECK: po testach/guard repo nadal czyste
+$dirtyPost = (git status --porcelain | Out-String).Trim()
+if (-not [string]::IsNullOrWhiteSpace($dirtyPost)) {
   git status --porcelain | Set-Content $dirtyReport -Encoding UTF8
   throw "P041_WORKTREE_NOT_CLEAN"
 }
 
 $branch = git rev-parse --abbrev-ref HEAD
 $head = git rev-parse --short HEAD
-$health = Invoke-RestMethod http://127.0.0.1:8001/health -TimeoutSec 10 | ConvertTo-Json -Depth 8
+try {
+  $health = Invoke-RestMethod http://127.0.0.1:8001/health -TimeoutSec 10 | ConvertTo-Json -Depth 8
+} catch {
+  $health = "UNAVAILABLE"
+}
 
 $lines = @(
   "# P041 RELEASE LOCK REPORT"

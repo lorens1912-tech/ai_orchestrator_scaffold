@@ -679,3 +679,76 @@ if not globals().get("_P26_EXECUTE_STUB_WRAPPED", False):
         except Exception:
             pass
         return out
+
+
+# P014_FORCE_REVISE_SHORT_ONLY_V3
+def _p014_force_revise_short_only(_artifact_paths):
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        for _ap in (_artifact_paths or []):
+            try:
+                _p = _Path(_ap)
+                if not _p.exists():
+                    continue
+                _obj = _json.loads(_p.read_text(encoding="utf-8"))
+                if str(_obj.get("mode", "")).upper() != "QUALITY":
+                    continue
+
+                _res = _obj.get("result") or {}
+                _pl = _res.get("payload") or {}
+                if not isinstance(_pl, dict):
+                    _pl = {}
+
+                _reasons = _pl.get("REASONS")
+                if isinstance(_reasons, list):
+                    _reasons_list = _reasons
+                elif _reasons is None:
+                    _reasons_list = []
+                else:
+                    _reasons_list = [_reasons]
+
+                _flags = _pl.get("FLAGS") if isinstance(_pl.get("FLAGS"), dict) else {}
+                _must = _pl.get("MUST_FIX") if isinstance(_pl.get("MUST_FIX"), list) else []
+
+                _short = bool(_flags.get("too_short", False)) or any(
+                    ("MIN_WORDS" in str(_r).upper()) or ("ZA MAŁO SŁÓW" in str(_r).upper()) or ("ZA MALO SLOW" in str(_r).upper()) or ("TOO_SHORT" in str(_r).upper())
+                    for _r in _reasons_list
+                )
+
+                def _is_hard(_x):
+                    if isinstance(_x, dict):
+                        _sev = str(_x.get("severity", "")).upper()
+                        _code = str(_x.get("id", _x.get("code", ""))).upper()
+                        return (_sev in {"CRITICAL", "BLOCKER", "FATAL", "HARD"}) or ("CRITICAL" in _code) or ("BLOCKER" in _code) or ("FATAL" in _code)
+                    _s = str(_x).upper()
+                    return ("CRITICAL" in _s) or ("BLOCKER" in _s) or ("FATAL" in _s)
+
+                _hard = any(_is_hard(_m) for _m in _must)
+
+                if str(_pl.get("DECISION", "")).upper() == "REJECT" and _short and (not _hard):
+                    _pl["DECISION"] = "REVISE"
+
+                if "text" in _pl:
+                    _pl.pop("text", None)
+                if not isinstance(_pl.get("REASONS"), list):
+                    _pl["REASONS"] = _reasons_list
+
+                _res["payload"] = _pl
+                _obj["result"] = _res
+                _p.write_text(_json.dumps(_obj, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return _artifact_paths
+
+try:
+    _execute_stub_original_p014_v3
+except NameError:
+    _execute_stub_original_p014_v3 = execute_stub
+
+    def execute_stub(*args, **kwargs):
+        _paths = _execute_stub_original_p014_v3(*args, **kwargs)
+        return _p014_force_revise_short_only(_paths)
+

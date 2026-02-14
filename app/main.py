@@ -2062,3 +2062,79 @@ async def bible_runtime_bridge_middleware(request, call_next):
     return await call_next(request)
 # --- /BIBLE_RUNTIME_BRIDGE_MW (P040_FIX) ---
 
+
+# P041_QUALITY_CONTRACT_BRIDGE_BEGIN
+@app.middleware("http")
+async def _p041_quality_contract_bridge(request, call_next):
+    response = await call_next(request)
+
+    if request.method != "POST" or request.url.path != "/agent/step":
+        return response
+
+    ctype = (response.headers.get("content-type") or "").lower()
+    if "application/json" not in ctype:
+        return response
+
+    body = b""
+    async for chunk in response.body_iterator:
+        body += chunk
+
+    try:
+        import json
+        from pathlib import Path
+
+        payload = json.loads(body.decode("utf-8"))
+        arts = payload.get("artifacts") or []
+        if isinstance(arts, str):
+            arts = [arts]
+
+        if arts:
+            p = Path(arts[0])
+            if not p.is_absolute():
+                p = (Path.cwd() / p).resolve()
+
+            if p.exists():
+                data = json.loads(p.read_text(encoding="utf-8"))
+                if str(data.get("mode", "")).upper() == "QUALITY":
+                    result = data.setdefault("result", {})
+                    pl = result.setdefault("payload", {})
+
+                    if not isinstance(pl, dict):
+                        pl = {"text": str(pl)}
+
+                    if "DECISION" not in pl:
+                        src_text = str(pl.get("text") or "")
+                        dec = ""
+
+                        try:
+                            from app.quality_rules import evaluate_quality
+                            q = evaluate_quality(src_text, min_words=50)
+                            dec = str(q.get("decision") or q.get("DECISION") or "").upper()
+                        except Exception:
+                            dec = ""
+
+                        if dec == "FAIL":
+                            dec = "REJECT"
+
+                        if dec not in {"ACCEPT", "REVISE", "REJECT"}:
+                            dec = "REVISE" if src_text.strip() else "REJECT"
+
+                        pl["DECISION"] = dec
+                        result["payload"] = pl
+                        data["result"] = result
+
+                        p.write_text(
+                            json.dumps(data, ensure_ascii=False, indent=2),
+                            encoding="utf-8"
+                        )
+    except Exception:
+        pass
+
+    from starlette.responses import Response
+    return Response(
+        content=body,
+        status_code=response.status_code,
+        headers=dict(response.headers),
+        media_type=response.media_type
+    )
+# P041_QUALITY_CONTRACT_BRIDGE_END

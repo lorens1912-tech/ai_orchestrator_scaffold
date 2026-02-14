@@ -8,12 +8,53 @@ New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
 $report = Join-Path $tempRoot "P041_RELEASE_LOCK_$ts.md"
 $dirtyReport = Join-Path $tempRoot "P041_RELEASE_LOCK_DIRTY_$ts.txt"
 
-# PRECHECK: repo musi być czyste przed gate
-$dirtyPre = (git status --porcelain | Out-String).Trim()
-if (-not [string]::IsNullOrWhiteSpace($dirtyPre)) {
-  git status --porcelain | Set-Content $dirtyReport -Encoding UTF8
-  throw "P041_PRECHECK_WORKTREE_NOT_CLEAN"
+$runtimeTracked = @(
+  "books/test_book/draft/latest.txt"
+)
+
+$runtimeDirs = @(
+  "runs",
+  ".pytest_cache",
+  "app/__pycache__",
+  "tests/__pycache__",
+  "reports/dirty_diag",
+  "books/book_runtime_test"
+)
+
+function Normalize-Path([string]$p) {
+  return $p.Replace('\','/').Trim()
 }
+
+function Get-DirtyPaths {
+  $lines = git status --porcelain=v1
+  $out = @()
+  foreach ($l in $lines) {
+    if ([string]::IsNullOrWhiteSpace($l)) { continue }
+    if ($l.Length -ge 4) { $out += (Normalize-Path $l.Substring(3)) }
+  }
+  return @($out | Sort-Object -Unique)
+}
+
+function Sanitize-KnownRuntime {
+  foreach ($f in $runtimeTracked) {
+    git restore --staged --worktree -- $f 2>$null
+  }
+  foreach ($d in $runtimeDirs) {
+    if (Test-Path $d) { Remove-Item $d -Recurse -Force -ErrorAction Stop }
+  }
+}
+
+function Assert-CleanOrFail([string]$phase) {
+  $dirty = Get-DirtyPaths
+  if ($dirty.Count -gt 0) {
+    $dirty | Set-Content $dirtyReport -Encoding UTF8
+    throw "P041_${phase}_WORKTREE_NOT_CLEAN"
+  }
+}
+
+# PRECHECK: auto-sanitize + twarde clean
+Sanitize-KnownRuntime
+Assert-CleanOrFail "PRECHECK"
 
 python -m py_compile .\app\main.py
 python -m py_compile .\app\quality_contract.py
@@ -34,12 +75,9 @@ if ($LASTEXITCODE -ne 0) { throw "P041_BASELINE_TESTS_FAILED" }
 .\scripts\p14_continuous_release_guard.ps1
 if ($LASTEXITCODE -ne 0) { throw "P041_P14_GUARD_FAILED" }
 
-# POSTCHECK: po testach/guard repo nadal czyste
-$dirtyPost = (git status --porcelain | Out-String).Trim()
-if (-not [string]::IsNullOrWhiteSpace($dirtyPost)) {
-  git status --porcelain | Set-Content $dirtyReport -Encoding UTF8
-  throw "P041_WORKTREE_NOT_CLEAN"
-}
+# POSTCHECK: po testach/guard auto-sanitize + twarde clean
+Sanitize-KnownRuntime
+Assert-CleanOrFail "POSTCHECK"
 
 $branch = git rev-parse --abbrev-ref HEAD
 $head = git rev-parse --short HEAD

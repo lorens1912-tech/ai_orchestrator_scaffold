@@ -2155,3 +2155,63 @@ async def _p041_quality_contract_bridge(request, call_next):
         return response
 # P041_QUALITY_CONTRACT_BRIDGE_END
 
+
+# P1022_MW_TEAM_INPUT_BEGIN
+@app.middleware("http")
+async def p1022_team_runtime_input_middleware(request, call_next):
+    response = await call_next(request)
+    try:
+        if request.method.upper() != "POST" or request.url.path != "/agent/step":
+            return response
+
+        import json, os
+        req_raw = await request.body()
+        req_obj = json.loads(req_raw.decode("utf-8")) if req_raw else {}
+        payload = req_obj.get("payload") if isinstance(req_obj, dict) else {}
+        team_id = payload.get("team_id") if isinstance(payload, dict) else None
+        if not team_id:
+            return response
+
+        body_bytes = b""
+        if getattr(response, "body", None) is not None:
+            body_bytes = response.body
+        else:
+            async for chunk in response.body_iterator:
+                body_bytes += chunk
+
+        if not body_bytes:
+            return response
+
+        resp_obj = json.loads(body_bytes.decode("utf-8"))
+        artifacts = resp_obj.get("artifacts") if isinstance(resp_obj, dict) else None
+
+        if isinstance(artifacts, list):
+            for ap in artifacts:
+                ap_s = str(ap)
+                if not os.path.exists(ap_s):
+                    continue
+                with open(ap_s, "r", encoding="utf-8") as rf:
+                    step = json.load(rf)
+
+                inp = step.get("input")
+                if not isinstance(inp, dict):
+                    inp = {}
+                if not inp and isinstance(payload, dict):
+                    inp = dict(payload)
+
+                inp["_team_id"] = team_id
+                step["input"] = inp
+
+                with open(ap_s, "w", encoding="utf-8") as wf:
+                    json.dump(step, wf, ensure_ascii=False, indent=2)
+
+        from starlette.responses import Response
+        return Response(
+            content=body_bytes,
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            media_type=response.media_type,
+        )
+    except Exception:
+        return response
+# P1022_MW_TEAM_INPUT_END

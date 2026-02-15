@@ -450,7 +450,97 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config_registry import load_modes, load_presets
-from app.orchestrator_stub import execute_stub, resolve_modes
+from app.orchestrator_stub import execute_stub as _execute_stub_impl, resolve_modes
+
+# --- P1022_RUNTIME_ARTIFACT_FIX_START ---
+def _extract_payload_from_execute_stub_call(args, kwargs):
+    p = kwargs.get("payload")
+    if isinstance(p, dict):
+        return p
+    for a in args:
+        if isinstance(a, dict) and ("team_id" in a or "_team_runtime" in a or "team_runtime" in a or "text" in a):
+            return a
+    return {}
+
+def _postprocess_agent_step_artifacts(resp, payload):
+    try:
+        from pathlib import Path
+        import json
+
+        if not isinstance(resp, dict):
+            return resp
+
+        artifacts = resp.get("artifacts") or resp.get("artifact_paths") or []
+        if not isinstance(artifacts, list):
+            return resp
+
+        payload = payload if isinstance(payload, dict) else {}
+        tr = payload.get("_team_runtime") or payload.get("team_runtime") or {}
+        tr = tr if isinstance(tr, dict) else {}
+
+        team_id = payload.get("_team_id") or payload.get("team_id") or tr.get("team_id")
+        team_policy_id = (
+            payload.get("_team_policy_id")
+            or payload.get("team_policy_id")
+            or tr.get("team_policy_id")
+            or tr.get("policy_id")
+        )
+
+        if (not team_policy_id) and isinstance(team_id, str) and team_id:
+            team_policy_id = f"team:{team_id}"
+
+        for ap in artifacts:
+            if not isinstance(ap, str):
+                continue
+            fp = Path(ap)
+            if not fp.exists():
+                continue
+
+            raw = fp.read_text(encoding="utf-8")
+            data = json.loads(raw)
+
+            inp = data.get("input")
+            if not isinstance(inp, dict):
+                inp = {}
+
+            tr_out = inp.get("_team_runtime")
+            tr_out = tr_out if isinstance(tr_out, dict) else {}
+
+            if isinstance(team_id, str) and team_id:
+                inp["_team_id"] = team_id
+                tr_out.setdefault("team_id", team_id)
+                tr_out.setdefault("strict_team", True)
+
+            if isinstance(team_policy_id, str) and team_policy_id:
+                inp["_team_policy_id"] = team_policy_id
+
+            if tr_out:
+                inp["_team_runtime"] = tr_out
+
+            data["input"] = inp
+            fp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    except Exception:
+        pass
+
+    return resp
+
+def execute_stub(*args, **kwargs):
+    import inspect
+    payload = _extract_payload_from_execute_stub_call(args, kwargs)
+    out = _execute_stub_impl(*args, **kwargs)
+
+    if inspect.isawaitable(out):
+        async def _await_and_patch():
+            resp = await out
+            _postprocess_agent_step_artifacts(resp, payload)
+            return resp
+        return _await_and_patch()
+
+    _postprocess_agent_step_artifacts(out, payload)
+    return out
+# --- P1022_RUNTIME_ARTIFACT_FIX_END ---
+
 
 app = FastAPI(title="AgentAI", version="runtime-fix-2026-02-06")
 
@@ -501,30 +591,6 @@ async def _p26_legacy_bridge_agent_step(request: _P26Request, call_next):
                 raw = _p26_json.dumps(body, ensure_ascii=False).encode("utf-8")
 
             async def _receive():
-                # P1022_TEAM_RUNTIME_BRIDGE_V2
-                try:
-                    _payload = getattr(req, 'payload', None) if 'req' in locals() else None
-                    if isinstance(_payload, dict):
-                        _team_id = _payload.get('team_id')
-                    else:
-                        _team_id = None
-                    if _team_id and ('artifacts' in locals()) and isinstance(artifacts, list):
-                        import os, json
-                        for _ap in artifacts:
-                            _p = str(_ap)
-                            if not os.path.exists(_p):
-                                continue
-                            with open(_p, 'r', encoding='utf-8') as _rf:
-                                _obj = json.load(_rf)
-                            _inp = _obj.get('input')
-                            if not isinstance(_inp, dict):
-                                _inp = {}
-                            _inp['_team_id'] = _team_id
-                            _obj['input'] = _inp
-                            with open(_p, 'w', encoding='utf-8') as _wf:
-                                json.dump(_obj, _wf, ensure_ascii=False, indent=2)
-                except Exception:
-                    pass
                 return {"type": "http.request", "body": raw, "more_body": False}
             request._receive = _receive
 
@@ -2179,63 +2245,3 @@ async def _p041_quality_contract_bridge(request, call_next):
         return response
 # P041_QUALITY_CONTRACT_BRIDGE_END
 
-
-# P1022_MW_TEAM_INPUT_BEGIN
-@app.middleware("http")
-async def p1022_team_runtime_input_middleware(request, call_next):
-    response = await call_next(request)
-    try:
-        if request.method.upper() != "POST" or request.url.path != "/agent/step":
-            return response
-
-        import json, os
-        req_raw = await request.body()
-        req_obj = json.loads(req_raw.decode("utf-8")) if req_raw else {}
-        payload = req_obj.get("payload") if isinstance(req_obj, dict) else {}
-        team_id = payload.get("team_id") if isinstance(payload, dict) else None
-        if not team_id:
-            return response
-
-        body_bytes = b""
-        if getattr(response, "body", None) is not None:
-            body_bytes = response.body
-        else:
-            async for chunk in response.body_iterator:
-                body_bytes += chunk
-
-        if not body_bytes:
-            return response
-
-        resp_obj = json.loads(body_bytes.decode("utf-8"))
-        artifacts = resp_obj.get("artifacts") if isinstance(resp_obj, dict) else None
-
-        if isinstance(artifacts, list):
-            for ap in artifacts:
-                ap_s = str(ap)
-                if not os.path.exists(ap_s):
-                    continue
-                with open(ap_s, "r", encoding="utf-8") as rf:
-                    step = json.load(rf)
-
-                inp = step.get("input")
-                if not isinstance(inp, dict):
-                    inp = {}
-                if not inp and isinstance(payload, dict):
-                    inp = dict(payload)
-
-                inp["_team_id"] = team_id
-                step["input"] = inp
-
-                with open(ap_s, "w", encoding="utf-8") as wf:
-                    json.dump(step, wf, ensure_ascii=False, indent=2)
-
-        from starlette.responses import Response
-        return Response(
-            content=body_bytes,
-            status_code=response.status_code,
-            headers=dict(response.headers),
-            media_type=response.media_type,
-        )
-    except Exception:
-        return response
-# P1022_MW_TEAM_INPUT_END

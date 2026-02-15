@@ -450,7 +450,75 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config_registry import load_modes, load_presets
-from app.orchestrator_stub import execute_stub as _execute_stub_impl, resolve_modes
+from app.orchestrator_stub import execute_stub as _execute_stub_orig, resolve_modes
+
+def _patch_step_artifacts_with_runtime(artifacts, payload):
+    if not isinstance(artifacts, list) or not isinstance(payload, dict):
+        return
+
+    tr = payload.get("_team_runtime") or payload.get("team_runtime") or {}
+    if not isinstance(tr, dict):
+        tr = {}
+
+    tid = payload.get("_team_id") or payload.get("team_id")
+    if (not tid) and tr:
+        tid = tr.get("team_id")
+
+    tpid = payload.get("_team_policy_id") or payload.get("team_policy_id")
+    if (not tpid) and tr:
+        tpid = tr.get("team_policy_id") or tr.get("policy_id")
+    if (not tpid) and isinstance(tid, str) and tid:
+        tpid = f"team:{tid}"
+
+    import json
+    from pathlib import Path
+
+    for ap in artifacts:
+        try:
+            pp = Path(str(ap))
+            if (not pp.exists()) or (pp.suffix.lower() != ".json"):
+                continue
+
+            d = json.loads(pp.read_text(encoding="utf-8"))
+            inp = d.get("input")
+            if not isinstance(inp, dict):
+                inp = {}
+
+            if tr:
+                inp["_team_runtime"] = dict(tr)
+            if isinstance(tid, str) and tid:
+                inp["_team_id"] = tid
+            if isinstance(tpid, str) and tpid:
+                inp["_team_policy_id"] = tpid
+
+            d["input"] = inp
+            pp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            continue
+
+
+def execute_stub(*args, **kwargs):
+    out = _execute_stub_orig(*args, **kwargs)
+
+    payload = kwargs.get("payload")
+    if not isinstance(payload, dict):
+        for a in args:
+            if isinstance(a, dict) and any(k in a for k in (
+                "team_id", "_team_id",
+                "team_runtime", "_team_runtime",
+                "team_policy_id", "_team_policy_id",
+                "text", "input"
+            )):
+                payload = a
+                break
+
+    artifacts = []
+    if isinstance(out, dict):
+        artifacts = out.get("artifacts") or out.get("artifact_paths") or []
+
+    _patch_step_artifacts_with_runtime(artifacts, payload)
+    return out
+
 
 # --- P1022_RUNTIME_ARTIFACT_FIX_START ---
 def _extract_payload_from_execute_stub_call(args, kwargs):

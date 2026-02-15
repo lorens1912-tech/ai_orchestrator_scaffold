@@ -450,7 +450,91 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config_registry import load_modes, load_presets
-from app.orchestrator_stub import execute_stub as _execute_stub_orig, resolve_modes
+from app.orchestrator_stub import execute_stub as _execute_stub_raw, resolve_modes
+
+# P1022_RUNTIME_ENFORCER_BEGIN
+def _patch_artifacts_team_runtime(artifacts, payload):
+    import json
+    from pathlib import Path
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    tr = payload.get("_team_runtime") or payload.get("team_runtime") or {}
+    if not isinstance(tr, dict):
+        tr = {}
+
+    tid = payload.get("_team_id") or payload.get("team_id") or tr.get("team_id")
+    tpid = (
+        payload.get("_team_policy_id")
+        or payload.get("team_policy_id")
+        or tr.get("team_policy_id")
+        or tr.get("policy_id")
+    )
+    if (not tpid) and isinstance(tid, str) and tid:
+        tpid = f"team:{tid}"
+
+    if isinstance(artifacts, str):
+        artifacts = [artifacts]
+    if not isinstance(artifacts, (list, tuple)):
+        return
+
+    for ap in artifacts:
+        if not isinstance(ap, str):
+            continue
+        pth = Path(ap)
+        if (not pth.exists()) or (pth.suffix.lower() != ".json"):
+            continue
+        try:
+            obj = json.loads(pth.read_text(encoding="utf-8"))
+            if not isinstance(obj, dict):
+                continue
+
+            inp = obj.get("input")
+            if not isinstance(inp, dict):
+                inp = {}
+
+            changed = False
+            if tr:
+                if inp.get("_team_runtime") != tr:
+                    inp["_team_runtime"] = dict(tr)
+                    changed = True
+            if isinstance(tid, str) and tid:
+                if inp.get("_team_id") != tid:
+                    inp["_team_id"] = tid
+                    changed = True
+            if isinstance(tpid, str) and tpid:
+                if inp.get("_team_policy_id") != tpid:
+                    inp["_team_policy_id"] = tpid
+                    changed = True
+
+            if changed:
+                obj["input"] = inp
+                pth.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            continue
+
+
+def execute_stub(*args, **kwargs):
+    result = _execute_stub_raw(*args, **kwargs)
+
+    payload = kwargs.get("payload")
+    if payload is None:
+        for a in args:
+            if isinstance(a, dict) and (
+                ("team_id" in a) or ("_team_id" in a) or
+                ("team_runtime" in a) or ("_team_runtime" in a)
+            ):
+                payload = a
+                break
+
+    artifacts = None
+    if isinstance(result, dict):
+        artifacts = result.get("artifacts") or result.get("artifact_paths") or []
+
+    _patch_artifacts_team_runtime(artifacts, payload)
+    return result
+# P1022_RUNTIME_ENFORCER_END
 
 def _patch_step_artifacts_with_runtime(artifacts, payload):
     if not isinstance(artifacts, list) or not isinstance(payload, dict):

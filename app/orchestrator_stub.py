@@ -752,3 +752,82 @@ except NameError:
         _paths = _execute_stub_original_p014_v3(*args, **kwargs)
         return _p014_force_revise_short_only(_paths)
 
+# --- P1022_RUNTIME_ARTIFACT_ENFORCER_V1 ---
+try:
+    _execute_stub_base = execute_stub  # type: ignore[name-defined]
+except Exception:
+    _execute_stub_base = None
+
+def _p1022_extract_team_fields(payload):
+    tr = payload.get("_team_runtime") or payload.get("team_runtime") or {}
+    if not isinstance(tr, dict):
+        tr = {}
+    team_id = payload.get("_team_id") or payload.get("team_id") or tr.get("team_id")
+    policy_id = (
+        payload.get("_team_policy_id")
+        or payload.get("team_policy_id")
+        or tr.get("team_policy_id")
+        or tr.get("policy_id")
+    )
+    if isinstance(team_id, str) and team_id and (not isinstance(policy_id, str) or not policy_id):
+        policy_id = f"team:{team_id}"
+    return team_id, policy_id, tr
+
+def _p1022_patch_artifact(path, payload):
+    from pathlib import Path as _P
+    import json as _json
+
+    fp = _P(path)
+    if not fp.exists() or fp.suffix.lower() != ".json":
+        return
+
+    try:
+        doc = _json.loads(fp.read_text(encoding="utf-8"))
+    except Exception:
+        return
+
+    if not isinstance(doc, dict):
+        return
+
+    inp = doc.get("input")
+    if not isinstance(inp, dict):
+        inp = {}
+
+    team_id, policy_id, tr = _p1022_extract_team_fields(payload)
+
+    if isinstance(tr, dict) and tr:
+        inp["_team_runtime"] = dict(tr)
+    if isinstance(team_id, str) and team_id:
+        inp["_team_id"] = team_id
+    if isinstance(policy_id, str) and policy_id:
+        inp["_team_policy_id"] = policy_id
+
+    doc["input"] = inp
+    fp.write_text(_json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+
+if callable(_execute_stub_base):
+    def execute_stub(*args, **kwargs):  # type: ignore[override]
+        result = _execute_stub_base(*args, **kwargs)
+
+        payload = kwargs.get("payload")
+        if payload is None and len(args) >= 2 and isinstance(args[1], dict):
+            payload = args[1]
+
+        if not isinstance(payload, dict):
+            return result
+
+        paths = []
+        if isinstance(result, dict):
+            for k in ("artifacts", "artifact_paths"):
+                v = result.get(k)
+                if isinstance(v, list):
+                    for item in v:
+                        if isinstance(item, str):
+                            paths.append(item)
+
+        for ap in paths:
+            _p1022_patch_artifact(ap, payload)
+
+        return result
+# --- /P1022_RUNTIME_ARTIFACT_ENFORCER_V1 ---
+

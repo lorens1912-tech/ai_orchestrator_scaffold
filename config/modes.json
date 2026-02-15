@@ -1,0 +1,54 @@
+{
+  "mode_ids": [
+    "PLAN",
+    "OUTLINE",
+    "WRITE",
+    "CRITIC",
+    "EDIT",
+    "REWRITE",
+    "EXPAND",
+    "QUALITY",
+    "UNIQUENESS",
+    "CONTINUITY",
+    "FACTCHECK",
+    "STYLE"
+  ],
+  "modes": [
+    {
+      "id": "PLAN"
+    },
+    {
+      "id": "OUTLINE"
+    },
+    {
+      "id": "WRITE"
+    },
+    {
+      "id": "CRITIC"
+    },
+    {
+      "id": "EDIT"
+    },
+    {
+      "id": "REWRITE"
+    },
+    {
+      "id": "EXPAND"
+    },
+    {
+      "id": "QUALITY"
+    },
+    {
+      "id": "UNIQUENESS"
+    },
+    {
+      "id": "CONTINUITY"
+    },
+    {
+      "id": "FACTCHECK"
+    },
+    {
+      "id": "TRANSLATE"
+    }
+  ]
+}

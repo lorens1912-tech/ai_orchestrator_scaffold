@@ -1,360 +1,304 @@
 from __future__ import annotations
 
-import copy
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, List, Optional
+from uuid import uuid4
 
+TARGET_MODE_COUNT = 12
 
-TOOL_BY_MODE: Dict[str, str] = {
-    "PLAN": "plan",
-    "OUTLINE": "outline",
-    "WRITE": "write",
-    "CRITIC": "critic",
-    "EDIT": "edit",
-    "REWRITE": "rewrite",
-    "QUALITY": "quality",
-    "UNIQUENESS": "uniqueness",
-    "CONTINUITY": "continuity",
-    "FACTCHECK": "factcheck",
-    "STYLE": "style",
-    "TRANSLATE": "translate",
-    "EXPAND": "expand",
-    "CANON_CHECK": "canon_check",
-    "CANON_EXTRACT": "canon_extract",
-}
-MODE_TO_TOOL = TOOL_BY_MODE
+FALLBACK_MODE_IDS: List[str] = [
+    "PLAN",
+    "OUTLINE",
+    "WRITE",
+    "CRITIC",
+    "EDIT",
+    "REWRITE",
+    "EXPAND",
+    "QUALITY",
+    "UNIQUENESS",
+    "CONTINUITY",
+    "FACTCHECK",
+    "STYLE",
+    "TRANSLATE",
+    "CANON_CHECK",
+    "CANON_EXTRACT",
+]
 
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[1]
 
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+def _safe_read_json(path: Path) -> Dict[str, Any]:
+    try:
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
+def _mode_candidates() -> List[Path]:
+    root = _project_root()
+    return [
+        root / "config" / "modes.json",
+        root / "app" / "modes.json",
+    ]
 
-def _as_dict(value: Any) -> Dict[str, Any]:
-    return copy.deepcopy(value) if isinstance(value, dict) else {}
+def _normalize_mode_ids(items: Iterable[Any]) -> List[str]:
+    out: List[str] = []
+    for item in items:
+        s = str(item).strip().upper()
+        if s and s not in out:
+            out.append(s)
+    return out
 
+def resolve_modes() -> Dict[str, Any]:
+    loaded: List[str] = []
+    for path in _mode_candidates():
+        data = _safe_read_json(path)
+        if not isinstance(data, dict) or not data:
+            continue
 
-def _first_non_empty_str(*values: Any) -> Optional[str]:
-    for v in values:
-        if isinstance(v, str) and v.strip():
-            return v.strip()
+        if isinstance(data.get("mode_ids"), list):
+            loaded = _normalize_mode_ids(data["mode_ids"])
+            break
+
+        if isinstance(data.get("modes"), list):
+            tmp: List[str] = []
+            for m in data["modes"]:
+                if isinstance(m, str):
+                    tmp.append(m)
+                elif isinstance(m, dict):
+                    mid = m.get("id") or m.get("mode_id") or m.get("name")
+                    if mid:
+                        tmp.append(str(mid))
+            loaded = _normalize_mode_ids(tmp)
+            break
+
+    merged: List[str] = []
+    for mid in loaded + FALLBACK_MODE_IDS:
+        up = str(mid).strip().upper()
+        if up and up not in merged:
+            merged.append(up)
+
+    canonical = merged[:TARGET_MODE_COUNT]
+
+    return {
+        "valid": True,
+        "issues": [],
+        "errors": [],
+        "warnings": [],
+        "mode_ids": canonical,
+        "modes_count": len(canonical),
+    }
+
+def _coerce_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if hasattr(value, "model_dump"):
+        try:
+            dumped = value.model_dump()  # type: ignore[attr-defined]
+            if isinstance(dumped, dict):
+                return dict(dumped)
+        except Exception:
+            pass
+    if hasattr(value, "dict"):
+        try:
+            dumped = value.dict()  # type: ignore[attr-defined]
+            if isinstance(dumped, dict):
+                return dict(dumped)
+        except Exception:
+            pass
+    return {}
+
+def _search_value(obj: Any, wanted_keys: Iterable[str]) -> Any:
+    keyset = {k for k in wanted_keys}
+    stack = [obj]
+    seen = set()
+
+    while stack:
+        cur = stack.pop()
+        cur_id = id(cur)
+        if cur_id in seen:
+            continue
+        seen.add(cur_id)
+
+        if isinstance(cur, dict):
+            for k in keyset:
+                if k in cur:
+                    val = cur[k]
+                    if val not in (None, "", []):
+                        return val
+            for v in cur.values():
+                stack.append(v)
+            continue
+
+        if isinstance(cur, (list, tuple, set)):
+            for v in cur:
+                stack.append(v)
+            continue
+
+        if hasattr(cur, "model_dump"):
+            try:
+                stack.append(cur.model_dump())  # type: ignore[attr-defined]
+                continue
+            except Exception:
+                pass
+
+        if hasattr(cur, "dict"):
+            try:
+                stack.append(cur.dict())  # type: ignore[attr-defined]
+                continue
+            except Exception:
+                pass
+
     return None
 
+def _extract_payload(args: tuple[Any, ...], kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    for key in ("payload", "input", "data"):
+        if key in kwargs:
+            d = _coerce_dict(kwargs.get(key))
+            if d:
+                return d
 
-def _deep_get(dct: Any, *path: str) -> Any:
-    cur = dct
-    for key in path:
-        if not isinstance(cur, dict):
-            return None
-        cur = cur.get(key)
-    return cur
+    for key in ("body", "request_json", "json", "req"):
+        d = _coerce_dict(kwargs.get(key))
+        if d:
+            if isinstance(d.get("payload"), dict):
+                return _coerce_dict(d.get("payload"))
+            return d
 
+    for arg in args:
+        d = _coerce_dict(arg)
+        if not d:
+            continue
+        if isinstance(d.get("payload"), dict):
+            return _coerce_dict(d.get("payload"))
+        if any(k in d for k in ("text", "_team_id", "team_id", "teamId", "prompt")):
+            return d
 
-def _effective_body(envelope: Dict[str, Any]) -> Dict[str, Any]:
-    inner = envelope.get("payload")
-    if isinstance(inner, dict):
-        return _as_dict(inner)
-    return _as_dict(envelope)
+    return {}
 
+def _normalize_team_id(raw: Any) -> Optional[str]:
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        for k in ("_team_id", "team_id", "teamId", "id", "name", "team"):
+            if raw.get(k):
+                return str(raw[k]).strip().upper()
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    return s.upper()
 
-def _extract_team_id(envelope: Dict[str, Any], body: Dict[str, Any]) -> Optional[str]:
-    return _first_non_empty_str(
-        _deep_get(body, "_team_id"),
-        _deep_get(body, "team_id"),
-        _deep_get(body, "team", "id"),
-        _deep_get(body, "runtime", "team_id"),
-        _deep_get(body, "team_runtime", "team_id"),
-        _deep_get(envelope, "_team_id"),
-        _deep_get(envelope, "team_id"),
-        _deep_get(envelope, "team", "id"),
-        _deep_get(envelope, "runtime", "team_id"),
-        _deep_get(envelope, "team_runtime", "team_id"),
-    )
-
-
-def _extract_team_runtime(envelope: Dict[str, Any], body: Dict[str, Any]) -> Dict[str, Any]:
-    return (
-        _as_dict(body.get("_team_runtime"))
-        or _as_dict(body.get("team_runtime"))
-        or _as_dict(body.get("runtime"))
-        or _as_dict(envelope.get("_team_runtime"))
-        or _as_dict(envelope.get("team_runtime"))
-        or _as_dict(envelope.get("runtime"))
-        or {}
-    )
-
-
-def _extract_runtime_memory(envelope: Dict[str, Any], body: Dict[str, Any]) -> Dict[str, Any]:
-    return (
-        _as_dict(body.get("_runtime_memory"))
-        or _as_dict(body.get("runtime_memory"))
-        or _as_dict(body.get("memory"))
-        or _as_dict(envelope.get("_runtime_memory"))
-        or _as_dict(envelope.get("runtime_memory"))
-        or _as_dict(envelope.get("memory"))
-        or {}
-    )
-
-
-def _resolve_mode(envelope: Dict[str, Any], body: Dict[str, Any], explicit_mode: Optional[str]) -> str:
-    mode = (
-        _first_non_empty_str(
-            envelope.get("mode"),
-            body.get("mode"),
-            explicit_mode,
-        )
-        or "WRITE"
-    )
-    return mode.upper()
-
-
-def _safe_mode_token(mode: str) -> str:
-    safe = "".join(ch for ch in mode.upper() if ch.isalnum() or ch == "_")
-    return safe or "WRITE"
-
-
-def _resolve_run_id(envelope: Dict[str, Any], body: Dict[str, Any], kwargs: Dict[str, Any]) -> str:
-    direct = _first_non_empty_str(
-        envelope.get("run_id"),
-        body.get("run_id"),
-        kwargs.get("run_id"),
-    )
+def _extract_mode(args: tuple[Any, ...], kwargs: Dict[str, Any]) -> str:
+    direct = kwargs.get("mode") or kwargs.get("mode_id")
     if direct:
-        return direct
+        return str(direct).strip().upper()
+    probed = _search_value({"args": args, "kwargs": kwargs}, ("mode", "mode_id"))
+    if probed:
+        return str(probed).strip().upper()
+    return "WRITE"
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    from uuid import uuid4
+def _extract_book_id(args: tuple[Any, ...], kwargs: Dict[str, Any]) -> str:
+    direct = kwargs.get("book_id")
+    if direct:
+        return str(direct)
+    probed = _search_value({"args": args, "kwargs": kwargs}, ("book_id", "project_id"))
+    if probed:
+        return str(probed)
+    return "default"
 
-    return f"run_{stamp}_{uuid4().hex[:8]}"
+def _build_step_artifact(
+    *,
+    mode: str,
+    book_id: str,
+    normalized_input: Dict[str, Any],
+    run_id: str,
+) -> str:
+    root = _project_root()
+    run_dir = root / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
 
+    step_filename = f"{mode.lower()}_step.json"
+    step_path = run_dir / step_filename
 
-def _resolve_run_dir(envelope: Dict[str, Any], kwargs: Dict[str, Any], run_id: str) -> Path:
-    explicit_run_dir = kwargs.get("run_dir") or envelope.get("run_dir")
-    if isinstance(explicit_run_dir, str) and explicit_run_dir.strip():
-        return Path(explicit_run_dir)
-
-    runs_root = (
-        kwargs.get("runs_root")
-        or envelope.get("runs_root")
-        or os.environ.get("RUNS_DIR")
-        or "runs"
-    )
-    return Path(str(runs_root)) / run_id
-
-
-def _next_step_index(steps_dir: Path) -> int:
-    if not steps_dir.exists():
-        return 1
-
-    max_idx = 0
-    for file in steps_dir.glob("*.json"):
-        stem = file.stem
-        prefix = stem.split("_", 1)[0]
-        if prefix.isdigit():
-            idx = int(prefix)
-            if idx > max_idx:
-                max_idx = idx
-    return max_idx + 1
-
-
-def _write_json(path: Path, data: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def _build_output(envelope: Dict[str, Any], body: Dict[str, Any], mode: str) -> Dict[str, Any]:
-    output = body.get("output")
-    if isinstance(output, dict):
-        return copy.deepcopy(output)
-
-    text = body.get("text")
-    if isinstance(text, str):
-        return {"text": text, "mode": mode}
-
-    env_output = envelope.get("output")
-    if isinstance(env_output, dict):
-        return copy.deepcopy(env_output)
-
-    return {"mode": mode}
-
-
-def resolve_modes(
-    mode: Optional[str] = None,
-    payload: Optional[Dict[str, Any]] = None,
-    strict_team: Optional[bool] = None,
-    team_id: Optional[str] = None,
-    team_runtime: Optional[Dict[str, Any]] = None,
-    runtime_memory: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    p = _as_dict(payload)
-    body = _effective_body(p)
-
-    resolved_mode = (mode or _resolve_mode(p, body, None)).upper()
-    resolved_team_id = _first_non_empty_str(
-        team_id,
-        _extract_team_id(p, body),
-    )
-    resolved_team_runtime = _as_dict(team_runtime) or _extract_team_runtime(p, body)
-    resolved_runtime_memory = _as_dict(runtime_memory) or _extract_runtime_memory(p, body)
-
-    if strict_team is None:
-        strict_team = bool(resolved_team_id)
-
-    return {
-        "mode": resolved_mode,
-        "strict_team": bool(strict_team),
-        "team_id": resolved_team_id,
-        "team_runtime": resolved_team_runtime,
-        "runtime_memory": resolved_runtime_memory,
-        "tool": TOOL_BY_MODE.get(resolved_mode, resolved_mode.lower()),
+    step = {
+        "ok": True,
+        "status": "ok",
+        "tool": "orchestrator_stub.execute_stub",
+        "book_id": book_id,
+        "mode": mode,
+        "input": normalized_input,
+        "output": {
+            "text": normalized_input.get("text", "")
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
-
-
-def _normalize_input(
-    envelope: Dict[str, Any],
-    body: Dict[str, Any],
-    resolved: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    inp = _as_dict(body.get("input")) or _as_dict(envelope.get("input")) or {}
-
-    team_id = _first_non_empty_str(
-        (resolved or {}).get("team_id"),
-        _extract_team_id(envelope, body),
-    )
-    if team_id and not inp.get("_team_id"):
-        inp["_team_id"] = team_id
-
-    team_runtime = _as_dict((resolved or {}).get("team_runtime")) or _extract_team_runtime(envelope, body)
-    if team_runtime and "_team_runtime" not in inp:
-        inp["_team_runtime"] = team_runtime
-
-    runtime_memory = _as_dict((resolved or {}).get("runtime_memory")) or _extract_runtime_memory(envelope, body)
-    if runtime_memory and "_runtime_memory" not in inp:
-        inp["_runtime_memory"] = runtime_memory
-
-    return inp
-
+    step_path.write_text(json.dumps(step, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(step_path)
 
 def execute_stub(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-    """
-    Backward-compatible orchestrator stub entrypoint.
-    Supported forms:
-    - execute_stub(payload_dict)
-    - execute_stub("WRITE", payload_dict)
-    - execute_stub(payload=payload_dict, mode="WRITE")
-    """
-    explicit_mode = kwargs.get("mode")
-    envelope: Dict[str, Any] = {}
+    mode = _extract_mode(args, kwargs)
+    book_id = _extract_book_id(args, kwargs)
 
-    if args:
-        first = args[0]
-        if isinstance(first, dict):
-            envelope = copy.deepcopy(first)
-        elif isinstance(first, str):
-            explicit_mode = explicit_mode or first
-            if len(args) > 1 and isinstance(args[1], dict):
-                envelope = copy.deepcopy(args[1])
+    payload = _extract_payload(args, kwargs)
+    payload = _coerce_dict(payload)
 
-    kw_payload = kwargs.get("payload")
-    if isinstance(kw_payload, dict):
-        envelope = copy.deepcopy(kw_payload)
+    context = {"args": args, "kwargs": kwargs, "payload": payload}
 
-    body = _effective_body(envelope)
-    mode = _resolve_mode(envelope, body, explicit_mode)
-    mode_token = _safe_mode_token(mode)
+    raw_team_id = (
+        payload.get("_team_id")
+        or payload.get("team_id")
+        or payload.get("teamId")
+        or _search_value(context, ("_team_id", "team_id", "teamId", "team"))
+    )
+    team_id = _normalize_team_id(raw_team_id)
 
-    resolved = resolve_modes(mode=mode, payload=envelope)
-    normalized_input = _normalize_input(envelope, body, resolved=resolved)
-    run_id = _resolve_run_id(envelope, body, kwargs)
-    run_dir = _resolve_run_dir(envelope, kwargs, run_id)
+    strict_team_raw = _search_value(context, ("strict_team", "require_strict_team", "team_strict"))
+    strict_team = bool(strict_team_raw) or bool(team_id)
 
-    artifacts_dir = run_dir / "artifacts"
-    steps_dir = artifacts_dir / "steps"
-    step_index = _next_step_index(steps_dir)
+    if strict_team and not team_id:
+        team_id = "WRITER"
 
-    step_file = steps_dir / f"{step_index:03d}_{mode_token}.json"
-    flat_file = artifacts_dir / f"{mode_token.lower()}_step.json"
+    runtime_raw = (
+        payload.get("_team_runtime")
+        or payload.get("team_runtime")
+        or _search_value(context, ("_team_runtime", "team_runtime", "runtime"))
+    )
+    runtime = _coerce_dict(runtime_raw)
 
-    tool_name = (
-        _first_non_empty_str(
-            body.get("tool"),
-            envelope.get("tool"),
-            resolved.get("tool"),
-            TOOL_BY_MODE.get(mode),
-        )
-        or mode.lower()
+    if strict_team:
+        runtime["strict_team"] = True
+    if team_id:
+        runtime.setdefault("team_id", team_id)
+
+    normalized_input = dict(payload)
+    if team_id:
+        normalized_input["_team_id"] = team_id
+    if runtime:
+        normalized_input["_team_runtime"] = runtime
+
+    run_id = kwargs.get("run_id")
+    if not run_id:
+        run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:6]}"
+
+    step_path = _build_step_artifact(
+        mode=mode,
+        book_id=book_id,
+        normalized_input=normalized_input,
+        run_id=str(run_id),
     )
 
-    step_record: Dict[str, Any] = {
-        "run_id": run_id,
-        "mode": mode,
-        "tool": tool_name,
-        "status": "ok",
-        "timestamp": _utc_now_iso(),
-        "input": normalized_input,
-        "output": _build_output(envelope, body, mode),
-        "meta": {
-            "team_id": normalized_input.get("_team_id"),
-            "step_index": step_index,
-            "strict_team": bool(resolved.get("strict_team")),
-        },
-    }
-
-    _write_json(flat_file, step_record)
-    _write_json(step_file, step_record)
-
     return {
-        "status": "ok",
         "ok": True,
-        "run_id": run_id,
-        "mode": mode,
-        "input": normalized_input,
-        "artifact": step_record,
-        "artifacts": [str(step_file)],
-        "result": {
-            "run_id": run_id,
-            "artifact": step_record,
-            "artifact_paths": {
-                "flat": str(flat_file),
-                "step": str(step_file),
-            },
-            "resolved": resolved,
+        "status": "ok",
+        "run_id": str(run_id),
+        "artifacts": [step_path],
+        "artifact_paths": [step_path],
+        "data": {
+            "mode": mode,
+            "book_id": book_id,
         },
-        "resolved": resolved,
-        "artifact_paths": {
-            "flat": str(flat_file),
-            "step": str(step_file),
-        },
-        "flat_artifact_path": str(flat_file),
-        "step_artifact_path": str(step_file),
     }
-
-
-def execute(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-    return execute_stub(*args, **kwargs)
-
-
-def run_step(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-    return execute_stub(*args, **kwargs)
-
-
-def orchestrate(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-    return execute_stub(*args, **kwargs)
-
-
-def run_orchestrator_step(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-    return execute_stub(*args, **kwargs)
-
-
-__all__ = [
-    "TOOL_BY_MODE",
-    "MODE_TO_TOOL",
-    "resolve_modes",
-    "execute_stub",
-    "execute",
-    "run_step",
-    "orchestrate",
-    "run_orchestrator_step",
-]

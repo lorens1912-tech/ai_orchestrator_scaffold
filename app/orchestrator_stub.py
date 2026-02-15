@@ -225,6 +225,18 @@ def _build_step_artifact(
     step_path = run_dir / step_filename
 
     step = {
+    # P1022_V10_STEP_INPUT_BEGIN
+    _inp = step.get('input')
+    if not isinstance(_inp, dict):
+        _inp = {}
+    if payload.get('_team_runtime'):
+        _inp['_team_runtime'] = payload.get('_team_runtime')
+    if payload.get('_team_id'):
+        _inp['_team_id'] = payload.get('_team_id')
+    if payload.get('_team_policy_id'):
+        _inp['_team_policy_id'] = payload.get('_team_policy_id')
+    step['input'] = _inp
+    # P1022_V10_STEP_INPUT_END
         "ok": True,
         "status": "ok",
         "tool": "orchestrator_stub.execute_stub",
@@ -240,6 +252,21 @@ def _build_step_artifact(
     return str(step_path)
 
 def execute_stub(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+    # P1022_V10_TEAM_RUNTIME_BEGIN
+    if not isinstance(payload, dict):
+        payload = {}
+    _tr = payload.get('_team_runtime') or payload.get('team_runtime') or {}
+    if isinstance(_tr, dict) and _tr:
+        payload['_team_runtime'] = dict(_tr)
+    _tid = payload.get('_team_id') or payload.get('team_id') or (_tr.get('team_id') if isinstance(_tr, dict) else None)
+    if isinstance(_tid, str) and _tid:
+        payload['_team_id'] = _tid
+    _tpid = payload.get('_team_policy_id') or payload.get('team_policy_id') or (_tr.get('team_policy_id') if isinstance(_tr, dict) else None) or (_tr.get('policy_id') if isinstance(_tr, dict) else None)
+    if (not _tpid) and payload.get('_team_id'):
+        _tpid = f"team:{payload['_team_id']}"
+    if isinstance(_tpid, str) and _tpid:
+        payload['_team_policy_id'] = _tpid
+    # P1022_V10_TEAM_RUNTIME_END
     mode = _extract_mode(args, kwargs)
     book_id = _extract_book_id(args, kwargs)
 

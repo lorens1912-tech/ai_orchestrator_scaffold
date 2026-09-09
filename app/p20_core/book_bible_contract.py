@@ -7,6 +7,10 @@ from typing import Any, Dict
 
 BOOK_BIBLE_CONTRACT_VERSION = "1.0"
 
+
+class BookBibleContractError(ValueError):
+    pass
+
 BOOK_BIBLE_VERSIONING_POLICY: tuple[str, ...] = (
     "Bump BOOK_BIBLE_CONTRACT_VERSION whenever REQUIRED_* contract fields change.",
     "Refresh BOOK_BIBLE_CONTRACT_GUARD_FROZEN_VERSION together with the new version.",
@@ -101,33 +105,33 @@ def validate_book_bible_payload_or_raise(
     expected_book_id: str | None = None,
 ) -> Dict[str, Any]:
     if not isinstance(payload, dict):
-        raise ValueError("book_bible must be valid json object")
+        raise BookBibleContractError("book_bible must be valid json object")
 
     for key in REQUIRED_BOOK_BIBLE_KEYS:
         if key not in payload:
-            raise ValueError(f"{key} is required")
+            raise BookBibleContractError(f"{key} is required")
 
     if not _non_empty_text(payload.get("book_id")):
-        raise ValueError("book_id must be a non-empty string")
+        raise BookBibleContractError("book_id must be a non-empty string")
 
     for key in REQUIRED_NON_EMPTY_STRING_KEYS:
         if not _non_empty_text(payload.get(key)):
-            raise ValueError(f"{key} must be a non-empty string")
+            raise BookBibleContractError(f"{key} must be a non-empty string")
 
     for key in REQUIRED_NON_EMPTY_LIST_KEYS:
         if not _non_empty_list(payload.get(key)):
-            raise ValueError(f"{key} must be a non-empty list")
+            raise BookBibleContractError(f"{key} must be a non-empty list")
 
     for key in REQUIRED_OBJECT_LIST_KEYS:
         if not _items_are_dicts(payload.get(key)):
-            raise ValueError(f"{key} must be a list of objects")
+            raise BookBibleContractError(f"{key} must be a list of objects")
 
     for key in LIST_KEYS_REQUIRING_ID:
         if not _items_have_id(payload.get(key)):
-            raise ValueError(f"{key} items must contain id")
+            raise BookBibleContractError(f"{key} items must contain id")
 
     if expected_book_id is not None and "book_id" in payload and str(payload.get("book_id")) != str(expected_book_id):
-        raise ValueError("book_id must match expected_book_id")
+        raise BookBibleContractError("book_id must match expected_book_id")
 
     return payload
 
@@ -145,23 +149,23 @@ def _map_validator_error_for_runtime(msg: str) -> str:
 
 def load_book_bible_or_raise(book_id: str) -> Dict[str, Any]:
     if not _non_empty_text(book_id):
-        raise ValueError("BOOK_ID_MISSING")
+        raise BookBibleContractError("BOOK_ID_MISSING")
 
     bible_path = Path("books") / str(book_id) / "book_bible.json"
 
     if not bible_path.exists():
-        raise ValueError("BOOK_BIBLE_MISSING")
+        raise BookBibleContractError("BOOK_BIBLE_MISSING")
 
     try:
         raw = bible_path.read_text(encoding="utf-8")
         payload = json.loads(raw)
     except Exception:
-        raise ValueError("BOOK_BIBLE_INVALID_JSON")
+        raise BookBibleContractError("BOOK_BIBLE_INVALID_JSON")
 
     try:
         validate_book_bible_payload_or_raise(payload, expected_book_id=book_id)
-    except ValueError as e:
-        raise ValueError(_map_validator_error_for_runtime(str(e)))
+    except BookBibleContractError as e:
+        raise BookBibleContractError(_map_validator_error_for_runtime(str(e)))
 
     contract = {
         "path": str(bible_path).replace("\\", "/"),
@@ -191,6 +195,7 @@ def ensure_test_book_bible(book_id: str) -> Dict[str, Any]:
 
 __all__ = [
     "BOOK_BIBLE_CONTRACT_VERSION",
+    "BookBibleContractError",
     "BOOK_BIBLE_VERSIONING_POLICY",
     "BOOK_BIBLE_CONTRACT_GUARD_FROZEN_VERSION",
     "BOOK_BIBLE_CONTRACT_GUARD_FROZEN_REQUIRED_FINGERPRINT",

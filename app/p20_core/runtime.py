@@ -29,6 +29,7 @@ from app.p20_core.canon_service import (
     write_audit,
 )
 from app.p20_core.contracts import AgentStepRequest
+from app.p20_core.book_bible_contract import load_book_bible_or_raise
 from app.p20_core.master_canon import resolve_master_canon
 from app.p20_core.project_truth import build_project_truth_binding, assert_resume_project_truth_consistency
 from app.p20_core.lock_service import (
@@ -225,52 +226,6 @@ def normalize_artifact_paths(result: Any) -> List[str]:
 
 
 async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
-
-    # --- BOOK_BIBLE GUARD ---
-    from pathlib import Path
-    import json
-
-    modes_check = list(req.modes or [])
-    if not modes_check and getattr(req, "mode", None):
-        modes_check = [req.mode]
-
-    if "WRITE" in modes_check:
-        book_id = req.book_id or ((req.payload or {}).get("book_id"))
-        bible_path = Path("books") / book_id / "book_bible.json"
-
-        if not bible_path.exists():
-            return {
-                "ok": False,
-                "decision": "REJECT",
-                "error": "BOOK_BIBLE_MISSING",
-            }
-
-        try:
-            bible_doc = json.loads(bible_path.read_text(encoding="utf-8"))
-        except Exception:
-            return {
-                "ok": False,
-                "decision": "REJECT",
-                "error": "BOOK_BIBLE_INVALID_JSON",
-            }
-
-        required = ["title", "genre", "premise", "acts", "characters", "timeline", "facts", "decisions"]
-        for k in required:
-            if k not in bible_doc:
-                return {
-                    "ok": False,
-                    "decision": "REJECT",
-                    "error": f"BOOK_BIBLE_MISSING_FIELD:{k}",
-                }
-
-        import hashlib
-        raw_bible = bible_path.read_text(encoding="utf-8")
-        book_bible_binding = {
-            "path": str(bible_path).replace("\\", "/"),
-            "sha256": hashlib.sha256(raw_bible.encode("utf-8")).hexdigest(),
-            "contract_version": "1.0",
-        }
-
     payload = build_request_payload(req)
 
     book_id = str(payload.get("book_id") or "book_runtime_test")
@@ -280,6 +235,18 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
 
     modes = resolve_modes(req, payload)
     scene_ref = str(payload.get("scene_ref") or payload.get("scene") or "").strip() or None
+    is_write = "WRITE" in modes
+    book_bible_binding: Dict[str, Any] = {}
+
+    if is_write:
+        book_bible = load_book_bible_or_raise(book_id)
+        book_bible_contract = book_bible["_contract"]
+        book_bible_binding = {
+            "path": book_bible_contract["path"],
+            "sha256": book_bible_contract["sha256"],
+            "contract_version": book_bible_contract["contract_version"],
+        }
+        payload["_book_bible"] = dict(book_bible_binding)
 
     ensure_book_dirs(book_id)
 
@@ -419,7 +386,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
 
         artifact_paths = normalize_artifact_paths(stub_out)
 
-        if "WRITE" in modes_check:
+        if is_write:
             for _artifact_path in artifact_paths:
                 try:
                     _p = Path(_artifact_path)
@@ -497,14 +464,14 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                     ).replace("\\", "/")
                     chapter_doc["master_canon"] = dict(master_canon_ref)
                     chapter_doc["project_truth"] = dict(project_truth_ref)
-                    if "WRITE" in modes_check:
-                        chapter_doc["book_bible_path"] = str(bible_path).replace("\\", "/")
+                    if is_write:
+                        chapter_doc["book_bible_path"] = book_bible_binding["path"]
                         chapter_doc["book_bible_sha256"] = book_bible_binding["sha256"]
                         chapter_doc["book_bible_contract_version"] = book_bible_binding["contract_version"]
                         chapter_doc["book_bible"] = dict(book_bible_binding)
                         chapter_doc["canon_validation"] = {
                             "source": "book_bible.json",
-                            "path": str(bible_path).replace("\\", "/"),
+                            "path": book_bible_binding["path"],
                             "sha256": book_bible_binding["sha256"],
                             "contract_version": book_bible_binding["contract_version"],
                         }
@@ -524,7 +491,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
         state["decision"] = decision
         state["master_canon"] = dict(master_canon_ref)
         state["project_truth"] = dict(project_truth_ref)
-        if "WRITE" in modes_check:
+        if is_write:
             state["book_bible"] = dict(book_bible_binding)
         (REPO_ROOT / "runs" / run_id / "run_state.json").write_text(
             json.dumps(state, ensure_ascii=False, indent=2),
@@ -563,7 +530,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             "chapter_path": chapter_path,
             "master_canon": master_canon_ref,
             "project_truth": project_truth_ref,
-            "book_bible": dict(book_bible_binding) if "WRITE" in modes_check else {},
+            "book_bible": dict(book_bible_binding) if is_write else {},
             "run_state": state,
             "canon_memory": canon_memory,
         }

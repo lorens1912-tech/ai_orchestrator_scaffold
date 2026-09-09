@@ -4,6 +4,7 @@ from typing import Dict, Any
 from app.p20_core.runtime import run_agent_step, health_payload, config_validate_payload
 from app.p20_core.contracts import AgentStepRequest
 from app.p20_core.book_bible_contract import load_book_bible_or_raise
+from app.p20_core.canon_rebuild import canon_rebuild_endpoint
 
 app = FastAPI()
 
@@ -16,6 +17,11 @@ def health():
 @app.get("/config/validate")
 def config_validate():
     return config_validate_payload()
+
+
+@app.post("/canon/rebuild")
+def canon_rebuild(body: Dict[str, Any]) -> Dict[str, Any]:
+    return canon_rebuild_endpoint(body)
 
 
 @app.post("/agent/step")

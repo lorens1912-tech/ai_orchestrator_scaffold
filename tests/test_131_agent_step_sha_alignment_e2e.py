@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
-from uuid import uuid4
 from unittest.mock import patch
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.p20_core.canon_service import json_write
 from app.p20_core.book_bible_test_helper import ensure_test_book_bible
+from app.p20_core.storage_paths import get_books_root, get_runs_root, get_storage_root
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -18,31 +18,41 @@ client = TestClient(app)
 
 
 def _book_dir(book_id: str) -> Path:
-    return REPO_ROOT / "books" / book_id
+    return get_books_root() / book_id
 
 
 def _run_dir(run_id: str) -> Path:
+    return get_runs_root() / run_id
+
+
+def _storage_path(public_path: str) -> Path:
+    return get_storage_root() / public_path
+
+
+def _repo_book_dir(book_id: str) -> Path:
+    return REPO_ROOT / "books" / book_id
+
+
+def _repo_run_dir(run_id: str) -> Path:
     return REPO_ROOT / "runs" / run_id
 
 
-def _clean_book(book_id: str) -> None:
-    p = _book_dir(book_id)
-    if p.exists():
-        shutil.rmtree(p)
+def _assert_repo_book_absent(book_id: str) -> None:
+    assert not _repo_book_dir(book_id).exists(), _repo_book_dir(book_id)
 
 
-def _clean_run(run_id: str) -> None:
-    p = _run_dir(run_id)
-    if p.exists():
-        shutil.rmtree(p)
+def _assert_repo_run_absent(run_id: str) -> None:
+    assert not _repo_run_dir(run_id).exists(), _repo_run_dir(run_id)
 
 
-def test_agent_step_master_canon_sha_matches_project_truth_everywhere():
+def test_agent_step_master_canon_sha_matches_project_truth_everywhere(isolated_agentpro_storage):
     book_id = f"p20_agent_sha_align_{uuid4().hex[:8]}"
-    ensure_test_book_bible(book_id)
     run_id = f"run_agent_sha_align_{uuid4().hex[:8]}"
+    _assert_repo_book_absent(book_id)
+    _assert_repo_run_absent(run_id)
 
     try:
+        ensure_test_book_bible(book_id)
         book_dir = _book_dir(book_id)
         (book_dir / "chapters").mkdir(parents=True, exist_ok=True)
         (book_dir / "memory").mkdir(parents=True, exist_ok=True)
@@ -86,9 +96,11 @@ def test_agent_step_master_canon_sha_matches_project_truth_everywhere():
         response_truth_sha = data["project_truth"]["sha256"]
         assert response_master_sha == response_truth_sha
 
-        chapter_path = REPO_ROOT / data["chapter_path"]
-        audit_path = REPO_ROOT / "runs" / run_id / "audit.json"
-        snapshot_path = REPO_ROOT / data["canon_snapshot_path"]
+        assert data["chapter_path"].startswith("books/"), data
+        assert data["canon_snapshot_path"].startswith("books/"), data
+        chapter_path = _storage_path(data["chapter_path"])
+        audit_path = _run_dir(run_id) / "audit.json"
+        snapshot_path = _storage_path(data["canon_snapshot_path"])
 
         chapter = json.loads(chapter_path.read_text(encoding="utf-8"))
         audit = json.loads(audit_path.read_text(encoding="utf-8"))
@@ -119,5 +131,5 @@ def test_agent_step_master_canon_sha_matches_project_truth_everywhere():
         assert audit_master_sha == response_master_sha
         assert snapshot_master_sha == response_master_sha
     finally:
-        _clean_book(book_id)
-        _clean_run(run_id)
+        _assert_repo_book_absent(book_id)
+        _assert_repo_run_absent(run_id)

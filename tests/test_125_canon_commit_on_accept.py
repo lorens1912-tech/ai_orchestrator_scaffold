@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
-import shutil
 import unittest
 from pathlib import Path
-from uuid import uuid4
 from unittest.mock import patch
+from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.p20_core.book_bible_test_helper import ensure_test_book_bible
+from app.p20_core.storage_paths import get_books_root, get_runs_root
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -17,30 +19,38 @@ client = TestClient(app)
 
 
 def _book_dir(book_id: str) -> Path:
-    return REPO_ROOT / "books" / book_id
+    return get_books_root() / book_id
 
 
 def _run_dir(run_id: str) -> Path:
+    return get_runs_root() / run_id
+
+
+def _repo_book_dir(book_id: str) -> Path:
+    return REPO_ROOT / "books" / book_id
+
+
+def _repo_run_dir(run_id: str) -> Path:
     return REPO_ROOT / "runs" / run_id
 
 
-def _clean_book(book_id: str) -> None:
-    p = _book_dir(book_id)
-    if p.exists():
-        shutil.rmtree(p)
+def _assert_repo_book_absent(book_id: str) -> None:
+    assert not _repo_book_dir(book_id).exists(), _repo_book_dir(book_id)
 
 
-def _clean_run(run_id: str) -> None:
-    p = _run_dir(run_id)
-    if p.exists():
-        shutil.rmtree(p)
+def _assert_repo_run_absent(run_id: str) -> None:
+    assert not _repo_run_dir(run_id).exists(), _repo_run_dir(run_id)
 
 
+@pytest.mark.usefixtures("isolated_agentpro_storage")
 class TestP20CanonCommit(unittest.TestCase):
     def test_accept_commits_chapter_to_canon_memory(self):
         book_id = f"p20_commit_accept_{uuid4().hex[:8]}"
         run_id = f"run_commit_accept_{uuid4().hex[:8]}"
+        _assert_repo_book_absent(book_id)
+        _assert_repo_run_absent(run_id)
         try:
+            ensure_test_book_bible(book_id)
             with patch(
                 "app.p20_core.runtime.execute_stub",
                 return_value={"artifact_paths": ["runs/fake_commit/001_WRITE.json"]},
@@ -77,13 +87,16 @@ class TestP20CanonCommit(unittest.TestCase):
             self.assertEqual(len(canon["approved_chapters"]), 1)
             self.assertEqual(canon["approved_chapters"][0]["run_id"], run_id)
         finally:
-            _clean_book(book_id)
-            _clean_run(run_id)
+            _assert_repo_book_absent(book_id)
+            _assert_repo_run_absent(run_id)
 
     def test_reject_does_not_commit_chapter_to_canon_memory(self):
         book_id = f"p20_commit_reject_{uuid4().hex[:8]}"
         run_id = f"run_commit_reject_{uuid4().hex[:8]}"
+        _assert_repo_book_absent(book_id)
+        _assert_repo_run_absent(run_id)
         try:
+            ensure_test_book_bible(book_id)
             with patch(
                 "app.p20_core.runtime.execute_stub",
                 return_value={"artifact_paths": ["runs/fake_commit_reject/001_WRITE.json"]},
@@ -120,8 +133,8 @@ class TestP20CanonCommit(unittest.TestCase):
             self.assertFalse(canon.get("last_accepted_chapter"))
             self.assertNotIn("chapter_count", canon)
         finally:
-            _clean_book(book_id)
-            _clean_run(run_id)
+            _assert_repo_book_absent(book_id)
+            _assert_repo_run_absent(run_id)
 
 
 if __name__ == "__main__":

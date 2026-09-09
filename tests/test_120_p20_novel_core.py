@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-import shutil
 import unittest
 from pathlib import Path
-from uuid import uuid4
 from unittest.mock import patch
+from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.p20_core.book_bible_test_helper import ensure_test_book_bible
+from app.p20_core.storage_paths import get_books_root, get_runs_root, get_storage_root
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -16,15 +18,34 @@ client = TestClient(app)
 
 
 def _book_dir(book_id: str) -> Path:
+    return get_books_root() / book_id
+
+
+def _storage_path(public_path: str) -> Path:
+    return get_storage_root() / public_path
+
+
+def _repo_book_dir(book_id: str) -> Path:
     return REPO_ROOT / "books" / book_id
 
 
-def _clean_book(book_id: str) -> None:
-    p = _book_dir(book_id)
-    if p.exists():
-        shutil.rmtree(p)
+def _repo_run_dir(run_id: str | None) -> Path | None:
+    if not run_id:
+        return None
+    return REPO_ROOT / "runs" / run_id
 
 
+def _assert_repo_book_absent(book_id: str) -> None:
+    assert not _repo_book_dir(book_id).exists(), _repo_book_dir(book_id)
+
+
+def _assert_repo_run_absent(run_id: str | None) -> None:
+    repo_run = _repo_run_dir(run_id)
+    if repo_run is not None:
+        assert not repo_run.exists(), repo_run
+
+
+@pytest.mark.usefixtures("isolated_agentpro_storage")
 class TestP20NovelCore(unittest.TestCase):
     def _post_write(self, book_id: str, text: str):
         body = {
@@ -38,7 +59,9 @@ class TestP20NovelCore(unittest.TestCase):
 
     def test_accept_write_saves_chapter(self):
         book_id = f"p20_accept_{uuid4().hex[:8]}"
+        _assert_repo_book_absent(book_id)
         try:
+            ensure_test_book_bible(book_id)
             with patch(
                 "app.p20_core.runtime.execute_stub",
                 return_value={"artifact_paths": ["runs/fake_accept/001_WRITE.json"]},
@@ -62,7 +85,8 @@ class TestP20NovelCore(unittest.TestCase):
             self.assertEqual(data["artifact_count"], 1, data)
             self.assertTrue(data.get("chapter_path"), data)
 
-            chapter_path = REPO_ROOT / data["chapter_path"]
+            self.assertTrue(data["chapter_path"].startswith("books/"), data)
+            chapter_path = _storage_path(data["chapter_path"])
             self.assertTrue(chapter_path.exists(), chapter_path)
 
             chapters = sorted((_book_dir(book_id) / "chapters").glob("chapter_*.json"))
@@ -70,11 +94,15 @@ class TestP20NovelCore(unittest.TestCase):
 
             mock_exec.assert_called_once()
         finally:
-            _clean_book(book_id)
+            _assert_repo_book_absent(book_id)
+            if "data" in locals():
+                _assert_repo_run_absent(data.get("run_id"))
 
     def test_pre_write_reject_blocks_execute_and_save(self):
         book_id = f"p20_pre_reject_{uuid4().hex[:8]}"
+        _assert_repo_book_absent(book_id)
         try:
+            ensure_test_book_bible(book_id)
             with patch(
                 "app.p20_core.runtime.execute_stub",
                 return_value={"artifact_paths": ["runs/fake_pre/001_WRITE.json"]},
@@ -99,11 +127,15 @@ class TestP20NovelCore(unittest.TestCase):
 
             mock_exec.assert_not_called()
         finally:
-            _clean_book(book_id)
+            _assert_repo_book_absent(book_id)
+            if "data" in locals():
+                _assert_repo_run_absent(data.get("run_id"))
 
     def test_post_write_reject_blocks_chapter_save(self):
         book_id = f"p20_post_reject_{uuid4().hex[:8]}"
+        _assert_repo_book_absent(book_id)
         try:
+            ensure_test_book_bible(book_id)
             with patch(
                 "app.p20_core.runtime.execute_stub",
                 return_value={"artifact_paths": ["runs/fake_post/001_WRITE.json"]},
@@ -133,7 +165,9 @@ class TestP20NovelCore(unittest.TestCase):
 
             mock_exec.assert_called_once()
         finally:
-            _clean_book(book_id)
+            _assert_repo_book_absent(book_id)
+            if "data" in locals():
+                _assert_repo_run_absent(data.get("run_id"))
 
 
 if __name__ == "__main__":

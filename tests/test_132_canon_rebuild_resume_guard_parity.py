@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from uuid import uuid4
 
@@ -10,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.p20_core.canon_service import json_write
 from app.p20_core.project_truth import build_project_truth_binding
+from app.p20_core.storage_paths import get_books_root, get_runs_root
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -17,23 +17,27 @@ client = TestClient(app)
 
 
 def _book_dir(book_id: str) -> Path:
-    return REPO_ROOT / "books" / book_id
+    return get_books_root() / book_id
 
 
 def _run_dir(run_id: str) -> Path:
+    return get_runs_root() / run_id
+
+
+def _repo_book_dir(book_id: str) -> Path:
+    return REPO_ROOT / "books" / book_id
+
+
+def _repo_run_dir(run_id: str) -> Path:
     return REPO_ROOT / "runs" / run_id
 
 
-def _clean_book(book_id: str) -> None:
-    p = _book_dir(book_id)
-    if p.exists():
-        shutil.rmtree(p)
+def _assert_repo_book_absent(book_id: str) -> None:
+    assert not _repo_book_dir(book_id).exists(), _repo_book_dir(book_id)
 
 
-def _clean_run(run_id: str) -> None:
-    p = _run_dir(run_id)
-    if p.exists():
-        shutil.rmtree(p)
+def _assert_repo_run_absent(run_id: str) -> None:
+    assert not _repo_run_dir(run_id).exists(), _repo_run_dir(run_id)
 
 
 def _make_book(book_id: str) -> None:
@@ -59,9 +63,11 @@ def _make_book(book_id: str) -> None:
     })
 
 
-def test_canon_rebuild_resume_reuses_latest_run_id_and_persists_runtime_style_state():
+def test_canon_rebuild_resume_reuses_latest_run_id_and_persists_runtime_style_state(isolated_agentpro_storage):
     book_id = f"p20_rebuild_resume_{uuid4().hex[:8]}"
     run_id = f"run_rebuild_resume_{uuid4().hex[:8]}"
+    _assert_repo_book_absent(book_id)
+    _assert_repo_run_absent(run_id)
     try:
         _make_book(book_id)
 
@@ -101,12 +107,12 @@ def test_canon_rebuild_resume_reuses_latest_run_id_and_persists_runtime_style_st
         assert state["rebuild_artifact_path"] == d2["rebuild_artifact_path"], state
         assert state["canon_snapshot_path"] == d2["canon_snapshot_path"], state
     finally:
-        _clean_book(book_id)
-        _clean_run(run_id)
+        _assert_repo_book_absent(book_id)
+        _assert_repo_run_absent(run_id)
 
 
 def test_canon_rebuild_source_contains_resume_lock_and_audit_parity_hooks():
-    source = Path("app/p20_core/canon_rebuild.py").read_text(encoding="utf-8")
+    source = (REPO_ROOT / "app" / "p20_core" / "canon_rebuild.py").read_text(encoding="utf-8")
 
     assert "resolve_resume_run_id" in source
     assert "load_run_state" in source

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-import shutil
 import unittest
 from pathlib import Path
-from uuid import uuid4
 from unittest.mock import patch
+from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.p20_core.book_bible_test_helper import ensure_test_book_bible
+from app.p20_core.storage_paths import get_books_root, get_runs_root
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -16,30 +18,42 @@ client = TestClient(app)
 
 
 def _book_dir(book_id: str) -> Path:
-    return REPO_ROOT / "books" / book_id
+    return get_books_root() / book_id
 
 
 def _run_dir(run_id: str) -> Path:
+    return get_runs_root() / run_id
+
+
+def _repo_book_dir(book_id: str) -> Path:
+    return REPO_ROOT / "books" / book_id
+
+
+def _repo_run_dir(run_id: str | None) -> Path | None:
+    if not run_id:
+        return None
     return REPO_ROOT / "runs" / run_id
 
 
-def _clean_book(book_id: str) -> None:
-    p = _book_dir(book_id)
-    if p.exists():
-        shutil.rmtree(p)
+def _assert_repo_book_absent(book_id: str) -> None:
+    assert not _repo_book_dir(book_id).exists(), _repo_book_dir(book_id)
 
 
-def _clean_run(run_id: str) -> None:
-    p = _run_dir(run_id)
-    if p.exists():
-        shutil.rmtree(p)
+def _assert_repo_run_absent(run_id: str | None) -> None:
+    repo_run = _repo_run_dir(run_id)
+    if repo_run is not None:
+        assert not repo_run.exists(), repo_run
 
 
+@pytest.mark.usefixtures("isolated_agentpro_storage")
 class TestP20RunState(unittest.TestCase):
     def test_accept_write_persists_run_state(self):
         book_id = f"p20_state_accept_{uuid4().hex[:8]}"
         run_id = f"run_state_accept_{uuid4().hex[:8]}"
+        _assert_repo_book_absent(book_id)
+        _assert_repo_run_absent(run_id)
         try:
+            ensure_test_book_bible(book_id)
             with patch(
                 "app.p20_core.runtime.execute_stub",
                 return_value={"artifact_paths": ["runs/fake_accept_state/001_WRITE.json"]},
@@ -75,13 +89,16 @@ class TestP20RunState(unittest.TestCase):
             self.assertEqual(state["last_modes"], ["WRITE"])
             self.assertEqual(len(state["last_artifact_paths"]), 1)
         finally:
-            _clean_book(book_id)
-            _clean_run(run_id)
+            _assert_repo_book_absent(book_id)
+            _assert_repo_run_absent(run_id)
 
     def test_resume_reuses_latest_run_id_for_same_book(self):
         book_id = f"p20_resume_{uuid4().hex[:8]}"
         run_id = f"run_resume_{uuid4().hex[:8]}"
+        _assert_repo_book_absent(book_id)
+        _assert_repo_run_absent(run_id)
         try:
+            ensure_test_book_bible(book_id)
             with patch(
                 "app.p20_core.runtime.execute_stub",
                 return_value={"artifact_paths": ["runs/fake_resume/001_WRITE.json"]},
@@ -122,14 +139,19 @@ class TestP20RunState(unittest.TestCase):
             self.assertTrue(marker.exists(), marker)
             self.assertEqual(marker.read_text(encoding="utf-8").strip(), run_id)
         finally:
-            _clean_book(book_id)
-            _clean_run(run_id)
+            _assert_repo_book_absent(book_id)
+            _assert_repo_run_absent(run_id)
 
     def test_resume_does_not_cross_books(self):
         book_a = f"p20_book_a_{uuid4().hex[:8]}"
         book_b = f"p20_book_b_{uuid4().hex[:8]}"
         run_a = f"run_a_{uuid4().hex[:8]}"
+        _assert_repo_book_absent(book_a)
+        _assert_repo_book_absent(book_b)
+        _assert_repo_run_absent(run_a)
         try:
+            ensure_test_book_bible(book_a)
+            ensure_test_book_bible(book_b)
             with patch(
                 "app.p20_core.runtime.execute_stub",
                 return_value={"artifact_paths": ["runs/fake_cross/001_WRITE.json"]},
@@ -166,6 +188,8 @@ class TestP20RunState(unittest.TestCase):
             self.assertEqual(ra["run_id"], run_a)
             self.assertNotEqual(rb["run_id"], run_a)
         finally:
-            _clean_book(book_a)
-            _clean_book(book_b)
-            _clean_run(run_a)
+            _assert_repo_book_absent(book_a)
+            _assert_repo_book_absent(book_b)
+            _assert_repo_run_absent(run_a)
+            if "rb" in locals():
+                _assert_repo_run_absent(rb.get("run_id"))

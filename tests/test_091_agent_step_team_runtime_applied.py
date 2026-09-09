@@ -1,28 +1,38 @@
 import json
 import hashlib
 from pathlib import Path
-import requests
 
-BASE = "http://127.0.0.1:8001"
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.p20_core.book_bible_test_helper import ensure_test_book_bible
+from app.p20_core.storage_paths import get_storage_root
+
+client = TestClient(app, raise_server_exceptions=False)
+
+
+def _storage_path(path: Path) -> Path:
+    return path if path.is_absolute() else get_storage_root() / path
 
 def sha1(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
 
 def test_agent_step_applies_team_runtime_to_payload():
+    ensure_test_book_bible("default")
     # call /agent/step with explicit team_id => strict_team=True
-    r = requests.post(f"{BASE}/agent/step", json={
+    r = client.post("/agent/step", json={
         "book_id": "default",
         "mode": "WRITE",
         "payload": {"text": "x", "team_id": "WRITER"},
         "resume": False
-    }, timeout=30)
+    })
     assert r.status_code == 200, r.text
     j = r.json()
     assert j.get("ok") is True
 
     artifacts = j.get("artifacts") or []
     assert artifacts, j
-    step_path = Path(artifacts[0])
+    step_path = _storage_path(Path(artifacts[0]))
     assert step_path.exists(), step_path
 
     step = json.loads(step_path.read_text(encoding="utf-8"))
@@ -41,4 +51,3 @@ def test_agent_step_applies_team_runtime_to_payload():
         assert prompts.get("system_sha1") == sha1(sys_p.read_text(encoding="utf-8"))
     if mode_p.exists():
         assert prompts.get("mode_sha1") == sha1(mode_p.read_text(encoding="utf-8"))
-

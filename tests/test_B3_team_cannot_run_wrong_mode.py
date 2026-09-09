@@ -1,6 +1,8 @@
-import requests
+from fastapi.testclient import TestClient
 
-BASE = "http://127.0.0.1:8001"
+from app.main import app
+
+client = TestClient(app, raise_server_exceptions=False)
 
 def test_team_cannot_run_wrong_mode():
     body = {
@@ -9,6 +11,5 @@ def test_team_cannot_run_wrong_mode():
         "payload": {"team_id": "AUTHOR", "text": "Test"},
         "resume": False
     }
-    r = requests.post(f"{BASE}/agent/step", json=body, timeout=30)
+    r = client.post("/agent/step", json=body)
     assert r.status_code in (400, 422), r.text
-

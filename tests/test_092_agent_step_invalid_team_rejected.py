@@ -1,13 +1,16 @@
-import requests
+from fastapi.testclient import TestClient
 
-BASE = "http://127.0.0.1:8001"
+from app.main import app
+from app.p20_core.book_bible_test_helper import ensure_test_book_bible
+
+client = TestClient(app, raise_server_exceptions=False)
 
 def test_agent_step_rejects_invalid_team_id():
-    r = requests.post(f"{BASE}/agent/step", json={
+    ensure_test_book_bible("default")
+    r = client.post("/agent/step", json={
         "book_id": "default",
         "mode": "WRITE",
         "payload": {"text": "x", "team_id": "NO_SUCH_TEAM"},
         "resume": False
-    }, timeout=30)
+    })
     assert r.status_code == 400
-

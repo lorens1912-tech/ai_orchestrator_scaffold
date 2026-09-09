@@ -1,16 +1,16 @@
-import os
 import unittest
 
-import requests
+from fastapi.testclient import TestClient
 
+from app.main import app
 from app.config_registry import load_presets
 
-BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:8001")
+client = TestClient(app, raise_server_exceptions=False)
 
 
 class TestConfigContract002(unittest.TestCase):
     def test_config_validate_contract(self):
-        resp = requests.get(f"{BASE_URL}/config/validate", timeout=15)
+        resp = client.get("/config/validate")
         self.assertEqual(resp.status_code, 200, resp.text)
 
         cfg = resp.json()
@@ -41,4 +41,3 @@ class TestConfigContract002(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-

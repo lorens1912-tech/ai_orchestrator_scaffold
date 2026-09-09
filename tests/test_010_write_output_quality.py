@@ -1,12 +1,15 @@
-import os
 import time
 import json
 import unittest
 from pathlib import Path
 
-import requests
+from fastapi.testclient import TestClient
 
-BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:8001")
+from app.main import app
+from app.p20_core.book_bible_test_helper import ensure_test_book_bible
+from app.p20_core.storage_paths import get_storage_root
+
+client = TestClient(app, raise_server_exceptions=False)
 
 
 def _normalize_artifacts(artifacts):
@@ -22,7 +25,7 @@ def _normalize_artifacts(artifacts):
 
 
 def _abs_path(p: Path) -> Path:
-    return p if p.is_absolute() else (Path.cwd() / p)
+    return p if p.is_absolute() else get_storage_root() / p
 
 
 def _wait_for_file(p: Path, timeout_s: float = 15.0) -> None:
@@ -65,10 +68,10 @@ def _extract_text(payload: dict) -> str:
 
 class TestWriteOutputQuality010(unittest.TestCase):
     def test_write_returns_nonempty_text(self):
-        resp = requests.post(
-            f"{BASE_URL}/agent/step",
+        ensure_test_book_bible("book_runtime_test")
+        resp = client.post(
+            "/agent/step",
             json={"mode": "WRITE", "preset": "DEFAULT", "input": "quality check: write something meaningful"},
-            timeout=30,
         )
         self.assertEqual(resp.status_code, 200, resp.text)
         payload = resp.json()
@@ -102,4 +105,3 @@ class TestWriteOutputQuality010(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-

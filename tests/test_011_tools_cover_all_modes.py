@@ -1,15 +1,16 @@
-import os
 import unittest
-import requests
 
+from fastapi.testclient import TestClient
+
+from app.main import app
 from app.tools import TOOLS
 
-BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:8001")
+client = TestClient(app, raise_server_exceptions=False)
 
 
 class TestToolsCoverAllModes011(unittest.TestCase):
     def test_tools_cover_config_mode_ids(self):
-        resp = requests.get(f"{BASE_URL}/config/validate", timeout=15)
+        resp = client.get("/config/validate")
         self.assertEqual(resp.status_code, 200, resp.text)
 
         cfg = resp.json()
@@ -24,4 +25,3 @@ class TestToolsCoverAllModes011(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-

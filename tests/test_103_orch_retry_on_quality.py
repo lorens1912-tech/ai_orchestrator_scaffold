@@ -1,10 +1,15 @@
 import unittest
-import requests
 
-BASE = "http://127.0.0.1:8001"
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.p20_core.book_bible_test_helper import ensure_test_book_bible
+
+client = TestClient(app, raise_server_exceptions=False)
 
 class Test103OrchRetryOnQuality(unittest.TestCase):
     def test_orch_retry_injects_edit_and_second_quality(self):
+        ensure_test_book_bible("book_runtime_test")
         body = {
             "preset": "ORCH_RETRY_TEST",
             "payload": {
@@ -12,7 +17,7 @@ class Test103OrchRetryOnQuality(unittest.TestCase):
                 "__force_quality_decision": "REVISE"
             }
         }
-        r = requests.post(f"{BASE}/agent/step", json=body, timeout=30)
+        r = client.post("/agent/step", json=body)
         self.assertEqual(r.status_code, 200, r.text)
         j = r.json()
         self.assertTrue(j.get("ok") is True, j)
@@ -29,4 +34,3 @@ class Test103OrchRetryOnQuality(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -1,8 +1,10 @@
-import os
 import unittest
-import requests
+from fastapi.testclient import TestClient
 
-BASE = os.environ.get("BASE_URL", "http://127.0.0.1:8001")
+from app.main import app
+from app.p20_core.book_bible_test_helper import ensure_test_book_bible
+
+client = TestClient(app, raise_server_exceptions=False)
 
 def _artifacts(payload):
     arts = payload.get("artifacts")
@@ -16,13 +18,14 @@ def _artifacts(payload):
 
 class Test080ResumeReusesRunId(unittest.TestCase):
     def _post(self, body):
-        r = requests.post(f"{BASE}/agent/step", json=body, timeout=60)
+        r = client.post("/agent/step", json=body)
         self.assertEqual(r.status_code, 200, r.text)
         j = r.json()
         self.assertTrue(j.get("ok") is True, j)
         return j
 
     def test_resume_reuses_latest_run_id(self):
+        ensure_test_book_bible("book_runtime_test")
         first = self._post({
             "mode": "WRITE",
             "preset": "DEFAULT",

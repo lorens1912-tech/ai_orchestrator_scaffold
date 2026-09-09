@@ -1,12 +1,14 @@
-import os
 import time
 import json
 import unittest
 from pathlib import Path
 
-import requests
+from fastapi.testclient import TestClient
 
-BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:8001")
+from app.main import app
+from app.p20_core.storage_paths import get_storage_root
+
+client = TestClient(app, raise_server_exceptions=False)
 
 
 def _normalize_artifacts(artifacts):
@@ -22,15 +24,14 @@ def _normalize_artifacts(artifacts):
 
 
 def _abs_path(p: Path) -> Path:
-    return p if p.is_absolute() else (Path.cwd() / p)
+    return p if p.is_absolute() else get_storage_root() / p
 
 
 class TestQualityContract013(unittest.TestCase):
     def test_quality_contract_min(self):
-        resp = requests.post(
-            f"{BASE_URL}/agent/step",
+        resp = client.post(
+            "/agent/step",
             json={"mode": "QUALITY", "preset": "DEFAULT", "input": "quality contract test"},
-            timeout=30,
         )
         self.assertEqual(resp.status_code, 200, resp.text)
         payload = resp.json()
@@ -67,4 +68,3 @@ class TestQualityContract013(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-

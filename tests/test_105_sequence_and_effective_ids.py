@@ -1,14 +1,23 @@
 import json
 import unittest
 from pathlib import Path
-import requests
 
-BASE = "http://127.0.0.1:8001"
-ROOT = Path(__file__).resolve().parents[1]
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.p20_core.book_bible_test_helper import ensure_test_book_bible
+from app.p20_core.storage_paths import get_runs_root, get_storage_root
+
+client = TestClient(app, raise_server_exceptions=False)
+
+
+def _storage_path(path: Path) -> Path:
+    return path if path.is_absolute() else get_storage_root() / path
 
 class Test105SequenceAndEffectiveIds(unittest.TestCase):
     def test_sequence_artifact_exists_and_effective_policy_is_recorded(self):
-        r = requests.post(f"{BASE}/agent/step", json={"preset":"ORCH_STANDARD","payload":{"text":"x"}}, timeout=60)
+        ensure_test_book_bible("book_runtime_test")
+        r = client.post("/agent/step", json={"preset":"ORCH_STANDARD","payload":{"text":"x"}})
         self.assertEqual(r.status_code, 200, r.text)
         j = r.json()
         self.assertTrue(j.get("ok") is True, j)
@@ -16,7 +25,7 @@ class Test105SequenceAndEffectiveIds(unittest.TestCase):
         run_id = j.get("run_id")
         self.assertTrue(run_id, j)
 
-        steps_dir = ROOT / "runs" / run_id / "steps"
+        steps_dir = get_runs_root() / run_id / "steps"
         seq = steps_dir / "000_SEQUENCE.json"
         self.assertTrue(seq.exists(), f"Missing: {seq}")
 
@@ -24,7 +33,7 @@ class Test105SequenceAndEffectiveIds(unittest.TestCase):
         write_path = None
         for ap in (j.get("artifacts") or []):
             if str(ap).upper().endswith("_WRITE.JSON"):
-                write_path = Path(ap)
+                write_path = _storage_path(Path(ap))
                 break
         self.assertTrue(write_path and write_path.exists(), j.get("artifacts"))
 
@@ -33,4 +42,3 @@ class Test105SequenceAndEffectiveIds(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

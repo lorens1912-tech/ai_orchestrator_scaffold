@@ -1,12 +1,15 @@
-import os
 import time
 import json
 import unittest
 from pathlib import Path
 
-import requests
+from fastapi.testclient import TestClient
 
-BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:8001")
+from app.main import app
+from app.p20_core.book_bible_test_helper import ensure_test_book_bible
+from app.p20_core.storage_paths import get_storage_root
+
+client = TestClient(app, raise_server_exceptions=False)
 
 
 def _normalize_artifacts(artifacts):
@@ -22,7 +25,7 @@ def _normalize_artifacts(artifacts):
 
 
 def _abs_path(p: Path) -> Path:
-    return p if p.is_absolute() else (Path.cwd() / p)
+    return p if p.is_absolute() else get_storage_root() / p
 
 
 def _wait_for_file(p: Path, timeout_s: float = 15.0) -> None:
@@ -33,10 +36,9 @@ def _wait_for_file(p: Path, timeout_s: float = 15.0) -> None:
 
 class TestArtifactSchema007(unittest.TestCase):
     def _step(self, mode: str, input_text: str):
-        resp = requests.post(
-            f"{BASE_URL}/agent/step",
+        resp = client.post(
+            "/agent/step",
             json={"mode": mode, "preset": "DEFAULT", "input": input_text},
-            timeout=30,
         )
         self.assertEqual(resp.status_code, 200, resp.text)
         payload = resp.json()
@@ -69,6 +71,7 @@ class TestArtifactSchema007(unittest.TestCase):
         self.assertEqual(tool, mode, f"result.tool != mode: {data}")
 
     def test_schema_write_critic_edit(self):
+        ensure_test_book_bible("book_runtime_test")
         for mode in ("WRITE", "CRITIC", "EDIT"):
             p, data = self._step(mode, f"schema check: {mode}")
             self._assert_schema_min(mode, data)
@@ -76,4 +79,3 @@ class TestArtifactSchema007(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-

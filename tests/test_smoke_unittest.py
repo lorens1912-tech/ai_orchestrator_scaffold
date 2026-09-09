@@ -1,34 +1,24 @@
 import json
-import os
 import unittest
-from pathlib import Path
-from urllib.request import Request, urlopen
-from urllib.error import HTTPError
 
-BASE = "http://127.0.0.1:8001"
-ROOT = Path(__file__).resolve().parents[1]
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.p20_core.book_bible_test_helper import ensure_test_book_bible
+from app.p20_core.storage_paths import get_storage_root
+
+client = TestClient(app, raise_server_exceptions=False)
 
 def http_get(path: str):
-    with urlopen(f"{BASE}{path}", timeout=5) as r:
-        return r.status, json.loads(r.read().decode("utf-8"))
+    response = client.get(path)
+    return response.status_code, response.json()
 
 def http_post(path: str, payload: dict):
-    data = json.dumps(payload).encode("utf-8")
-    req = Request(
-        f"{BASE}{path}",
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    response = client.post(path, json=payload)
     try:
-        with urlopen(req, timeout=10) as r:
-            return r.status, json.loads(r.read().decode("utf-8"))
-    except HTTPError as e:
-        body = e.read().decode("utf-8")
-        try:
-            return e.code, json.loads(body)
-        except Exception:
-            return e.code, {"raw": body}
+        return response.status_code, response.json()
+    except Exception:
+        return response.status_code, {"raw": response.text}
 
 class SmokeTests(unittest.TestCase):
     def test_health(self):
@@ -54,17 +44,18 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("Unknown preset", data.get("detail",""))
 
     def test_pipeline_draft_tool_write_and_state(self):
+        ensure_test_book_bible("demo")
         code, data = http_post("/agent/step", {"book_id":"demo","preset":"PIPELINE_DRAFT","payload":{"title":"Kod Kruka"}})
         self.assertEqual(code, 200)
         self.assertTrue(data.get("ok") is True)
         run_id = data["run_id"]
 
-        write_step = ROOT / "runs" / run_id / "steps" / "003_WRITE.json"
+        write_step = get_storage_root() / "runs" / run_id / "steps" / "003_WRITE.json"
         self.assertTrue(write_step.exists(), f"Missing: {write_step}")
         txt = write_step.read_text(encoding="utf-8")
         self.assertIn('"tool": "WRITE"', txt)
 
-        state_path = ROOT / "runs" / run_id / "state.json"
+        state_path = get_storage_root() / "runs" / run_id / "state.json"
         self.assertTrue(state_path.exists(), f"Missing: {state_path}")
         st = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertEqual(st.get("status"), "DONE")
@@ -73,6 +64,3 @@ class SmokeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-
-
-

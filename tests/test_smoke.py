@@ -1,14 +1,20 @@
-import os, json, requests
+import json
 
-BASE = "http://127.0.0.1:8001"
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.p20_core.book_bible_test_helper import ensure_test_book_bible
+from app.p20_core.storage_paths import get_storage_root
+
+client = TestClient(app, raise_server_exceptions=False)
 
 def test_health():
-    r = requests.get(f"{BASE}/health", timeout=5)
+    r = client.get("/health")
     assert r.status_code == 200
     assert r.json()["ok"] is True
 
 def test_validate():
-    r = requests.get(f"{BASE}/config/validate", timeout=5)
+    r = client.get("/config/validate")
     assert r.status_code == 200
     d = r.json()
     assert d["ok"] is True
@@ -16,13 +22,14 @@ def test_validate():
     assert d["presets_count"] == len(d["preset_ids"])
 
 def test_pipeline_tools():
+    ensure_test_book_bible("demo")
     payload = {"book_id":"demo","preset":"PIPELINE_DRAFT","payload":{"title":"Kod Kruka"}}
-    r = requests.post(f"{BASE}/agent/step", json=payload, timeout=10)
+    r = client.post("/agent/step", json=payload)
     assert r.status_code == 200
     d = r.json()
     run_id = d["run_id"]
-    p = os.path.join("runs", run_id, "steps", "003_WRITE.json")
-    assert os.path.exists(p)
-    txt = open(p, "r", encoding="utf-8").read()
+    p = get_storage_root() / "runs" / run_id / "steps" / "003_WRITE.json"
+    assert p.exists()
+    txt = p.read_text(encoding="utf-8")
     assert '"tool": "WRITE"' in txt
 

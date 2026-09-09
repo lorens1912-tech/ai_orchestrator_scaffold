@@ -4,12 +4,14 @@ import inspect
 import json
 import re
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
 import app.main as main_module
 from app.main import app
 from app.p20_core.book_bible_test_helper import ensure_test_book_bible
+from app.p20_core.storage_paths import get_storage_root
 
 
 REQUIRED_PATHS = {
@@ -39,6 +41,8 @@ FORBIDDEN_IMPORT_PATTERNS = (
     r"import\s+.*legacy",
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 def _business_paths() -> set[str]:
     paths: set[str] = set()
@@ -54,6 +58,18 @@ def _business_paths() -> set[str]:
 
 def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _storage_path(public_path: str) -> Path:
+    return get_storage_root() / public_path
+
+
+def _repo_book_dir(book_id: str) -> Path:
+    return REPO_ROOT / "books" / book_id
+
+
+def _repo_run_dir(run_id: str) -> Path:
+    return REPO_ROOT / "runs" / run_id
 
 
 def _snapshot_book_id(snapshot: dict) -> str:
@@ -135,9 +151,12 @@ def test_app_main_is_the_owner_of_the_agent_step_contract() -> None:
         )
 
 
-def test_agent_step_returns_p20_novel_contract_and_updates_canon_snapshot() -> None:
+def test_agent_step_returns_p20_novel_contract_and_updates_canon_snapshot(
+    isolated_agentpro_storage,
+) -> None:
     client = TestClient(app)
-    book_id = "novel_runtime_test"
+    book_id = f"novel_runtime_test_{uuid4().hex[:8]}"
+    assert not _repo_book_dir(book_id).exists()
     ensure_test_book_bible(book_id)
 
     response = client.post(
@@ -177,7 +196,8 @@ def test_agent_step_returns_p20_novel_contract_and_updates_canon_snapshot() -> N
     assert str(quality_gate.get("decision", "")).upper() == "ACCEPT", quality_gate
     assert run_state.get("book_id") == book_id, run_state
 
-    chapter_path = Path(data["chapter_path"])
+    assert data["chapter_path"].startswith("books/"), data
+    chapter_path = _storage_path(data["chapter_path"])
     assert chapter_path.exists(), f"chapter_path nie istnieje: {chapter_path}"
 
     chapter_json = _read_json(chapter_path)
@@ -185,7 +205,8 @@ def test_agent_step_returns_p20_novel_contract_and_updates_canon_snapshot() -> N
     assert str(chapter_json.get("chapter_id", "")).startswith("chapter_"), chapter_json
     assert str(chapter_json.get("run_id", "")).startswith("run_"), chapter_json
 
-    snapshot_path = Path(data["canon_snapshot_path"])
+    assert data["canon_snapshot_path"].startswith("books/"), data
+    snapshot_path = _storage_path(data["canon_snapshot_path"])
     assert snapshot_path.exists(), f"canon_snapshot_path nie istnieje: {snapshot_path}"
 
     snapshot_json = _read_json(snapshot_path)
@@ -210,3 +231,6 @@ def test_agent_step_returns_p20_novel_contract_and_updates_canon_snapshot() -> N
         assert engine == "P20.0-novel-core", (
             f"Nieprawidłowy engine w odpowiedzi/pamięci/snapshot: {engine}"
         )
+
+    assert not _repo_book_dir(book_id).exists()
+    assert not _repo_run_dir(data["run_id"]).exists()

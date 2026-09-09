@@ -2,19 +2,39 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.p20_core.book_bible_test_helper import ensure_test_book_bible
+from app.p20_core.storage_paths import get_runs_root
 import app.p20_core.runtime as runtime_module
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_precanon_reject_returns_master_canon_and_writes_audit(monkeypatch) -> None:
+def _repo_book_dir(book_id: str) -> Path:
+    return REPO_ROOT / "books" / book_id
+
+
+def _repo_run_dir(run_id: str) -> Path:
+    return REPO_ROOT / "runs" / run_id
+
+
+def test_precanon_reject_returns_master_canon_and_writes_audit(
+    monkeypatch,
+    isolated_agentpro_storage,
+) -> None:
     client = TestClient(app)
+    book_id = f"novel_runtime_test_{uuid4().hex[:8]}"
+    assert not _repo_book_dir(book_id).exists()
+    ensure_test_book_bible(book_id)
 
     def fake_run_canon_check(text, canon_snapshot, scene_ref):
         return {
@@ -34,7 +54,7 @@ def test_precanon_reject_returns_master_canon_and_writes_audit(monkeypatch) -> N
         json={
             "mode": "WRITE",
             "payload": {
-                "book_id": "novel_runtime_test",
+                "book_id": book_id,
                 "text": "To jest test wymuszonego REJECT na etapie pre-canon.",
             },
         },
@@ -57,15 +77,17 @@ def test_precanon_reject_returns_master_canon_and_writes_audit(monkeypatch) -> N
     run_id = data.get("run_id")
     assert isinstance(run_id, str) and run_id.startswith("run_"), data
 
-    audit_path = Path("runs") / run_id / "audit.json"
+    audit_path = get_runs_root() / run_id / "audit.json"
     assert audit_path.exists(), f"Brak audit.json: {audit_path}"
 
     audit = _read_json(audit_path)
     assert audit.get("run_id") == run_id, audit
-    assert audit.get("book_id") == "novel_runtime_test", audit
+    assert audit.get("book_id") == book_id, audit
     assert audit.get("decision") == "REJECT", audit
 
     audit_mc = audit.get("master_canon") or {}
     assert audit_mc.get("scope") == "MASTER_CANON_AGENTPRO", audit
     assert audit_mc.get("path") == "MASTER_CANON_AGENTPRO.md", audit
     assert audit_mc.get("sha256") == mc.get("sha256"), audit
+    assert not _repo_book_dir(book_id).exists()
+    assert not _repo_run_dir(run_id).exists()

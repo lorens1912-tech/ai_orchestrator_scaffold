@@ -2,12 +2,29 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.p20_core.master_canon import resolve_master_canon
 from app.p20_core.book_bible_test_helper import ensure_test_book_bible
+from app.p20_core.storage_paths import get_storage_root
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _storage_path(public_path: str) -> Path:
+    return get_storage_root() / public_path
+
+
+def _repo_book_dir(book_id: str) -> Path:
+    return REPO_ROOT / "books" / book_id
+
+
+def _repo_run_dir(run_id: str) -> Path:
+    return REPO_ROOT / "runs" / run_id
 
 
 def test_master_canon_file_is_resolved() -> None:
@@ -19,9 +36,10 @@ def test_master_canon_file_is_resolved() -> None:
     assert isinstance(mc["text"], str) and len(mc["text"]) > 100
 
 
-def test_agent_step_returns_master_canon_binding() -> None:
+def test_agent_step_returns_master_canon_binding(isolated_agentpro_storage) -> None:
     client = TestClient(app)
-    book_id = "novel_runtime_test"
+    book_id = f"novel_runtime_test_{uuid4().hex[:8]}"
+    assert not _repo_book_dir(book_id).exists()
     ensure_test_book_bible(book_id)
 
     response = client.post(
@@ -45,7 +63,8 @@ def test_agent_step_returns_master_canon_binding() -> None:
     assert mc.get("path") == "MASTER_CANON_AGENTPRO.md", data
     assert isinstance(mc.get("sha256"), str) and len(mc["sha256"]) == 64, data
 
-    chapter_path = Path(data["chapter_path"])
+    assert data["chapter_path"].startswith("books/"), data
+    chapter_path = _storage_path(data["chapter_path"])
     assert chapter_path.exists(), chapter_path
 
     chapter_json = json.loads(chapter_path.read_text(encoding="utf-8"))
@@ -54,3 +73,5 @@ def test_agent_step_returns_master_canon_binding() -> None:
     assert chapter_mc.get("scope") == "MASTER_CANON_AGENTPRO", chapter_json
     assert chapter_mc.get("path") == "MASTER_CANON_AGENTPRO.md", chapter_json
     assert chapter_mc.get("sha256") == mc.get("sha256"), chapter_json
+    assert not _repo_book_dir(book_id).exists()
+    assert not _repo_run_dir(data["run_id"]).exists()

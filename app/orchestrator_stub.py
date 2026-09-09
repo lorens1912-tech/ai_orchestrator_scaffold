@@ -94,6 +94,52 @@ def _load_json_file(path: Path) -> Any:
         return {}
 
 
+def get_storage_root() -> Path:
+    from app.p20_core.storage_paths import get_storage_root as _get_storage_root
+
+    return _get_storage_root()
+
+
+def get_books_root() -> Path:
+    from app.p20_core.storage_paths import get_books_root as _get_books_root
+
+    return _get_books_root()
+
+
+def get_runs_root() -> Path:
+    from app.p20_core.storage_paths import get_runs_root as _get_runs_root
+
+    return _get_runs_root()
+
+
+def _storage_path(path_like: Any) -> Path:
+    path = Path(path_like)
+    if path.is_absolute():
+        return path
+
+    parts = path.parts
+    if parts and parts[0] in {"books", "runs", "audit", "novel_runs"}:
+        return get_storage_root() / path
+
+    return path
+
+
+def _public_storage_path(path_like: Any) -> str:
+    path = Path(path_like)
+    try:
+        return path.resolve().relative_to(get_storage_root().resolve()).as_posix()
+    except ValueError:
+        return str(path_like).replace("\\", "/")
+
+
+def _run_dir(run_id: str) -> Path:
+    return get_runs_root() / str(run_id)
+
+
+def _run_steps_dir(run_id: str) -> Path:
+    return _run_dir(run_id) / "steps"
+
+
 def _presets_raw_list() -> List[Dict[str, Any]]:
     raw = _load_json_file(PRESETS_FILE)
     presets = raw.get("presets") if isinstance(raw, dict) else raw
@@ -300,7 +346,7 @@ def execute_stub(*args, **kwargs) -> List[str]:
 
     preset_id = payload.get("_preset_id") or payload.get("preset")
 
-    run_dir = ROOT / "runs" / run_id
+    run_dir = _run_dir(run_id)
     steps_dir = run_dir / "steps"
     steps_dir.mkdir(parents=True, exist_ok=True)
 
@@ -420,7 +466,7 @@ def execute_stub(*args, **kwargs) -> List[str]:
                 n += 1
 
         _atomic_write_json(step_path, step_doc)
-        artifact_paths.append(str(step_path))
+        artifact_paths.append(_public_storage_path(step_path))
 
     state["last_step"] = step_index
     state["completed_steps"] = step_index
@@ -428,7 +474,7 @@ def execute_stub(*args, **kwargs) -> List[str]:
     state["status"] = "DONE"
     _atomic_write_json(state_path, state)
 
-    book_dir = ROOT / "books" / book_id / "draft"
+    book_dir = get_books_root() / book_id / "draft"
     book_dir.mkdir(parents=True, exist_ok=True)
     (book_dir / "latest.txt").write_text(latest_text, encoding="utf-8")
 
@@ -480,7 +526,7 @@ if callable(_p26_execute_stub_original):
                 art_list = []
 
             for ap in art_list:
-                p = _P26Path(str(ap))
+                p = _storage_path(str(ap))
                 if not p.exists():
                     continue
                 try:
@@ -499,7 +545,7 @@ if callable(_p26_execute_stub_original):
         # Dopnij team + effective_policy w stepach (w tym 000_SEQUENCE.json)
         try:
             if run_id:
-                steps_dir = _P26Path("runs") / run_id / "steps"
+                steps_dir = _run_steps_dir(run_id)
                 if steps_dir.exists():
                     for sp in sorted(steps_dir.glob("*.json")):
                         try:
@@ -550,7 +596,7 @@ def execute_stub(*args, **kwargs):
         }
 
         for ap in (arts or []):
-            p = _p26_Path(ap)
+            p = _storage_path(ap)
             if not p.exists():
                 continue
             try:
@@ -629,7 +675,7 @@ if not globals().get("_P26_EXECUTE_STUB_WRAPPED", False):
         if candidates:
             return candidates[-1]
 
-        runs = _p26_Path("runs")
+        runs = get_runs_root()
         if runs.exists():
             ds = [d for d in runs.iterdir() if d.is_dir()]
             if ds:
@@ -691,7 +737,7 @@ if not globals().get("_P26_EXECUTE_STUB_WRAPPED", False):
         try:
             rid = _p26_find_run_id(args, kwargs, out)
             if rid:
-                step_dir = _p26_Path("runs") / str(rid) / "steps"
+                step_dir = _run_steps_dir(str(rid))
                 if step_dir.exists():
                     for fp in sorted(step_dir.glob("*.json")):
                         _p26_fix_step_file(fp)
@@ -748,7 +794,7 @@ if callable(_qpcb_prev_execute_stub):
         preset_doc = _qpcb_get_preset_doc(str(preset_id or ""))
 
         for ap in arts or []:
-            p = _qpcb_Path(ap)
+            p = _storage_path(ap)
             if not p.exists():
                 continue
 
@@ -841,7 +887,7 @@ def execute_stub(*args, **kwargs):
     preset_doc = _fe_find_preset_doc(preset_id)
 
     for ap in arts or []:
-        p = _fe_Path(ap)
+        p = _storage_path(ap)
         if not p.exists():
             continue
 
@@ -937,7 +983,7 @@ def _v6_patch_quality_file(path_obj, preset_doc):
     if not isinstance(preset_doc, dict):
         return
 
-    fp = _v6_Path(path_obj)
+    fp = _storage_path(path_obj)
     if not fp.exists():
         return
 
@@ -994,13 +1040,13 @@ def execute_stub(*args, **kwargs):
 
     candidates = []
     if run_id:
-        steps_dir = _v6_Path("runs") / str(run_id) / "steps"
+        steps_dir = _run_steps_dir(str(run_id))
         if steps_dir.exists():
             candidates.extend(sorted(steps_dir.glob("*_QUALITY.json")))
 
     for ap in (arts or []):
         try:
-            candidates.append(_v6_Path(ap))
+            candidates.append(_storage_path(ap))
         except Exception:
             pass
 
@@ -1067,7 +1113,7 @@ def _v7_patch_quality_artifacts(arts, preset_doc):
 
     for ap in (arts or []):
         try:
-            fp = _v7_Path(ap)
+            fp = _storage_path(ap)
             if not fp.exists():
                 continue
             doc = _v7_json.loads(fp.read_text(encoding="utf-8"))
@@ -1177,7 +1223,7 @@ def _v8_patch_artifacts_input_context(arts, preset_doc):
 
     for ap in (arts or []):
         try:
-            fp = _v8_Path(ap)
+            fp = _storage_path(ap)
             if not fp.exists():
                 continue
 
@@ -1275,7 +1321,7 @@ def execute_stub(*args, **kwargs):
         try:
             import json
             for _art in arts:
-                _p = Path(_art)
+                _p = _storage_path(_art)
                 if not _p.exists():
                     continue
                 _doc = json.loads(_p.read_text(encoding="utf-8"))
@@ -1472,7 +1518,7 @@ def execute_stub(*args, **kwargs):
         if isinstance(item, dict) and item.get("mode"):
             steps_by_mode[str(item.get("mode")).upper().strip()] = dict(item)
 
-    steps_dir = Path("runs") / run_id / "steps"
+    steps_dir = _run_steps_dir(run_id)
     steps_dir.mkdir(parents=True, exist_ok=True)
 
     if preset_id and len(modes_exec) >= 1:
@@ -1523,7 +1569,7 @@ def execute_stub(*args, **kwargs):
 
     for art in list(arts):
         try:
-            p = Path(art)
+            p = _storage_path(art)
             if not p.exists():
                 continue
             doc = json.loads(p.read_text(encoding="utf-8"))
@@ -1580,7 +1626,7 @@ def execute_stub(*args, **kwargs):
 
     for art in list(arts or []):
         try:
-            p = Path(art)
+            p = _storage_path(art)
             if not p.exists():
                 continue
             doc = json.loads(p.read_text(encoding="utf-8"))
@@ -1616,7 +1662,7 @@ def execute_stub(*args, **kwargs):
 
     for art in list(arts or []):
         try:
-            p = Path(art)
+            p = _storage_path(art)
             if not p.exists():
                 continue
 

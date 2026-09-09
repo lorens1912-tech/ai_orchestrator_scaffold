@@ -9,6 +9,12 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def get_books_root() -> Path:
+    from app.p20_core.storage_paths import get_books_root as _get_books_root
+
+    return _get_books_root()
+
+
 def _normalize_run_dir(run_dir: Path) -> Path:
     p = Path(run_dir)
     if p.suffix.lower() == ".json" and p.parent.name.lower() == "steps":
@@ -34,14 +40,30 @@ def run_canon_path(run_dir: Path) -> Path:
 
 
 def book_canon_path(book_id: str) -> Path:
-    root = _project_root()
     bid = (book_id or "default").strip() or "default"
-    d = root / "books" / bid
+    d = get_books_root() / bid
     d.mkdir(parents=True, exist_ok=True)
     return d / "canon.json"
 
 
+def _coerce_legacy_book_id_call(
+    run_dir: Optional[Path],
+    book_id: Optional[str],
+) -> tuple[Optional[Path], Optional[str]]:
+    if book_id is not None or run_dir is None:
+        return run_dir, book_id
+
+    raw = str(run_dir)
+    candidate = Path(raw)
+    if not candidate.is_absolute() and len(candidate.parts) == 1 and raw.strip():
+        return None, raw
+
+    return run_dir, book_id
+
+
 def load_canon(run_dir: Optional[Path] = None, book_id: Optional[str] = None) -> Dict[str, Any]:
+    run_dir, book_id = _coerce_legacy_book_id_call(run_dir, book_id)
+
     if run_dir is not None:
         p = run_canon_path(Path(run_dir))
         if p.exists():

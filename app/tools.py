@@ -67,6 +67,38 @@ from app.quality_rules import evaluate_quality
 def _is_test_mode() -> bool:
     return os.environ.get("AGENT_TEST_MODE", "0") == "1"
 
+
+def get_storage_root() -> Path:
+    from app.p20_core.storage_paths import get_storage_root as _get_storage_root
+
+    return _get_storage_root()
+
+
+def get_books_root() -> Path:
+    from app.p20_core.storage_paths import get_books_root as _get_books_root
+
+    return _get_books_root()
+
+
+def get_runs_root() -> Path:
+    from app.p20_core.storage_paths import get_runs_root as _get_runs_root
+
+    return _get_runs_root()
+
+
+def _storage_path(path_value: str) -> Path:
+    path = Path(path_value).expanduser()
+    if path.is_absolute():
+        return path
+    return get_storage_root() / path
+
+
+def _uniqueness_registry_path() -> Path:
+    reg_path = os.environ.get("UNIQUENESS_REGISTRY_PATH")
+    if reg_path:
+        return _storage_path(reg_path)
+    return get_runs_root() / "_tmp" / "uniqueness_registry.jsonl"
+
 def tool_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"tool":"PLAN","payload":{"text":"Plan (stub).", "meta":{"requested_model": payload.get("_requested_model")}}}
 
@@ -247,8 +279,7 @@ def tool_continuity(payload: Dict[str, Any]) -> Dict[str, Any]:
 def tool_uniqueness(payload: Dict[str, Any]) -> Dict[str, Any]:
     book_id = payload.get("book_id") or "default"
     text = (payload.get("text") or "").strip()
-    reg_path = os.environ.get("UNIQUENESS_REGISTRY_PATH", "runs/_tmp/uniqueness_registry.jsonl")
-    p = Path(reg_path)
+    p = _uniqueness_registry_path()
     p.parent.mkdir(parents=True, exist_ok=True)
 
     matches = []
@@ -386,12 +417,10 @@ def tool_continuity(payload):
     if not text or not book_id:
         return {"tool": "CONTINUITY", "payload": _p15_hardfail_quality_payload(base)}
 
-    from pathlib import Path
     import json
     import re
 
-    root = Path(__file__).resolve().parents[1]
-    bible_path = root / "books" / book_id / "book_bible.json"
+    bible_path = get_books_root() / book_id / "book_bible.json"
     if not bible_path.exists():
         return {"tool": "CONTINUITY", "payload": _p15_hardfail_quality_payload(base)}
 

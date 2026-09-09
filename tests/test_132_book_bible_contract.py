@@ -12,12 +12,14 @@ from app.p20_core.book_bible_contract import (
     BOOK_BIBLE_CONTRACT_VERSION,
     build_valid_book_bible_payload,
 )
+from app.p20_core.storage_paths import get_books_root, get_storage_root
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 client = TestClient(app)
 
 
 def _write_book_bible(book_id: str, payload: dict) -> Path:
-    root = Path("books") / book_id
+    root = get_books_root() / book_id
     root.mkdir(parents=True, exist_ok=True)
     path = root / "book_bible.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -35,9 +37,41 @@ def _post_write(book_id: str):
     return client.post("/agent/step", json=body)
 
 
-def test_agent_step_rejects_write_when_book_bible_missing():
+def _storage_path(public_path: str) -> Path:
+    return get_storage_root() / public_path
+
+
+def _repo_book_dir(book_id: str) -> Path:
+    return REPO_ROOT / "books" / book_id
+
+
+def _repo_run_dir(run_id: str) -> Path:
+    return REPO_ROOT / "runs" / run_id
+
+
+def _assert_repo_book_absent(book_id: str) -> None:
+    assert not _repo_book_dir(book_id).exists(), _repo_book_dir(book_id)
+
+
+def _assert_repo_run_absent(run_id: str | None) -> None:
+    if run_id:
+        assert not _repo_run_dir(run_id).exists(), _repo_run_dir(run_id)
+
+
+def _assert_response_did_not_touch_repo(book_id: str, data: dict) -> None:
+    _assert_repo_book_absent(book_id)
+    _assert_repo_run_absent(data.get("run_id"))
+
+
+def _assert_no_chapter_artifacts(book_id: str) -> None:
+    chapters_dir = get_books_root() / book_id / "chapters"
+    assert not list(chapters_dir.glob("*.json")), chapters_dir
+
+
+def test_agent_step_rejects_write_when_book_bible_missing(isolated_agentpro_storage):
     book_id = f"novel_bible_missing_{uuid4().hex[:8]}"
-    book_root = Path("books") / book_id
+    _assert_repo_book_absent(book_id)
+    book_root = get_books_root() / book_id
     book_root.mkdir(parents=True, exist_ok=True)
 
     response = _post_write(book_id)
@@ -47,12 +81,14 @@ def test_agent_step_rejects_write_when_book_bible_missing():
     assert data.get("ok") is False or data.get("decision") == "REJECT", data
     reason_blob = json.dumps(data, ensure_ascii=False)
     assert "book_bible" in reason_blob.lower(), data
-    assert not (book_root / "chapters").exists()
+    _assert_no_chapter_artifacts(book_id)
+    _assert_response_did_not_touch_repo(book_id, data)
 
 
-def test_agent_step_rejects_write_when_book_bible_invalid_json():
+def test_agent_step_rejects_write_when_book_bible_invalid_json(isolated_agentpro_storage):
     book_id = f"novel_bible_badjson_{uuid4().hex[:8]}"
-    book_root = Path("books") / book_id
+    _assert_repo_book_absent(book_id)
+    book_root = get_books_root() / book_id
     book_root.mkdir(parents=True, exist_ok=True)
     (book_root / "book_bible.json").write_text("{ bad json", encoding="utf-8")
 
@@ -63,11 +99,13 @@ def test_agent_step_rejects_write_when_book_bible_invalid_json():
     assert data.get("ok") is False or data.get("decision") == "REJECT", data
     reason_blob = json.dumps(data, ensure_ascii=False)
     assert "invalid" in reason_blob.lower() or "json" in reason_blob.lower(), data
-    assert not (book_root / "chapters").exists()
+    _assert_no_chapter_artifacts(book_id)
+    _assert_response_did_not_touch_repo(book_id, data)
 
 
-def test_agent_step_rejects_write_when_book_bible_missing_required_fields():
+def test_agent_step_rejects_write_when_book_bible_missing_required_fields(isolated_agentpro_storage):
     book_id = f"novel_bible_missingfields_{uuid4().hex[:8]}"
+    _assert_repo_book_absent(book_id)
     payload = build_valid_book_bible_payload(book_id)
     payload.pop("facts")
     _write_book_bible(book_id, payload)
@@ -79,11 +117,13 @@ def test_agent_step_rejects_write_when_book_bible_missing_required_fields():
     assert data.get("ok") is False or data.get("decision") == "REJECT", data
     reason_blob = json.dumps(data, ensure_ascii=False)
     assert "missing keys" in reason_blob.lower() or "book_bible" in reason_blob.lower(), data
-    assert not (Path("books") / book_id / "chapters").exists()
+    _assert_no_chapter_artifacts(book_id)
+    _assert_response_did_not_touch_repo(book_id, data)
 
 
-def test_agent_step_rejects_write_when_book_bible_has_empty_semantic_structure():
+def test_agent_step_rejects_write_when_book_bible_has_empty_semantic_structure(isolated_agentpro_storage):
     book_id = f"novel_bible_emptysemantic_{uuid4().hex[:8]}"
+    _assert_repo_book_absent(book_id)
     payload = build_valid_book_bible_payload(book_id)
     payload["title"] = "   "
     payload["genre"] = ""
@@ -102,11 +142,13 @@ def test_agent_step_rejects_write_when_book_bible_has_empty_semantic_structure()
     assert data.get("ok") is False or data.get("decision") == "REJECT", data
     reason_blob = json.dumps(data, ensure_ascii=False)
     assert "non-empty string" in reason_blob.lower() or "non-empty list" in reason_blob.lower(), data
-    assert not (Path("books") / book_id / "chapters").exists()
+    _assert_no_chapter_artifacts(book_id)
+    _assert_response_did_not_touch_repo(book_id, data)
 
 
-def test_agent_step_rejects_write_when_book_bible_list_items_have_no_id():
+def test_agent_step_rejects_write_when_book_bible_list_items_have_no_id(isolated_agentpro_storage):
     book_id = f"novel_bible_missingid_{uuid4().hex[:8]}"
+    _assert_repo_book_absent(book_id)
     payload = build_valid_book_bible_payload(book_id)
     payload["acts"] = [{"summary": "Act I"}]
     payload["characters"] = [{"name": "Hero"}]
@@ -122,11 +164,13 @@ def test_agent_step_rejects_write_when_book_bible_list_items_have_no_id():
     assert data.get("ok") is False or data.get("decision") == "REJECT", data
     reason_blob = json.dumps(data, ensure_ascii=False)
     assert "id" in reason_blob.lower(), data
-    assert not (Path("books") / book_id / "chapters").exists()
+    _assert_no_chapter_artifacts(book_id)
+    _assert_response_did_not_touch_repo(book_id, data)
 
 
-def test_agent_step_accepts_write_when_book_bible_valid():
+def test_agent_step_accepts_write_when_book_bible_valid(isolated_agentpro_storage):
     book_id = f"novel_bible_valid_{uuid4().hex[:8]}"
+    _assert_repo_book_absent(book_id)
     _write_book_bible(book_id, build_valid_book_bible_payload(book_id))
 
     response = _post_write(book_id)
@@ -138,7 +182,8 @@ def test_agent_step_accepts_write_when_book_bible_valid():
 
     chapter_path = data.get("chapter_path")
     assert chapter_path, data
-    chapter_file = Path(chapter_path)
+    assert chapter_path.startswith("books/"), data
+    chapter_file = _storage_path(chapter_path)
     assert chapter_file.exists(), data
 
     chapter_doc = json.loads(chapter_file.read_text(encoding="utf-8"))
@@ -146,10 +191,12 @@ def test_agent_step_accepts_write_when_book_bible_valid():
     assert chapter_doc.get("book_bible_sha256"), chapter_doc
     assert chapter_doc.get("book_bible_contract_version") == BOOK_BIBLE_CONTRACT_VERSION, chapter_doc
     assert chapter_doc.get("canon_validation", {}).get("source") == "book_bible.json", chapter_doc
+    _assert_response_did_not_touch_repo(book_id, data)
 
 
-def test_agent_step_binds_same_book_bible_sha_to_run_state_audit_and_chapter():
+def test_agent_step_binds_same_book_bible_sha_to_run_state_audit_and_chapter(isolated_agentpro_storage):
     book_id = f"novel_bible_binding_{uuid4().hex[:8]}"
+    _assert_repo_book_absent(book_id)
     bible_path = _write_book_bible(book_id, build_valid_book_bible_payload(book_id))
     expected_sha = hashlib.sha256(
         bible_path.read_text(encoding="utf-8").encode("utf-8")
@@ -163,18 +210,22 @@ def test_agent_step_binds_same_book_bible_sha_to_run_state_audit_and_chapter():
     run_state = data.get("run_state") or {}
     assert run_state.get("book_bible", {}).get("sha256") == expected_sha, run_state
 
-    chapter_path = Path(data["chapter_path"])
+    assert data["chapter_path"].startswith("books/"), data
+    chapter_path = _storage_path(data["chapter_path"])
     chapter_doc = json.loads(chapter_path.read_text(encoding="utf-8"))
     assert chapter_doc.get("book_bible_sha256") == expected_sha, chapter_doc
 
     step_paths = data.get("artifact_paths") or data.get("artifacts") or []
     assert step_paths, data
-    step_doc = json.loads(Path(step_paths[0]).read_text(encoding="utf-8"))
+    assert step_paths[0].startswith("runs/"), data
+    step_doc = json.loads(_storage_path(step_paths[0]).read_text(encoding="utf-8"))
     assert step_doc.get("book_bible", {}).get("sha256") == expected_sha, step_doc
+    _assert_response_did_not_touch_repo(book_id, data)
 
 
-def test_agent_step_binds_same_book_bible_contract_version_to_runtime_chapter_audit_and_run_state():
+def test_agent_step_binds_same_book_bible_contract_version_to_runtime_chapter_audit_and_run_state(isolated_agentpro_storage):
     book_id = f"novel_bible_contractver_{uuid4().hex[:8]}"
+    _assert_repo_book_absent(book_id)
     _write_book_bible(book_id, build_valid_book_bible_payload(book_id))
 
     response = _post_write(book_id)
@@ -188,11 +239,14 @@ def test_agent_step_binds_same_book_bible_contract_version_to_runtime_chapter_au
     run_state = data.get("run_state") or {}
     assert run_state.get("book_bible", {}).get("contract_version") == BOOK_BIBLE_CONTRACT_VERSION, run_state
 
-    chapter_path = Path(data["chapter_path"])
+    assert data["chapter_path"].startswith("books/"), data
+    chapter_path = _storage_path(data["chapter_path"])
     chapter_doc = json.loads(chapter_path.read_text(encoding="utf-8"))
     assert chapter_doc.get("book_bible_contract_version") == BOOK_BIBLE_CONTRACT_VERSION, chapter_doc
 
     step_paths = data.get("artifact_paths") or data.get("artifacts") or []
     assert step_paths, data
-    step_doc = json.loads(Path(step_paths[0]).read_text(encoding="utf-8"))
+    assert step_paths[0].startswith("runs/"), data
+    step_doc = json.loads(_storage_path(step_paths[0]).read_text(encoding="utf-8"))
     assert step_doc.get("book_bible", {}).get("contract_version") == BOOK_BIBLE_CONTRACT_VERSION, step_doc
+    _assert_response_did_not_touch_repo(book_id, data)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from uuid import uuid4
 
@@ -11,6 +10,7 @@ from app.main import app
 from app.p20_core.canon_service import json_write
 from app.p20_core.master_canon import resolve_master_canon
 from app.p20_core.project_truth import build_project_truth_binding
+from app.p20_core.storage_paths import get_books_root, get_runs_root, get_storage_root
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -18,23 +18,31 @@ client = TestClient(app)
 
 
 def _book_dir(book_id: str) -> Path:
-    return REPO_ROOT / "books" / book_id
+    return get_books_root() / book_id
 
 
 def _run_dir(run_id: str) -> Path:
+    return get_runs_root() / run_id
+
+
+def _storage_path(public_path: str) -> Path:
+    return get_storage_root() / public_path
+
+
+def _repo_book_dir(book_id: str) -> Path:
+    return REPO_ROOT / "books" / book_id
+
+
+def _repo_run_dir(run_id: str) -> Path:
     return REPO_ROOT / "runs" / run_id
 
 
-def _clean_book(book_id: str) -> None:
-    p = _book_dir(book_id)
-    if p.exists():
-        shutil.rmtree(p)
+def _assert_repo_book_absent(book_id: str) -> None:
+    assert not _repo_book_dir(book_id).exists(), _repo_book_dir(book_id)
 
 
-def _clean_run(run_id: str) -> None:
-    p = _run_dir(run_id)
-    if p.exists():
-        shutil.rmtree(p)
+def _assert_repo_run_absent(run_id: str) -> None:
+    assert not _repo_run_dir(run_id).exists(), _repo_run_dir(run_id)
 
 
 def _make_book(book_id: str) -> None:
@@ -70,8 +78,10 @@ def _make_book(book_id: str) -> None:
     })
 
 
-def test_canon_rebuild_returns_full_contract_and_bindings():
+def test_canon_rebuild_returns_full_contract_and_bindings(isolated_agentpro_storage):
     book_id = f"p20_rebuild_contract_{uuid4().hex[:8]}"
+    _assert_repo_book_absent(book_id)
+
     try:
         _make_book(book_id)
 
@@ -104,9 +114,13 @@ def test_canon_rebuild_returns_full_contract_and_bindings():
         assert data["master_canon"] == resolve_master_canon(), data
         assert data["project_truth"] == build_project_truth_binding(), data
 
-        audit_path = REPO_ROOT / data["audit_path"]
-        snapshot_path = REPO_ROOT / data["canon_snapshot_path"]
-        rebuild_path = REPO_ROOT / data["rebuild_artifact_path"]
+        assert data["audit_path"].startswith("runs/"), data
+        assert data["canon_snapshot_path"].startswith("books/"), data
+        assert data["rebuild_artifact_path"].startswith("books/"), data
+
+        audit_path = _storage_path(data["audit_path"])
+        snapshot_path = _storage_path(data["canon_snapshot_path"])
+        rebuild_path = _storage_path(data["rebuild_artifact_path"])
 
         assert audit_path.exists(), audit_path
         assert snapshot_path.exists(), snapshot_path
@@ -123,11 +137,15 @@ def test_canon_rebuild_returns_full_contract_and_bindings():
         assert snapshot["project_truth"] == data["project_truth"], snapshot
         assert snapshot["decision"] == "ACCEPT", snapshot
     finally:
-        _clean_book(book_id)
+        _assert_repo_book_absent(book_id)
+        if "data" in locals():
+            _assert_repo_run_absent(data["run_id"])
 
 
-def test_canon_rebuild_rejects_project_truth_mismatch_without_promoting_live_canon():
+def test_canon_rebuild_rejects_project_truth_mismatch_without_promoting_live_canon(isolated_agentpro_storage):
     book_id = f"p20_rebuild_reject_{uuid4().hex[:8]}"
+    _assert_repo_book_absent(book_id)
+
     try:
         _make_book(book_id)
         canon_path = _book_dir(book_id) / "memory" / "canon.json"
@@ -148,12 +166,16 @@ def test_canon_rebuild_rejects_project_truth_mismatch_without_promoting_live_can
         after = canon_path.read_text(encoding="utf-8")
         assert after == before
     finally:
-        _clean_book(book_id)
+        _assert_repo_book_absent(book_id)
+        if "data" in locals():
+            _assert_repo_run_absent(data["run_id"])
 
 
-def test_canon_rebuild_is_deterministic_for_same_input():
+def test_canon_rebuild_is_deterministic_for_same_input(isolated_agentpro_storage):
     book_id = f"p20_rebuild_determinism_{uuid4().hex[:8]}"
     run_ids: list[str] = []
+    _assert_repo_book_absent(book_id)
+
     try:
         _make_book(book_id)
 
@@ -176,6 +198,6 @@ def test_canon_rebuild_is_deterministic_for_same_input():
         assert d1["rebuild_summary"] == d2["rebuild_summary"], (d1, d2)
         assert d1["canon_memory"]["approved_chapters"] == d2["canon_memory"]["approved_chapters"], (d1, d2)
     finally:
-        _clean_book(book_id)
+        _assert_repo_book_absent(book_id)
         for run_id in run_ids:
-            _clean_run(run_id)
+            _assert_repo_run_absent(run_id)

@@ -1,15 +1,18 @@
 import unittest
 import shutil
 import json
-from pathlib import Path
 
+import pytest
+
+from app.p20_core.storage_paths import get_books_root
 from app.tools import tool_continuity
 
+
+@pytest.mark.usefixtures("isolated_agentpro_storage")
 class TestContinuity033(unittest.TestCase):
     def test_silent_candidates_when_no_canon(self):
-        root = Path(__file__).resolve().parents[1]
         book_id = "test_continuity_033"
-        d = root / "books" / book_id
+        d = get_books_root() / book_id
         d.mkdir(parents=True, exist_ok=True)
 
         # pusty kanon

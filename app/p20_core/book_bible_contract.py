@@ -7,6 +7,13 @@ from typing import Any, Dict
 
 BOOK_BIBLE_CONTRACT_VERSION = "1.0"
 
+BOOK_BIBLE_VERSIONING_POLICY: tuple[str, ...] = (
+    "Bump BOOK_BIBLE_CONTRACT_VERSION whenever REQUIRED_* contract fields change.",
+    "Refresh BOOK_BIBLE_CONTRACT_GUARD_FROZEN_VERSION together with the new version.",
+    "Refresh BOOK_BIBLE_CONTRACT_GUARD_FROZEN_REQUIRED_FINGERPRINT after intentional required-field changes only.",
+    "A change to book_bible required fields without version bump and guard refresh is a contract violation.",
+)
+
 REQUIRED_NON_EMPTY_STRING_KEYS = [
     "title",
     "genre",
@@ -24,6 +31,28 @@ REQUIRED_NON_EMPTY_LIST_KEYS = [
 REQUIRED_OBJECT_LIST_KEYS = list(REQUIRED_NON_EMPTY_LIST_KEYS)
 REQUIRED_BOOK_BIBLE_KEYS = ["book_id"] + REQUIRED_NON_EMPTY_STRING_KEYS + REQUIRED_NON_EMPTY_LIST_KEYS
 LIST_KEYS_REQUIRING_ID = list(REQUIRED_OBJECT_LIST_KEYS)
+
+BOOK_BIBLE_CONTRACT_GUARD_FROZEN_VERSION = "1.0"
+BOOK_BIBLE_CONTRACT_GUARD_FROZEN_REQUIRED_FINGERPRINT = "1948d5fc6ff27d688d048fefb8664041dda6466554d3382f47f7621cfe42c71c"
+
+
+def build_required_contract_fingerprint_payload() -> Dict[str, list[str]]:
+    return {
+        "required_keys": list(REQUIRED_BOOK_BIBLE_KEYS),
+        "required_non_empty_string_keys": list(REQUIRED_NON_EMPTY_STRING_KEYS),
+        "required_non_empty_list_keys": list(REQUIRED_NON_EMPTY_LIST_KEYS),
+        "required_object_list_keys": list(REQUIRED_OBJECT_LIST_KEYS),
+    }
+
+
+def compute_required_contract_fingerprint() -> str:
+    raw = json.dumps(
+        build_required_contract_fingerprint_payload(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _non_empty_text(v: Any) -> bool:
@@ -162,11 +191,16 @@ def ensure_test_book_bible(book_id: str) -> Dict[str, Any]:
 
 __all__ = [
     "BOOK_BIBLE_CONTRACT_VERSION",
+    "BOOK_BIBLE_VERSIONING_POLICY",
+    "BOOK_BIBLE_CONTRACT_GUARD_FROZEN_VERSION",
+    "BOOK_BIBLE_CONTRACT_GUARD_FROZEN_REQUIRED_FINGERPRINT",
     "REQUIRED_NON_EMPTY_STRING_KEYS",
     "REQUIRED_NON_EMPTY_LIST_KEYS",
     "REQUIRED_OBJECT_LIST_KEYS",
     "REQUIRED_BOOK_BIBLE_KEYS",
     "LIST_KEYS_REQUIRING_ID",
+    "build_required_contract_fingerprint_payload",
+    "compute_required_contract_fingerprint",
     "build_valid_book_bible_payload",
     "validate_book_bible_payload",
     "validate_book_bible_payload_or_raise",

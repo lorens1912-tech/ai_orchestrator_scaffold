@@ -1,10 +1,13 @@
 import json
 import time
 from pathlib import Path
+from uuid import uuid4
 from fastapi.testclient import TestClient
 from app.main import app
+from app.p20_core.storage_paths import get_runs_root
 
 client = TestClient(app)
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def _get_ci(d, key, default=None):
     if not isinstance(d, dict):
@@ -15,7 +18,7 @@ def _get_ci(d, key, default=None):
     return default
 
 def _read_quality_payload(run_id: str, timeout_sec: float = 6.0):
-    steps_dir = Path("runs") / run_id / "steps"
+    steps_dir = get_runs_root() / run_id / "steps"
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
         q_files = sorted(steps_dir.glob("*_QUALITY.json"))
@@ -26,9 +29,10 @@ def _read_quality_payload(run_id: str, timeout_sec: float = 6.0):
         time.sleep(0.05)
     raise AssertionError(f"run={run_id}, brak *_QUALITY.json")
 
-def _run_quality_direct(text: str, min_words: int):
+def _run_quality_direct(text: str, min_words: int, book_id: str):
     body = {
         "mode": "QUALITY",
+        "book_id": book_id,
         "payload": {
             "text": text,
             "min_words": min_words
@@ -41,8 +45,10 @@ def _run_quality_direct(text: str, min_words: int):
     payload, raw = _read_quality_payload(run_id)
     return run_id, payload, raw
 
-def test_p19_quality_direct_empty_fails_and_blocks():
-    run_id, p, raw = _run_quality_direct("", 120)
+def test_p19_quality_direct_empty_rejects_without_pipeline_block(isolated_agentpro_storage):
+    book_id = f"p19_quality_empty_{uuid4().hex[:8]}"
+    assert not (REPO_ROOT / "books" / book_id).exists()
+    run_id, p, raw = _run_quality_direct("", 120, book_id)
 
     dec = str(_get_ci(p, "DECISION", "")).upper()
     block = _get_ci(p, "BLOCK_PIPELINE", None)
@@ -52,16 +58,22 @@ def test_p19_quality_direct_empty_fails_and_blocks():
     if not isinstance(reasons, list):
         reasons = [reasons]
     reasons_txt = " | ".join(str(x) for x in reasons).upper()
+    flags = _get_ci(p, "FLAGS", {}) or {}
 
     assert dec == "REJECT", f"run={run_id}, DECISION={dec}"
-    assert block is True, f"run={run_id}, BLOCK_PIPELINE={block}"
+    assert block is False, f"run={run_id}, BLOCK_PIPELINE={block}"
     assert words < 120, f"run={run_id}, WORDS={words}"
-    assert "MIN_WORDS" in reasons_txt, f"run={run_id}, REASONS={reasons}"
+    assert "EMPTY" in reasons_txt, f"run={run_id}, REASONS={reasons}"
+    assert flags.get("too_short") is True, f"run={run_id}, FLAGS={flags}"
     assert '"block_pipeline"' not in raw, f"run={run_id} ma niedozwolony key block_pipeline"
+    assert not (REPO_ROOT / "books" / book_id).exists()
+    assert not (REPO_ROOT / "runs" / run_id).exists()
 
-def test_p19_quality_direct_long_accepts_and_not_blocks():
+def test_p19_quality_direct_long_accepts_and_not_blocks(isolated_agentpro_storage):
+    book_id = f"p19_quality_long_{uuid4().hex[:8]}"
+    assert not (REPO_ROOT / "books" / book_id).exists()
     long_text = " ".join([f"slowo{i}" for i in range(1, 161)])  # 160 słów
-    run_id, p, raw = _run_quality_direct(long_text, 120)
+    run_id, p, raw = _run_quality_direct(long_text, 120, book_id)
 
     dec = str(_get_ci(p, "DECISION", "")).upper()
     block = _get_ci(p, "BLOCK_PIPELINE", None)
@@ -77,3 +89,5 @@ def test_p19_quality_direct_long_accepts_and_not_blocks():
     assert words >= 120, f"run={run_id}, WORDS={words}"
     assert "MIN_WORDS" not in reasons_txt, f"run={run_id}, REASONS={reasons}"
     assert '"block_pipeline"' not in raw, f"run={run_id} ma niedozwolony key block_pipeline"
+    assert not (REPO_ROOT / "books" / book_id).exists()
+    assert not (REPO_ROOT / "runs" / run_id).exists()

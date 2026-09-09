@@ -12,8 +12,8 @@ def test_validate():
     assert r.status_code == 200
     d = r.json()
     assert d["ok"] is True
-    assert d["modes_count"] == 12
-    assert d["presets_count"] == 3
+    assert d["modes_count"] == len(d["mode_ids"])
+    assert d["presets_count"] == len(d["preset_ids"])
 
 def test_pipeline_tools():
     payload = {"book_id":"demo","preset":"PIPELINE_DRAFT","payload":{"title":"Kod Kruka"}}

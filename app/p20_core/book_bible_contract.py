@@ -1,0 +1,175 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Any, Dict
+
+BOOK_BIBLE_CONTRACT_VERSION = "1.0"
+
+REQUIRED_NON_EMPTY_STRING_KEYS = [
+    "title",
+    "genre",
+    "premise",
+]
+
+REQUIRED_NON_EMPTY_LIST_KEYS = [
+    "acts",
+    "characters",
+    "timeline",
+    "facts",
+    "decisions",
+]
+
+REQUIRED_OBJECT_LIST_KEYS = list(REQUIRED_NON_EMPTY_LIST_KEYS)
+REQUIRED_BOOK_BIBLE_KEYS = ["book_id"] + REQUIRED_NON_EMPTY_STRING_KEYS + REQUIRED_NON_EMPTY_LIST_KEYS
+LIST_KEYS_REQUIRING_ID = list(REQUIRED_OBJECT_LIST_KEYS)
+
+
+def _non_empty_text(v: Any) -> bool:
+    return isinstance(v, str) and v.strip() != ""
+
+
+def _non_empty_list(v: Any) -> bool:
+    return isinstance(v, list) and len(v) > 0
+
+
+def _items_are_dicts(v: Any) -> bool:
+    return isinstance(v, list) and all(isinstance(item, dict) for item in v)
+
+
+def _items_have_id(v: Any) -> bool:
+    if not isinstance(v, list):
+        return False
+    for item in v:
+        if not isinstance(item, dict):
+            return False
+        if not _non_empty_text(item.get("id")):
+            return False
+    return True
+
+
+def build_valid_book_bible_payload(book_id: str) -> Dict[str, Any]:
+    return {
+        "book_id": book_id,
+        "title": f"Test title for {book_id}",
+        "genre": "Thriller",
+        "premise": "A valid test premise for the novel project.",
+        "acts": [{"id": "act_1", "summary": "Opening act."}],
+        "characters": [{"id": "char_1", "name": "Hero", "role": "protagonist"}],
+        "timeline": [{"id": "tl_1", "event": "Story begins."}],
+        "facts": [{"id": "fact_1", "text": "Core canon fact."}],
+        "decisions": [{"id": "dec_1", "text": "Canon decision."}],
+    }
+
+
+def validate_book_bible_payload(payload: Dict[str, Any]) -> None:
+    validate_book_bible_payload_or_raise(payload)
+
+
+def validate_book_bible_payload_or_raise(
+    payload: Dict[str, Any],
+    expected_book_id: str | None = None,
+) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("book_bible must be valid json object")
+
+    for key in REQUIRED_BOOK_BIBLE_KEYS:
+        if key not in payload:
+            raise ValueError(f"{key} is required")
+
+    if not _non_empty_text(payload.get("book_id")):
+        raise ValueError("book_id must be a non-empty string")
+
+    for key in REQUIRED_NON_EMPTY_STRING_KEYS:
+        if not _non_empty_text(payload.get(key)):
+            raise ValueError(f"{key} must be a non-empty string")
+
+    for key in REQUIRED_NON_EMPTY_LIST_KEYS:
+        if not _non_empty_list(payload.get(key)):
+            raise ValueError(f"{key} must be a non-empty list")
+
+    for key in REQUIRED_OBJECT_LIST_KEYS:
+        if not _items_are_dicts(payload.get(key)):
+            raise ValueError(f"{key} must be a list of objects")
+
+    for key in LIST_KEYS_REQUIRING_ID:
+        if not _items_have_id(payload.get(key)):
+            raise ValueError(f"{key} items must contain id")
+
+    if expected_book_id is not None and "book_id" in payload and str(payload.get("book_id")) != str(expected_book_id):
+        raise ValueError("book_id must match expected_book_id")
+
+    return payload
+
+
+def _map_validator_error_for_runtime(msg: str) -> str:
+    if msg.endswith(" is required"):
+        key = msg[:-len(" is required")]
+        return f"BOOK_BIBLE_MISSING_FIELD:{key}"
+    if "must be a non-empty string" in msg or "must be a non-empty list" in msg:
+        return msg
+    if "items must contain id" in msg:
+        return "BOOK_BIBLE_LIST_ITEM_MISSING_ID"
+    return msg
+
+
+def load_book_bible_or_raise(book_id: str) -> Dict[str, Any]:
+    if not _non_empty_text(book_id):
+        raise ValueError("BOOK_ID_MISSING")
+
+    bible_path = Path("books") / str(book_id) / "book_bible.json"
+
+    if not bible_path.exists():
+        raise ValueError("BOOK_BIBLE_MISSING")
+
+    try:
+        raw = bible_path.read_text(encoding="utf-8")
+        payload = json.loads(raw)
+    except Exception:
+        raise ValueError("BOOK_BIBLE_INVALID_JSON")
+
+    try:
+        validate_book_bible_payload_or_raise(payload, expected_book_id=book_id)
+    except ValueError as e:
+        raise ValueError(_map_validator_error_for_runtime(str(e)))
+
+    contract = {
+        "path": str(bible_path).replace("\\", "/"),
+        "sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        "contract_version": BOOK_BIBLE_CONTRACT_VERSION,
+    }
+
+    out = dict(payload)
+    out["path"] = contract["path"]
+    out["sha256"] = contract["sha256"]
+    out["contract_version"] = contract["contract_version"]
+    out["_contract"] = dict(contract)
+    return out
+
+
+def ensure_test_book_bible(book_id: str) -> Dict[str, Any]:
+    payload = build_valid_book_bible_payload(book_id)
+    book_dir = Path("books") / str(book_id)
+    book_dir.mkdir(parents=True, exist_ok=True)
+    path = book_dir / "book_bible.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "path": str(path).replace("\\", "/"),
+        "payload": payload,
+    }
+
+
+__all__ = [
+    "BOOK_BIBLE_CONTRACT_VERSION",
+    "REQUIRED_NON_EMPTY_STRING_KEYS",
+    "REQUIRED_NON_EMPTY_LIST_KEYS",
+    "REQUIRED_OBJECT_LIST_KEYS",
+    "REQUIRED_BOOK_BIBLE_KEYS",
+    "LIST_KEYS_REQUIRING_ID",
+    "build_valid_book_bible_payload",
+    "validate_book_bible_payload",
+    "validate_book_bible_payload_or_raise",
+    "load_book_bible_or_raise",
+    "ensure_test_book_bible",
+]

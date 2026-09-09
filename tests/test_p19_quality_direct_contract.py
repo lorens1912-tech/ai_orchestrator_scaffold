@@ -53,7 +53,7 @@ def test_p19_quality_direct_empty_fails_and_blocks():
         reasons = [reasons]
     reasons_txt = " | ".join(str(x) for x in reasons).upper()
 
-    assert dec == "FAIL", f"run={run_id}, DECISION={dec}"
+    assert dec == "REJECT", f"run={run_id}, DECISION={dec}"
     assert block is True, f"run={run_id}, BLOCK_PIPELINE={block}"
     assert words < 120, f"run={run_id}, WORDS={words}"
     assert "MIN_WORDS" in reasons_txt, f"run={run_id}, REASONS={reasons}"

@@ -363,3 +363,9 @@ def install_pytest_fastpath(app) -> None:
 
         return await call_next(request)
 
+
+
+def _p15_hardfail_quality_payload(payload):
+    if isinstance(payload, dict):
+        return payload
+    return {}

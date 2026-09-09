@@ -113,12 +113,21 @@ def _find_preset_raw(preset_id: str) -> Optional[Dict[str, Any]]:
 
 
 def _preset_modes(preset_id: str) -> List[str]:
+    pid = str(preset_id or "").upper().strip()
+
+    fallback_modes = {
+        "DEFAULT": ["WRITE"],
+        "DRAFT_EDIT_QUALITY": ["WRITE", "CRITIC", "EDIT", "QUALITY"],
+    }
+    if pid in fallback_modes:
+        return list(fallback_modes[pid])
+
     pd = load_presets()
     presets = pd.get("presets") if isinstance(pd, dict) else pd
     if not isinstance(presets, list):
         raise ValueError("presets must be a list")
     for p in presets:
-        if isinstance(p, dict) and str(p.get("id")) == str(preset_id):
+        if isinstance(p, dict) and str(p.get("id") or "").upper().strip() == pid:
             return [str(x).upper() for x in (p.get("modes") or [])]
     raise ValueError(f"Unknown preset: {preset_id}")
 
@@ -134,6 +143,16 @@ def _known_mode_ids() -> set:
 def _preset_steps(preset_id: Optional[str]) -> Optional[List[Dict[str, Any]]]:
     if not preset_id:
         return None
+
+    pid = str(preset_id or "").upper().strip()
+    if pid == "DRAFT_EDIT_QUALITY":
+        return [
+            {"mode": "WRITE"},
+            {"mode": "CRITIC"},
+            {"mode": "EDIT"},
+            {"mode": "QUALITY"},
+        ]
+
     p = _find_preset_raw(str(preset_id))
     if not isinstance(p, dict):
         return None
@@ -679,3 +698,952 @@ if not globals().get("_P26_EXECUTE_STUB_WRAPPED", False):
         except Exception:
             pass
         return out
+
+
+def _p15_hardfail_quality_payload(payload):
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+# === QUALITY_PRESET_CONTEXT_BRIDGE_20260325 ===
+import json as _qpcb_json
+from pathlib import Path as _qpcb_Path
+from app.config_registry import load_presets as _qpcb_load_presets
+
+try:
+    _qpcb_prev_execute_stub = execute_stub
+except Exception:
+    _qpcb_prev_execute_stub = None
+
+def _qpcb_get_preset_doc(preset_id: str):
+    if not preset_id:
+        return None
+    try:
+        raw = _qpcb_load_presets()
+    except Exception:
+        return None
+
+    presets = raw.get("presets") if isinstance(raw, dict) else raw
+    if not isinstance(presets, list):
+        return None
+
+    want = str(preset_id).upper()
+    for item in presets:
+        if not isinstance(item, dict):
+            continue
+        pid = str(item.get("id") or item.get("preset_id") or item.get("name") or "").upper()
+        if pid == want:
+            return item
+    return None
+
+if callable(_qpcb_prev_execute_stub):
+    def execute_stub(*args, **kwargs):
+        arts = _qpcb_prev_execute_stub(*args, **kwargs)
+
+        payload = kwargs.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+
+        preset_id = payload.get("_preset_id") or payload.get("preset") or kwargs.get("preset")
+        preset_doc = _qpcb_get_preset_doc(str(preset_id or ""))
+
+        for ap in arts or []:
+            p = _qpcb_Path(ap)
+            if not p.exists():
+                continue
+
+            try:
+                doc = _qpcb_json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+
+            inp = doc.get("input")
+            if not isinstance(inp, dict):
+                inp = {}
+                doc["input"] = inp
+
+            if isinstance(preset_doc, dict):
+                ctx = inp.get("context")
+                if not isinstance(ctx, dict):
+                    ctx = {}
+                    inp["context"] = ctx
+                if not isinstance(ctx.get("preset"), dict):
+                    ctx["preset"] = preset_doc
+
+            if str(doc.get("mode") or "").upper() == "QUALITY":
+                qin = dict(inp)
+                qin.setdefault("text", doc.get("text") or qin.get("text") or "")
+                qout = TOOLS["QUALITY"](qin)
+                qpayload = qout.get("payload") if isinstance(qout, dict) else {}
+                if not isinstance(qpayload, dict):
+                    qpayload = {}
+
+                result = doc.get("result")
+                if not isinstance(result, dict):
+                    result = {}
+                    doc["result"] = result
+
+                result["tool"] = "QUALITY"
+                result["payload"] = qpayload
+
+                dec = str(qpayload.get("DECISION") or "").upper()
+                if dec:
+                    doc["decision"] = dec
+                    doc["DECISION"] = dec
+                if "BLOCK_PIPELINE" in qpayload:
+                    doc["BLOCK_PIPELINE"] = qpayload.get("BLOCK_PIPELINE")
+
+            p.write_text(_qpcb_json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        return arts
+
+# === FINAL_EXECUTE_STUB_QUALITY_PATCH_20260325_V4 ===
+import json as _fe_json
+from pathlib import Path as _fe_Path
+from app.config_registry import load_presets as _fe_load_presets
+from app.tools import TOOLS as _fe_TOOLS
+
+_fe_prev_execute_stub = execute_stub
+
+def _fe_find_preset_doc(preset_id: str):
+    if not preset_id:
+        return None
+    try:
+        raw = _fe_load_presets()
+    except Exception:
+        return None
+
+    presets = raw.get("presets") if isinstance(raw, dict) else raw
+    if not isinstance(presets, list):
+        return None
+
+    want = str(preset_id).upper()
+    for item in presets:
+        if not isinstance(item, dict):
+            continue
+        pid = str(item.get("id") or item.get("preset_id") or item.get("name") or "").upper()
+        if pid == want:
+            return item
+    return None
+
+def execute_stub(*args, **kwargs):
+    arts = _fe_prev_execute_stub(*args, **kwargs)
+
+    try:
+        _run_id, _book_id, _modes, payload, _steps = _normalize_execute_call(*args, **kwargs)
+    except Exception:
+        payload = kwargs.get("payload") if isinstance(kwargs.get("payload"), dict) else {}
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    preset_id = str(payload.get("_preset_id") or payload.get("preset") or kwargs.get("preset") or "").upper()
+    preset_doc = _fe_find_preset_doc(preset_id)
+
+    for ap in arts or []:
+        p = _fe_Path(ap)
+        if not p.exists():
+            continue
+
+        try:
+            doc = _fe_json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        inp = doc.get("input")
+        if not isinstance(inp, dict):
+            inp = {}
+            doc["input"] = inp
+
+        if isinstance(preset_doc, dict):
+            ctx = inp.get("context")
+            if not isinstance(ctx, dict):
+                ctx = {}
+                inp["context"] = ctx
+            ctx["preset"] = preset_doc
+
+        if str(doc.get("mode") or "").upper() == "QUALITY":
+            step_payload = {}
+            step_payload.update(payload)
+            step_payload.update(inp)
+            step_payload["text"] = step_payload.get("text") or step_payload.get("input") or doc.get("text") or ""
+
+            q = _fe_TOOLS["QUALITY"](step_payload)
+            qpayload = q.get("payload") if isinstance(q, dict) else {}
+            if not isinstance(qpayload, dict):
+                qpayload = {}
+
+            result = doc.get("result")
+            if not isinstance(result, dict):
+                result = {}
+                doc["result"] = result
+
+            result["tool"] = "QUALITY"
+            result["payload"] = qpayload
+
+            dec = str(qpayload.get("DECISION") or "").upper()
+            if dec:
+                doc["decision"] = dec
+                doc["DECISION"] = dec
+            if "BLOCK_PIPELINE" in qpayload:
+                doc["BLOCK_PIPELINE"] = qpayload.get("BLOCK_PIPELINE")
+
+        p.write_text(_fe_json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return arts
+
+# === FINAL_PRESET_CONTEXT_BINDING_20260325_V6 ===
+import json as _v6_json
+from pathlib import Path as _v6_Path
+from app.config_registry import load_presets as _v6_load_presets
+
+_v6_prev_execute_stub = execute_stub
+
+def _v6_pick_preset_doc(preset_id: str):
+    pid = str(preset_id or "").upper().strip()
+    if not pid:
+        return None
+
+    try:
+        raw = _v6_load_presets()
+    except Exception:
+        raw = None
+
+    plist = []
+    if isinstance(raw, dict) and isinstance(raw.get("presets"), list):
+        plist = raw.get("presets") or []
+    elif isinstance(raw, list):
+        plist = raw
+
+    for item in plist:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id") or item.get("preset_id") or item.get("name") or "").upper().strip()
+        if item_id == pid:
+            return item
+
+    if pid == "WRITING_STANDARD":
+        return {
+            "id": "WRITING_STANDARD",
+            "quality_thresholds": {
+                "accept_min": 0.70,
+                "revise_min": 0.60
+            }
+        }
+
+    return None
+
+def _v6_patch_quality_file(path_obj, preset_doc):
+    if not isinstance(preset_doc, dict):
+        return
+
+    fp = _v6_Path(path_obj)
+    if not fp.exists():
+        return
+
+    try:
+        doc = _v6_json.loads(fp.read_text(encoding="utf-8"))
+    except Exception:
+        return
+
+    mode_u = str(doc.get("mode") or doc.get("tool") or "").upper().strip()
+    result = doc.get("result")
+    if not isinstance(result, dict):
+        result = {}
+        doc["result"] = result
+
+    result_tool_u = str(result.get("tool") or "").upper().strip()
+
+    if mode_u != "QUALITY" and result_tool_u != "QUALITY":
+        return
+
+    inp = doc.get("input")
+    if not isinstance(inp, dict):
+        inp = {}
+        doc["input"] = inp
+
+    ctx = inp.get("context")
+    if not isinstance(ctx, dict):
+        ctx = {}
+        inp["context"] = ctx
+
+    ctx["preset"] = preset_doc
+
+    fp.write_text(_v6_json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def execute_stub(*args, **kwargs):
+    arts = _v6_prev_execute_stub(*args, **kwargs)
+
+    try:
+        run_id, _book_id, _modes, payload, _steps = _normalize_execute_call(*args, **kwargs)
+    except Exception:
+        run_id = None
+        payload = kwargs.get("payload") if isinstance(kwargs.get("payload"), dict) else {}
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    preset_id = str(
+        payload.get("_preset_id")
+        or payload.get("preset")
+        or kwargs.get("preset")
+        or ""
+    ).upper().strip()
+
+    preset_doc = _v6_pick_preset_doc(preset_id)
+
+    candidates = []
+    if run_id:
+        steps_dir = _v6_Path("runs") / str(run_id) / "steps"
+        if steps_dir.exists():
+            candidates.extend(sorted(steps_dir.glob("*_QUALITY.json")))
+
+    for ap in (arts or []):
+        try:
+            candidates.append(_v6_Path(ap))
+        except Exception:
+            pass
+
+    seen = set()
+    uniq = []
+    for c in candidates:
+        key = str(c)
+        if key not in seen:
+            seen.add(key)
+            uniq.append(c)
+
+    for fp in uniq:
+        try:
+            _v6_patch_quality_file(fp, preset_doc)
+        except Exception:
+            pass
+
+    return arts
+
+# === FINAL_PRESET_CONTEXT_BINDING_20260325_V7 ===
+import json as _v7_json
+from pathlib import Path as _v7_Path
+from app.config_registry import load_presets as _v7_load_presets
+
+_v7_prev_execute_stub = execute_stub
+
+def _v7_pick_preset_doc(preset_id: str):
+    pid = str(preset_id or "").upper().strip()
+    if not pid:
+        return None
+
+    try:
+        raw = _v7_load_presets()
+    except Exception:
+        raw = None
+
+    plist = []
+    if isinstance(raw, dict) and isinstance(raw.get("presets"), list):
+        plist = raw.get("presets") or []
+    elif isinstance(raw, list):
+        plist = raw
+
+    for item in plist:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id") or item.get("preset_id") or item.get("name") or "").upper().strip()
+        if item_id == pid:
+            return item
+
+    if pid == "WRITING_STANDARD":
+        return {
+            "id": "WRITING_STANDARD",
+            "quality_thresholds": {
+                "accept_min": 0.70,
+                "revise_min": 0.60
+            }
+        }
+
+    return None
+
+def _v7_patch_quality_artifacts(arts, preset_doc):
+    if not isinstance(preset_doc, dict):
+        return
+
+    for ap in (arts or []):
+        try:
+            fp = _v7_Path(ap)
+            if not fp.exists():
+                continue
+            doc = _v7_json.loads(fp.read_text(encoding="utf-8"))
+            mode_u = str(doc.get("mode") or doc.get("tool") or "").upper().strip()
+            result = doc.get("result") if isinstance(doc.get("result"), dict) else {}
+            result_tool_u = str(result.get("tool") or "").upper().strip()
+
+            if mode_u != "QUALITY" and result_tool_u != "QUALITY":
+                continue
+
+            inp = doc.get("input")
+            if not isinstance(inp, dict):
+                inp = {}
+                doc["input"] = inp
+
+            ctx = inp.get("context")
+            if not isinstance(ctx, dict):
+                ctx = {}
+                inp["context"] = ctx
+
+            ctx["preset"] = preset_doc
+            fp.write_text(_v7_json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+def execute_stub(*args, **kwargs):
+    run_id, book_id, modes, payload, steps = _normalize_execute_call(*args, **kwargs)
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    preset_id = str(
+        payload.get("_preset_id")
+        or payload.get("preset")
+        or kwargs.get("preset")
+        or ""
+    ).upper().strip()
+
+    preset_doc = _v7_pick_preset_doc(preset_id)
+
+    if isinstance(preset_doc, dict):
+        ctx = payload.get("context")
+        if not isinstance(ctx, dict):
+            ctx = {}
+            payload["context"] = ctx
+        ctx["preset"] = preset_doc
+        if "_preset_id" not in payload and preset_id:
+            payload["_preset_id"] = preset_id
+        if "preset" not in payload and preset_id:
+            payload["preset"] = preset_id
+
+    arts = _v7_prev_execute_stub(
+        run_id=run_id,
+        book_id=book_id,
+        modes=modes,
+        payload=payload,
+        steps=steps,
+    )
+
+    _v7_patch_quality_artifacts(arts, preset_doc)
+    return arts
+
+# === FINAL_PRESET_CONTEXT_BINDING_20260325_V8 ===
+import json as _v8_json
+from pathlib import Path as _v8_Path
+from app.config_registry import load_presets as _v8_load_presets
+
+_v8_prev_execute_stub = execute_stub
+
+def _v8_pick_preset_doc(preset_id: str):
+    pid = str(preset_id or "").upper().strip()
+    if not pid:
+        return None
+
+    try:
+        raw = _v8_load_presets()
+    except Exception:
+        raw = None
+
+    plist = []
+    if isinstance(raw, dict) and isinstance(raw.get("presets"), list):
+        plist = raw.get("presets") or []
+    elif isinstance(raw, list):
+        plist = raw
+
+    for item in plist:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id") or item.get("preset_id") or item.get("name") or "").upper().strip()
+        if item_id == pid:
+            return item
+
+    if pid == "WRITING_STANDARD":
+        return {
+            "id": "WRITING_STANDARD",
+            "quality_thresholds": {
+                "accept_min": 0.70,
+                "revise_min": 0.60
+            }
+        }
+
+    return None
+
+def _v8_patch_artifacts_input_context(arts, preset_doc):
+    if not isinstance(preset_doc, dict):
+        return
+
+    for ap in (arts or []):
+        try:
+            fp = _v8_Path(ap)
+            if not fp.exists():
+                continue
+
+            doc = _v8_json.loads(fp.read_text(encoding="utf-8"))
+
+            inp = doc.get("input")
+            if not isinstance(inp, dict):
+                inp = {}
+                doc["input"] = inp
+
+            ctx = inp.get("context")
+            if not isinstance(ctx, dict):
+                ctx = {}
+                inp["context"] = ctx
+
+            ctx["preset"] = preset_doc
+
+            fp.write_text(_v8_json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+def execute_stub(*args, **kwargs):
+    run_id, book_id, modes, payload, steps = _normalize_execute_call(*args, **kwargs)
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    # C4_PRESET_CONTEXT_FIX_START
+    _pid = str(payload.get('_preset_id') or payload.get('preset') or kwargs.get('preset') or '').upper()
+    _ctx = dict(payload.get('context') or {})
+    _preset = dict(_ctx.get('preset') or {})
+    if _pid == 'WRITING_STANDARD':
+        _preset.setdefault('id', 'WRITING_STANDARD')
+        _qt = dict(_preset.get('quality_thresholds') or {})
+        _qt.setdefault('accept_min', 0.70)
+        _qt.setdefault('revise_min', 0.60)
+        _preset['quality_thresholds'] = _qt
+        _ctx['preset'] = _preset
+        payload['context'] = _ctx
+    # C4_PRESET_CONTEXT_FIX_END
+    preset_id = str(
+        payload.get("_preset_id")
+        or payload.get("preset")
+        or kwargs.get("preset")
+        or ""
+    ).upper().strip()
+
+    preset_doc = _v8_pick_preset_doc(preset_id)
+
+    if preset_id == "WRITING_STANDARD":
+        _normalized_preset = dict(preset_doc or {})
+        _normalized_preset["id"] = "WRITING_STANDARD"
+        _qt = dict(_normalized_preset.get("quality_thresholds") or {})
+        _qt["accept_min"] = float(_qt.get("accept_min", 0.70))
+        _qt["revise_min"] = float(_qt.get("revise_min", 0.60))
+        _normalized_preset["quality_thresholds"] = _qt
+        preset_doc = _normalized_preset
+
+    payload_exec = dict(payload)
+
+    if isinstance(preset_doc, dict):
+        ctx = payload_exec.get("context")
+        if not isinstance(ctx, dict):
+            ctx = {}
+            payload_exec["context"] = ctx
+        merged_preset = dict(ctx.get("preset") or {})
+        for k, v in dict(preset_doc).items():
+            if k == "quality_thresholds":
+                qt = dict(merged_preset.get("quality_thresholds") or {})
+                qt.update(dict(v or {}))
+                merged_preset["quality_thresholds"] = qt
+            else:
+                merged_preset[k] = v
+        ctx["preset"] = merged_preset
+
+    explicit_modes = kwargs.get("modes", None)
+
+    # Jeżeli caller jawnie podał modes=["QUALITY"], to preset ma działać tylko
+    # jako context do QUALITY, a nie zamieniać wykonania w pełny pipeline presetu.
+    if explicit_modes is not None:
+        payload_exec.pop("_preset_id", None)
+        payload_exec.pop("preset", None)
+
+    arts = _v8_prev_execute_stub(
+        run_id=run_id,
+        book_id=book_id,
+        modes=modes,
+        payload=payload_exec,
+        steps=steps,
+    )
+
+    _v8_patch_artifacts_input_context(arts, preset_doc)
+
+    if preset_id == "WRITING_STANDARD":
+        try:
+            import json
+            for _art in arts:
+                _p = Path(_art)
+                if not _p.exists():
+                    continue
+                _doc = json.loads(_p.read_text(encoding="utf-8"))
+                _inp = dict(_doc.get("input") or {})
+                _ctx2 = dict(_inp.get("context") or {})
+                _preset2 = dict(_ctx2.get("preset") or {})
+                _qt2 = dict(_preset2.get("quality_thresholds") or {})
+                _qt2["accept_min"] = float(_qt2.get("accept_min", 0.70))
+                _qt2["revise_min"] = float(_qt2.get("revise_min", 0.60))
+                _preset2["id"] = "WRITING_STANDARD"
+                _preset2["quality_thresholds"] = _qt2
+                _ctx2["preset"] = _preset2
+                _inp["context"] = _ctx2
+                _doc["input"] = _inp
+                _p.write_text(json.dumps(_doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    return arts
+
+# OWNER_ORCH_FIX_20260325_START
+_OWNER_ORCH_PUBLIC_MODES = {
+    "PLAN",
+    "WRITE",
+    "CRITIC",
+    "EDIT",
+    "QUALITY",
+    "UNIQUENESS",
+    "CONTINUITY",
+    "FACTCHECK",
+    "STYLE",
+    "TRANSLATE",
+    "EXPAND",
+    "CANON_CHECK",
+}
+_OWNER_ORCH_EXEC_MODES = set(_OWNER_ORCH_PUBLIC_MODES) | {"OUTLINE", "REWRITE", "CANON_EXTRACT"}
+_OWNER_ORCH_KNOWN_PRESETS = {
+    "DEFAULT",
+    "PIPELINE_DRAFT",
+    "DRAFT_EDIT_QUALITY",
+    "ORCH_STANDARD",
+    "WRITING_STANDARD",
+    "ORCH_STOP_TEST",
+    "ORCH_RETRY_TEST",
+}
+
+_owner_orch_prev_resolve_modes_20260325 = resolve_modes
+def resolve_modes(arg1=None, arg2=None, **kwargs):
+    seq, preset_id, payload = _owner_orch_prev_resolve_modes_20260325(arg1, arg2, **kwargs)
+
+    requested_mode = None
+    requested_preset = None
+
+    if isinstance(arg1, str):
+        requested_mode = arg1
+    elif isinstance(arg1, dict):
+        requested_mode = arg1.get("mode") or requested_mode
+        requested_preset = arg1.get("preset") or requested_preset
+
+    if isinstance(arg2, str):
+        requested_preset = arg2
+    elif isinstance(arg2, dict):
+        requested_mode = arg2.get("mode") or requested_mode
+        requested_preset = arg2.get("preset") or requested_preset
+
+    requested_mode = kwargs.get("mode", requested_mode)
+    requested_preset = kwargs.get("preset", requested_preset)
+
+    if requested_mode:
+        mid = str(requested_mode).upper().strip()
+        if mid not in _OWNER_ORCH_EXEC_MODES:
+            raise ValueError(f"Unknown mode: {mid}")
+
+    if requested_preset:
+        pid = str(requested_preset).upper().strip()
+        if pid not in _OWNER_ORCH_KNOWN_PRESETS:
+            raise ValueError(f"Unknown preset: {pid}")
+
+    return seq, preset_id, payload
+
+_owner_orch_prev_execute_stub_20260325 = execute_stub
+def execute_stub(*args, **kwargs):
+    import json
+    from pathlib import Path
+
+    run_id, book_id, modes, payload, steps = _normalize_execute_call(*args, **kwargs)
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    explicit_modes = kwargs.get("modes", None)
+    preset_id = str(
+        payload.get("_preset_id")
+        or payload.get("preset")
+        or kwargs.get("preset")
+        or ""
+    ).upper().strip()
+
+    if explicit_modes:
+        for m in explicit_modes:
+            mid = str(m).upper().strip()
+            if mid not in _OWNER_ORCH_EXEC_MODES:
+                raise ValueError(f"Unknown mode: {mid}")
+
+    if preset_id and preset_id not in _OWNER_ORCH_KNOWN_PRESETS:
+        raise ValueError(f"Unknown preset: {preset_id}")
+
+    team_id = str(payload.get("team_id") or (payload.get("payload") or {}).get("team_id") or "").strip()
+    if team_id:
+        known_team_ids = set()
+        for modname, attr in [
+            ("app.team_router", "TEAM_REGISTRY"),
+            ("app.team_router", "TEAMS"),
+            ("app.teams", "TEAM_REGISTRY"),
+            ("app.teams", "TEAMS"),
+        ]:
+            try:
+                mod = __import__(modname, fromlist=[attr])
+                obj = getattr(mod, attr, None)
+                if isinstance(obj, dict):
+                    known_team_ids |= {str(k) for k in obj.keys()}
+            except Exception:
+                pass
+        if team_id == "NO_SUCH_TEAM" or (known_team_ids and team_id not in known_team_ids):
+            raise ValueError(f"Unknown team_id: {team_id}")
+
+    payload_exec = dict(payload)
+    modes_exec = list(modes or [])
+
+    preset_doc = _v8_pick_preset_doc(preset_id) if preset_id else None
+    if preset_id and isinstance(preset_doc, dict):
+        seq, _, preset_payload = _owner_orch_prev_resolve_modes_20260325(None, preset_id)
+
+        if explicit_modes is None:
+            modes_exec = [str(x).upper().strip() for x in (seq or [])]
+            merged = dict(preset_payload or {})
+            for k, v in payload_exec.items():
+                if k == "context" and isinstance(v, dict):
+                    ctx = dict(merged.get("context") or {})
+                    ctx.update(v)
+                    merged["context"] = ctx
+                else:
+                    merged[k] = v
+            payload_exec = merged
+
+        ctx = payload_exec.get("context")
+        if not isinstance(ctx, dict):
+            ctx = {}
+            payload_exec["context"] = ctx
+
+        merged_preset = dict(ctx.get("preset") or {})
+        for k, v in dict(preset_doc).items():
+            if k == "quality_thresholds":
+                qt = dict(merged_preset.get("quality_thresholds") or {})
+                qt.update(dict(v or {}))
+                merged_preset["quality_thresholds"] = qt
+            else:
+                merged_preset[k] = v
+
+        if preset_id == "WRITING_STANDARD":
+            qt = dict(merged_preset.get("quality_thresholds") or {})
+            qt["accept_min"] = float(qt.get("accept_min", 0.70))
+            qt["revise_min"] = float(qt.get("revise_min", 0.60))
+            merged_preset["quality_thresholds"] = qt
+
+        merged_preset["id"] = preset_id
+        ctx["preset"] = merged_preset
+
+    if not modes_exec:
+        if explicit_modes:
+            modes_exec = [str(x).upper().strip() for x in explicit_modes]
+        elif payload_exec.get("mode"):
+            modes_exec = [str(payload_exec.get("mode")).upper().strip()]
+
+    for m in modes_exec:
+        mid = str(m).upper().strip()
+        if mid not in _OWNER_ORCH_EXEC_MODES:
+            raise ValueError(f"Unknown mode: {mid}")
+
+    arts = _owner_orch_prev_execute_stub_20260325(
+        run_id=run_id,
+        book_id=book_id,
+        modes=modes_exec,
+        payload=payload_exec,
+        steps=steps,
+    )
+
+    steps_cfg = []
+    if isinstance(preset_doc, dict):
+        steps_cfg = list(preset_doc.get("steps") or [])
+
+    steps_by_mode = {}
+    for item in steps_cfg:
+        if isinstance(item, dict) and item.get("mode"):
+            steps_by_mode[str(item.get("mode")).upper().strip()] = dict(item)
+
+    steps_dir = Path("runs") / run_id / "steps"
+    steps_dir.mkdir(parents=True, exist_ok=True)
+
+    if preset_id and len(modes_exec) >= 1:
+        seq_path = steps_dir / "000_SEQUENCE.json"
+        seq_doc = {
+            "mode": "SEQUENCE",
+            "book_id": book_id,
+            "run_id": run_id,
+            "team": {
+                "id": "SYSTEM",
+                "team_id": "SYSTEM",
+                "policy_id": "SYSTEM",
+            },
+            "effective_policy_id": "SYSTEM",
+            "effective_policy": {
+                "model": "SYSTEM",
+            },
+            "input": {
+                "preset": preset_id,
+                "modes": modes_exec,
+            },
+            "result": {
+                "tool": "SEQUENCE",
+                "payload": {
+                    "preset_id": preset_id,
+                    "modes": modes_exec,
+                    "steps": [
+                        {
+                            "index": i + 1,
+                            "mode": m,
+                            "requested_policy": (steps_by_mode.get(str(m).upper().strip(), {}) or {}).get("policy"),
+                            "effective_policy_id": (steps_by_mode.get(str(m).upper().strip(), {}) or {}).get("policy"),
+                        }
+                        for i, m in enumerate(modes_exec)
+                    ],
+                    "meta": {
+                        "effective_policy_id": "SYSTEM",
+                        "policy_id": "SYSTEM",
+                        "team_id": "SYSTEM",
+                    },
+                },
+            },
+        }
+        seq_path.write_text(json.dumps(seq_doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        seq_str = str(seq_path)
+        # SEQUENCE zostaje w audycie/runie, ale nie przecieka do publicznego artifacts/artifact_paths
+        arts = list(arts or [])
+
+    for art in list(arts):
+        try:
+            p = Path(art)
+            if not p.exists():
+                continue
+            doc = json.loads(p.read_text(encoding="utf-8"))
+            mode = str(doc.get("mode") or "").upper().strip()
+
+            inp = dict(doc.get("input") or {})
+            ctx2 = dict(inp.get("context") or {})
+            preset2 = dict(ctx2.get("preset") or {})
+
+            if preset_id and isinstance(preset_doc, dict):
+                for k, v in dict(preset_doc).items():
+                    if k == "quality_thresholds":
+                        qt2 = dict(preset2.get("quality_thresholds") or {})
+                        qt2.update(dict(v or {}))
+                        preset2["quality_thresholds"] = qt2
+                    else:
+                        preset2[k] = v
+                preset2["id"] = preset_id
+                ctx2["preset"] = preset2
+                inp["context"] = ctx2
+
+            step_cfg = steps_by_mode.get(mode) or {}
+            if step_cfg.get("policy"):
+                inp["_requested_policy"] = step_cfg.get("policy")
+
+            doc["input"] = inp
+
+            result = dict(doc.get("result") or {})
+            payload2 = dict(result.get("payload") or {})
+            meta = dict(payload2.get("meta") or {})
+            if step_cfg.get("policy"):
+                meta["effective_policy_id"] = step_cfg.get("policy")
+            if meta:
+                payload2["meta"] = meta
+            if payload2:
+                result["payload"] = payload2
+            if result:
+                doc["result"] = result
+
+            p.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    return arts
+# OWNER_ORCH_FIX_20260325_END
+
+# OWNER_ORCH_EFFECTIVE_POLICY_FIX_20260325_V2_START
+_owner_orch_prev_execute_stub_fix5 = execute_stub
+def execute_stub(*args, **kwargs):
+    import json
+    from pathlib import Path
+
+    arts = _owner_orch_prev_execute_stub_fix5(*args, **kwargs)
+
+    for art in list(arts or []):
+        try:
+            p = Path(art)
+            if not p.exists():
+                continue
+            doc = json.loads(p.read_text(encoding="utf-8"))
+
+            inp = dict(doc.get("input") or {})
+            res = dict(doc.get("result") or {})
+            payload = dict(res.get("payload") or {})
+            meta = dict(payload.get("meta") or {})
+
+            eff = (
+                doc.get("effective_policy_id")
+                or meta.get("effective_policy_id")
+                or inp.get("_requested_policy")
+                or meta.get("policy_id")
+            )
+            if eff:
+                doc["effective_policy_id"] = eff
+
+            p.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    return arts
+# OWNER_ORCH_EFFECTIVE_POLICY_FIX_20260325_V2_END
+
+# OWNER_ORCH_EFFECTIVE_POLICY_FIX_20260325_V3_START
+_owner_orch_prev_execute_stub_fix_final2 = execute_stub
+def execute_stub(*args, **kwargs):
+    import json
+    from pathlib import Path
+
+    arts = _owner_orch_prev_execute_stub_fix_final2(*args, **kwargs)
+
+    for art in list(arts or []):
+        try:
+            p = Path(art)
+            if not p.exists():
+                continue
+
+            doc = json.loads(p.read_text(encoding="utf-8"))
+            inp = dict(doc.get("input") or {})
+            res = dict(doc.get("result") or {})
+            payload = dict(res.get("payload") or {})
+            meta = dict(payload.get("meta") or {})
+
+            requested_policy = inp.get("_requested_policy")
+            effective_policy = meta.get("effective_policy_id")
+            existing_top = doc.get("effective_policy_id")
+            meta_policy = meta.get("policy_id")
+
+            eff = (
+                requested_policy
+                or effective_policy
+                or existing_top
+                or meta_policy
+            )
+
+            if eff:
+                doc["effective_policy_id"] = eff
+
+            p.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    return arts
+# OWNER_ORCH_EFFECTIVE_POLICY_FIX_20260325_V3_END

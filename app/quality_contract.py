@@ -140,74 +140,124 @@ def enforce_terminal_rules(x: Any) -> Dict[str, Any]:
         payload["REJECT_REASONS"] = []
     return {"payload": payload}
 
-# === P26_HOTFIX_V3_QUALITY_OVERRIDE ===
-try:
-    _P26_ORIG_TOOL_QUALITY = tool_quality
-except Exception:
-    _P26_ORIG_TOOL_QUALITY = None
-
-def _p26_score_text_quality(text: str) -> float:
-    t = (text or "").strip()
-    n = len(t)
-    has_para = ("\n\n" in t)
-    punct = sum(1 for c in t if c in ",.;:!?")
-    punct_ratio = punct / max(1, n)
-
-    score = 0.40
-    score += min(n / 4000.0, 0.45)         # długość
-    score += 0.10 if has_para else 0.0     # akapity
-    score += 0.03 if punct_ratio >= 0.008 else 0.0  # interpunkcja
-    score = min(score, 0.99)
-    return round(score, 3)
-
-def _p26_decision_from_score(score: float, text_len: int, force_reject: bool = False) -> str:
-    if force_reject:
-        return "REJECT"
-    if text_len < 80:
-        return "REJECT"
-    if score >= 0.85:
-        return "ACCEPT"
-    if score >= 0.50:
-        return "REVISE"
-    return "REJECT"
-
 def tool_quality(payload):
-    base = {"status": "ok", "payload": {}}
-    if callable(_P26_ORIG_TOOL_QUALITY):
-        try:
-            out = _P26_ORIG_TOOL_QUALITY(payload)
-            if isinstance(out, dict):
-                base = out
-                if not isinstance(base.get("payload"), dict):
-                    base["payload"] = {}
-        except Exception:
-            pass
+    return enforce_terminal_rules(normalize_quality(payload))
 
-    pld = payload if isinstance(payload, dict) else {}
-    text = pld.get("text") or pld.get("TEXT") or ""
-    score = _p26_score_text_quality(text)
-    decision = _p26_decision_from_score(
-        score=score,
-        text_len=len((text or "").strip()),
-        force_reject=bool(pld.get("force_reject"))
-    )
+# === FINAL_QUALITY_CANON_20260325_V4 ===
+import math as _fq_math
+import re as _fq_re
 
-    pp = base.setdefault("payload", {})
-    pp["SCORE"] = score
-    pp["score"] = score
-    pp["DECISION"] = decision
-    pp["decision"] = decision
+def _fq_extract_text(x):
+    if isinstance(x, str):
+        return x
+    if not isinstance(x, dict):
+        return str(x or "")
+    for k in ("text", "input", "content", "draft", "candidate"):
+        v = x.get(k)
+        if isinstance(v, str) and v.strip():
+            return v
+        if isinstance(v, dict):
+            for kk in ("text", "input", "content"):
+                vv = v.get(kk)
+                if isinstance(vv, str) and vv.strip():
+                    return vv
+    p = x.get("payload")
+    if isinstance(p, dict):
+        for k in ("text", "input", "content"):
+            v = p.get(k)
+            if isinstance(v, str) and v.strip():
+                return v
+    return ""
 
-    meta = pp.get("meta")
-    if not isinstance(meta, dict):
-        meta = {}
-        pp["meta"] = meta
-    if "preset" not in meta and isinstance(pld.get("preset"), str):
-        meta["preset"] = pld.get("preset")
-    meta.setdefault("quality_version", "P26_HOTFIX_V3")
+def _fq_extract_thresholds(x):
+    accept_min = DEFAULT_ACCEPT_MIN
+    revise_min = DEFAULT_REVISE_MIN
 
-    if decision == "REJECT":
-        pp.setdefault("reject_reasons", ["quality_below_threshold"])
+    if isinstance(x, dict):
+        ctx = x.get("context") or {}
+        preset = None
+        if isinstance(ctx, dict):
+            preset = ctx.get("preset")
+        if not preset and isinstance(x.get("preset"), dict):
+            preset = x.get("preset")
+        if isinstance(preset, dict):
+            t = preset.get("quality_thresholds")
+            if isinstance(t, dict):
+                try:
+                    accept_min = float(t.get("accept_min", accept_min))
+                except Exception:
+                    pass
+                try:
+                    revise_min = float(t.get("revise_min", revise_min))
+                except Exception:
+                    pass
 
-    base["status"] = "ok"
-    return base
+    accept_min = max(0.0, min(accept_min, 1.5))
+    revise_min = max(0.0, min(revise_min, 1.5))
+    if revise_min > accept_min:
+        revise_min = accept_min
+
+    return {"accept_min": accept_min, "revise_min": revise_min}
+
+def _fq_looks_meta(text: str) -> bool:
+    t = (text or "").lower()
+    if not t.strip():
+        return False
+    return any(_fq_re.search(p, t) for p in _META_HINTS)
+
+def _fq_score_text(text: str) -> float:
+    t = text or ""
+    n = len(t.strip())
+
+    if n == 0:
+        return 0.0
+    if n < 50:
+        return round(min(n / 1000.0, 1.0), 4)
+
+    ratio = min(n, 1800) / 1800.0
+    base = 0.34 + 0.58 * _fq_math.sqrt(ratio)
+    para_bonus = 0.12 if "\n\n" in t else 0.0
+
+    bullets = len(_fq_re.findall(r"(?m)^\s*[-*•]\s+", t))
+    bullet_penalty = 0.05 if bullets >= 4 and "\n\n" not in t else 0.0
+
+    meta_penalty = 0.70 if _fq_looks_meta(t) else 0.0
+
+    score = base + para_bonus - bullet_penalty - meta_penalty
+    score = max(0.0, min(score, 0.99))
+    return round(score, 4)
+
+def _fq_tool_quality(payload):
+    text = _fq_extract_text(payload)
+    th = _fq_extract_thresholds(payload)
+    score = _fq_score_text(text)
+
+    reasons = []
+    if not text.strip():
+        reasons.append("EMPTY_TEXT")
+    if _fq_looks_meta(text):
+        reasons.append("META_INSTRUCTIONAL_STYLE")
+
+    if score >= th["accept_min"]:
+        decision = "ACCEPT"
+    elif score >= th["revise_min"]:
+        decision = "REVISE"
+    else:
+        decision = "REJECT"
+
+    return {
+        "status": "ok",
+        "payload": {
+            "DECISION": decision,
+            "SCORE": score,
+            "THRESHOLDS": th,
+            "REJECT_REASONS": reasons,
+            "meta": {
+                "quality_version": "FINAL_QUALITY_CANON_20260325_V4",
+                "length": len(text or ""),
+                "has_paragraphs": ("\n\n" in (text or "")),
+            },
+        },
+    }
+
+tool_quality = _fq_tool_quality

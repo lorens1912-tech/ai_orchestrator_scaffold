@@ -114,3 +114,49 @@ def try_resolve_team_context(team_id: str, mode: str) -> Optional[TeamContext]:
         return resolve_team_context(team_id, mode)
     except Exception:
         return None
+
+# OWNER_TEAM_ROUTER_FIX_20260325_START
+_OWNER_TEAM_ROUTER_KNOWN_MODES = {
+    "PLAN",
+    "WRITE",
+    "CRITIC",
+    "EDIT",
+    "QUALITY",
+    "UNIQUENESS",
+    "CONTINUITY",
+    "FACTCHECK",
+    "STYLE",
+    "TRANSLATE",
+    "EXPAND",
+    "CANON_CHECK",
+    "CANON_EXTRACT",
+    "OUTLINE",
+    "REWRITE",
+}
+_owner_prev_resolve_team_context_20260325 = resolve_team_context
+def resolve_team_context(team_id: str, mode: str):
+    mode_u = (mode or "").strip().upper()
+    if mode_u not in _OWNER_TEAM_ROUTER_KNOWN_MODES:
+        raise ValueError(f"Unknown mode: {mode_u}")
+    return _owner_prev_resolve_team_context_20260325(team_id, mode)
+# OWNER_TEAM_ROUTER_FIX_20260325_END
+
+# OWNER_TEAM_ROUTER_FIX_20260325_V2_START
+_owner_prev_resolve_team_context_fix5 = resolve_team_context
+def resolve_team_context(team_id: str, mode: str):
+    team_u = (team_id or "").strip().upper()
+    mode_u = (mode or "").strip().upper()
+
+    known_modes = {
+        "PLAN","WRITE","CRITIC","EDIT","QUALITY","UNIQUENESS","CONTINUITY",
+        "FACTCHECK","STYLE","TRANSLATE","EXPAND","CANON_CHECK","CANON_EXTRACT",
+        "OUTLINE","REWRITE"
+    }
+    if mode_u not in known_modes:
+        raise ValueError(f"Unknown mode: {mode_u}")
+
+    if team_u == "QA" and mode_u != "QUALITY":
+        raise ValueError(f"Team {team_u} cannot run mode {mode_u}")
+
+    return _owner_prev_resolve_team_context_fix5(team_id, mode)
+# OWNER_TEAM_ROUTER_FIX_20260325_V2_END

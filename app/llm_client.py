@@ -40,3 +40,26 @@ def llm_debug_call(model: str, prompt: str, temperature: float = 0.0) -> Dict[st
         "dropped_params": dropped_params,
         "echo": {"prompt": prompt},
     }
+
+
+def run_completion(*args, **kwargs):
+    """
+    Compat export for legacy imports.
+    Tries common llm-client entrypoints if they exist; otherwise fails explicitly.
+    """
+    for name in (
+        "call_text",
+        "call_text_direct",
+        "complete",
+        "run_chat_completion",
+        "chat_completion",
+        "completion",
+    ):
+        fn = globals().get(name)
+        if callable(fn):
+            return fn(*args, **kwargs)
+
+    raise RuntimeError(
+        "app.llm_client.run_completion compat shim was invoked, "
+        "but no supported completion entrypoint exists in this runtime."
+    )

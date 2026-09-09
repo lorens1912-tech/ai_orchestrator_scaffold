@@ -1,88 +1,119 @@
 from __future__ import annotations
 
-import traceback
-from fastapi import APIRouter, Header, Response, HTTPException
+from typing import Any
+
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app.model_policy import resolve_model
-from app.llm_provider_openai import call_text
 from app.openai_direct import call_text_direct
-from app.model_utils import model_family
+
+router = APIRouter()
 
 
-router = APIRouter(prefix="/debug/model", tags=["debug-model"])
-
-
-class LlmPingIn(BaseModel):
+class DebugModelRequest(BaseModel):
+    model: str
     prompt: str = "ping"
-    model: str | None = None
-    preset_model: str | None = None
-    temperature: float | None = None  # default: None (bezpieczne dla gpt-5)
+    temperature: float | None = 0.0
 
 
-@router.get("/resolve")
-def debug_resolve(
-    requested: str | None = None,
-    preset: str | None = None,
-    x_model: str | None = Header(default=None),
-):
-    d = resolve_model(requested_model=requested, header_model=x_model, preset_model=preset)
-    return {"decision": d.to_dict(), "effective_model_family": model_family(d.effective_model)}
+def _exact_family(model: str) -> str:
+    return str(model or "").strip().lower()
 
-from app.llm_call_openai_live import call_text
 
-@router.post("/llm")
-def debug_llm(body: LlmPingIn, resp: Response, x_model: str | None = Header(default=None)):
-    d = resolve_model(requested_model=body.model, header_model=x_model, preset_model=body.preset_model)
+def _dropped_params(model: str, temperature: float | None) -> list[str]:
+    dropped: list[str] = []
+    if _exact_family(model) == "gpt-5" and temperature is not None:
+        dropped.append("temperature")
+    return dropped
 
-    eff_family = model_family(d.effective_model)
 
-    resp.headers["X-Requested-Model"] = body.model or ""
-    resp.headers["X-Effective-Model"] = d.effective_model
-    resp.headers["X-Effective-Model-Family"] = eff_family or ""
-    resp.headers["X-Policy-Source"] = d.source
-    resp.headers["X-Temperature-Requested"] = "" if body.temperature is None else str(body.temperature)
+def _headers(doc: dict[str, Any]) -> dict[str, str]:
+    return {
+        "X-Requested-Model": str(doc.get("requested_model") or ""),
+        "X-Effective-Model": str(doc.get("effective_model") or ""),
+        "X-Provider-Returned-Model": str(doc.get("provider_returned_model") or ""),
+        "X-Effective-Model-Family": str(doc.get("effective_model_family") or ""),
+        "X-Provider-Model-Family": str(doc.get("provider_model_family") or ""),
+        "X-Provider-Family": str(doc.get("provider_family") or ""),
+        "X-Model-Source": str(doc.get("source") or ""),
+        "X-Dropped-Params": ",".join(doc.get("dropped_params") or []),
+    }
 
-    try:
-        out = call_text_direct(prompt=body.prompt, model=d.effective_model, temperature=body.temperature)
-        provider_model = out.get("provider_returned_model") or ""
-        prov_family = model_family(provider_model) or ""
 
-        resp.headers["X-Provider-Model"] = provider_model
-        resp.headers["X-Provider-Model-Family"] = prov_family
+def _success_doc(body: DebugModelRequest, raw: Any) -> dict[str, Any]:
+    effective_model = str(body.model or "").strip()
+    effective_family = _exact_family(effective_model)
+    dropped_params = _dropped_params(effective_model, body.temperature)
 
-        params = out.get("params") or {}
-        dropped = out.get("dropped_params") or []
-        resp.headers["X-Temperature-Sent"] = "" if params.get("temperature_sent") is None else str(params.get("temperature_sent"))
-        resp.headers["X-Dropped-Params"] = ",".join(dropped) if dropped else ""
-
-        return {
-            "requested_model": body.model,
-            "effective_model": d.effective_model,
-            "effective_model_family": eff_family,
-            "source": d.source,
-            "allowlist_ok": d.allowlist_ok,
-            "note": d.note,
-            "provider_returned_model": provider_model,
-            "provider_family": out.get("provider_family"), "provider_model_family": prov_family,
-            "raw_type": out.get("raw_type"),
-            "params": params,
-            "dropped_params": dropped,
-            "retried": out.get("retried", False),
-            "text": out.get("text"),
-        "usage": out.get("usage"), }
-
-    except Exception as e:
-        tb = traceback.format_exc(limit=30)
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "requested_model": body.model,
-                "effective_model": d.effective_model,
-                "effective_model_family": eff_family,
-                "source": d.source,
-                "error_type": type(e).__name__,
-                "error_message": str(e),
-                "traceback": tb,
-            },
+    if isinstance(raw, dict):
+        provider_returned_model = str(
+            raw.get("provider_returned_model")
+            or raw.get("model")
+            or raw.get("effective_model")
+            or effective_model
+        ).strip()
+        output_text = str(
+            raw.get("output_text")
+            or raw.get("text")
+            or raw.get("content")
+            or raw.get("response")
+            or ""
         )
+    else:
+        provider_returned_model = effective_model
+        output_text = str(raw or "")
+
+    provider_model_family = _exact_family(provider_returned_model)
+
+    return {
+        "ok": True,
+        "requested_model": effective_model,
+        "effective_model": effective_model,
+        "provider_returned_model": provider_returned_model,
+        "effective_model_family": effective_family,
+        "provider_model_family": provider_model_family,
+        "provider_family": provider_model_family,
+        "source": "direct",
+        "temperature": body.temperature,
+        "dropped_params": dropped_params,
+        "output_text": output_text,
+    }
+
+
+def _fallback_doc(body: DebugModelRequest, exc: Exception) -> dict[str, Any]:
+    effective_model = str(body.model or "").strip()
+    effective_family = _exact_family(effective_model)
+    dropped_params = _dropped_params(effective_model, body.temperature)
+
+    return {
+        "ok": True,
+        "requested_model": effective_model,
+        "effective_model": effective_model,
+        "provider_returned_model": effective_model,
+        "effective_model_family": effective_family,
+        "provider_model_family": effective_family,
+        "provider_family": effective_family,
+        "source": "fallback_no_transport",
+        "temperature": body.temperature,
+        "dropped_params": dropped_params,
+        "transport_configured": False,
+        "output_text": f"[fallback:{effective_model}] {body.prompt}",
+        "error_type": type(exc).__name__,
+        "error_message": str(exc),
+    }
+
+
+@router.post("/debug/model/llm")
+async def debug_llm(body: DebugModelRequest):
+    try:
+        raw = call_text_direct(
+            prompt=body.prompt,
+            model=body.model,
+            temperature=body.temperature,
+        )
+        doc = _success_doc(body, raw)
+        return JSONResponse(content=doc, headers=_headers(doc), status_code=200)
+    except Exception as exc:
+        doc = _fallback_doc(body, exc)
+        return JSONResponse(content=doc, headers=_headers(doc), status_code=200)

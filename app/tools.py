@@ -476,83 +476,76 @@ except Exception:
 # === AUTOFIX_V1_END ===
 
 
-# P15_HARDFAIL_RUNTIME_WRAP_START
-def _p15_apply_hardfail_quality(out):
-    try:
-        if not isinstance(out, dict):
-            return out
-        if str(out.get("tool", "")).upper() != "QUALITY":
-            return out
+# P15_HARDFAIL runtime wrapper removed: canonical quality decisions restored.
 
-        p = out.get("payload")
-        if not isinstance(p, dict):
-            return out
+# === QUALITY_CANONICAL_BRIDGE_20260325 ===
+from app.quality_contract import tool_quality as _quality_canonical_tool
 
-        reasons = p.get("REASONS") or p.get("reasons") or []
-        if not isinstance(reasons, list):
-            reasons = [reasons]
+def tool_quality(payload):
+    return _quality_canonical_tool(payload)
 
-        flags = p.get("FLAGS") or p.get("flags") or {}
-        if not isinstance(flags, dict):
-            flags = {}
+def tool_quality_pipeline(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    text = (payload.get("text") or payload.get("input") or "").strip()
 
-        stats = p.get("STATS") or p.get("stats") or {}
-        if not isinstance(stats, dict):
-            stats = {}
+    # Direct/canonical path: no hard min_words contract requested
+    if "min_words" not in payload:
+        out = _quality_canonical_tool(payload)
+        pp = out.get("payload") if isinstance(out, dict) else {}
+        if not isinstance(pp, dict):
+            pp = {}
+        decision = str(pp.get("DECISION") or "REJECT").upper()
+        meta = pp.get("meta") if isinstance(pp.get("meta"), dict) else {}
+        if "requested_model" not in meta:
+            meta["requested_model"] = payload.get("_requested_model")
+        return {
+            "tool": "QUALITY",
+            "payload": {
+                "DECISION": decision,
+                "BLOCK_PIPELINE": (decision == "REJECT"),
+                "REASONS": pp.get("REJECT_REASONS") or [],
+                "MUST_FIX": [],
+                "STATS": {"words": len(text.split())},
+                "FLAGS": {},
+                "SCORE": pp.get("SCORE", 0.0),
+                "THRESHOLDS": pp.get("THRESHOLDS"),
+                "meta": meta,
+            },
+        }
 
-        too_short = bool(flags.get("too_short", False)) or any("MIN_WORDS" in str(r).upper() for r in reasons)
+    # Pipeline/direct-artifact path: legacy FAIL/ACCEPT contract based on min_words
+    out = evaluate_quality(
+        text,
+        min_words=int(payload.get("min_words") or 200),
+        forbid_lists=bool(payload.get("forbid_lists", True)),
+    )
+    decision = str(out.get("decision") or "REJECT").upper()
+    return {
+        "tool": "QUALITY",
+        "payload": {
+            "DECISION": decision,
+            "BLOCK_PIPELINE": (decision == "FAIL"),
+            "REASONS": out.get("reasons") or [],
+            "MUST_FIX": out.get("must_fix") or [],
+            "STATS": out.get("stats") or {},
+            "FLAGS": out.get("flags") or {},
+            "meta": {"requested_model": payload.get("_requested_model")},
+        },
+    }
 
-        if too_short:
-            p["DECISION"] = "FAIL"
-            p["BLOCK_PIPELINE"] = True
+try:
+    if isinstance(TOOLS, dict):
+        TOOLS["QUALITY"] = tool_quality_pipeline
+except Exception:
+    pass
 
-            if not any("MIN_WORDS" in str(r).upper() for r in reasons):
-                reasons.insert(0, f"MIN_WORDS: Words={stats.get('words', 0)}.")
-            p["REASONS"] = reasons
+def tool_canon_extract(payload):
+    base = {"CANON": {}, "ISSUES": [], "meta": {"requested_model": payload.get("_requested_model")}}
+    return {"tool": "CANON_EXTRACT", "payload": base}
 
-            must_fix = p.get("MUST_FIX") or p.get("must_fix") or []
-            if not isinstance(must_fix, list):
-                must_fix = [must_fix]
-
-            found = False
-            for it in must_fix:
-                if isinstance(it, dict) and str(it.get("id", "")).upper() == "MIN_WORDS":
-                    it["severity"] = "FAIL"
-                    found = True
-
-            if not found:
-                must_fix.insert(0, {
-                    "id": "MIN_WORDS",
-                    "severity": "FAIL",
-                    "title": "Za mało słów",
-                    "detail": "Hard-fail P15",
-                    "hint": "Rozwiń tekst do minimum."
-                })
-            p["MUST_FIX"] = must_fix
-            out["payload"] = p
-
-        return out
-    except Exception:
-        return out
-
-
-def _p15_wrap_quality_callable(fn):
-    def _wrapped(*args, **kwargs):
-        return _p15_apply_hardfail_quality(fn(*args, **kwargs))
-    _wrapped.__name__ = getattr(fn, "__name__", "wrapped_quality_fn")
-    _wrapped.__doc__ = getattr(fn, "__doc__", None)
-    return _wrapped
-
-
-for _n, _v in list(globals().items()):
-    if _n.startswith("_p15_"):
-        continue
-    if "quality" not in _n.lower():
-        continue
-    if not callable(_v):
-        continue
-    if getattr(_v, "__module__", None) != __name__:
-        continue
-    globals()[_n] = _p15_wrap_quality_callable(_v)
-# P15_HARDFAIL_RUNTIME_WRAP_END
+try:
+    if isinstance(TOOLS, dict):
+        TOOLS["CANON_EXTRACT"] = tool_canon_extract
+except Exception:
+    pass
 

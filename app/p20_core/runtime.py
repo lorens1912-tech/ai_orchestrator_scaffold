@@ -4,20 +4,28 @@ import hashlib
 
 import inspect
 import json
+import os
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
 from fastapi import HTTPException
 
+import app.orchestrator_stub as orchestrator_stub
 from app.orchestrator_stub import execute_stub
 from app.p20_core.canon_service import (
     APP_VERSION,
     REPO_ROOT,
+    _path_for_read,
+    _public_path,
     canon_blocks,
     coerce_text,
     commit_chapter_to_canon,
     ensure_book_dirs,
+    ensure_run_dirs,
+    json_write,
     load_canon_snapshot,
     load_run_state,
     read_artifact_text,
@@ -40,6 +48,7 @@ from app.p20_core.lock_service import (
     release_book_lock,
     release_run_lock,
 )
+from app.p20_core.storage_paths import get_storage_root
 
 MODES_FILE = Path(__file__).resolve().parents[1] / "modes.json"
 
@@ -62,6 +71,28 @@ MASTER_CANON_CONTRACT_FIELDS: tuple[str, ...] = (
 
 MASTER_CANON_CONTRACT_GUARD_FROZEN_VERSION = "1.0"
 MASTER_CANON_CONTRACT_GUARD_FROZEN_REQUIRED_FINGERPRINT = "e0802a2dd5b9383d02cc6cd5649396559b98b5ea37effefd21ef80aa48d0683f"
+
+
+_EXECUTE_STUB_STORAGE_SCOPE_LOCK = threading.RLock()
+
+
+@contextmanager
+def _execute_stub_storage_scope():
+    with _EXECUTE_STUB_STORAGE_SCOPE_LOCK:
+        storage_root = get_storage_root()
+        previous_cwd = Path.cwd()
+        previous_stub_root = getattr(orchestrator_stub, "ROOT", None)
+
+        storage_root.mkdir(parents=True, exist_ok=True)
+        try:
+            if previous_stub_root is not None:
+                orchestrator_stub.ROOT = storage_root
+            os.chdir(storage_root)
+            yield
+        finally:
+            os.chdir(previous_cwd)
+            if previous_stub_root is not None:
+                orchestrator_stub.ROOT = previous_stub_root
 
 
 def build_master_canon_contract_field_payload() -> dict[str, list[str]]:
@@ -225,6 +256,20 @@ def normalize_artifact_paths(result: Any) -> List[str]:
     return []
 
 
+def normalize_public_artifact_paths(paths: List[str]) -> List[str]:
+    if not os.environ.get("AGENTPRO_STORAGE_ROOT"):
+        return paths
+
+    out: List[str] = []
+    for path_value in paths:
+        path = Path(path_value)
+        if path.is_absolute():
+            out.append(_public_path(path))
+        else:
+            out.append(str(path_value))
+    return out
+
+
 async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
     payload = build_request_payload(req)
 
@@ -338,10 +383,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             state["decision"] = "REJECT"
             state["master_canon"] = dict(master_canon_ref)
             state["project_truth"] = dict(project_truth_ref)
-            (REPO_ROOT / "runs" / run_id / "run_state.json").write_text(
-                json.dumps(state, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            json_write(ensure_run_dirs(run_id) / "run_state.json", state)
             update_latest_run_marker(book_id, run_id)
             write_audit(
                 book_id=book_id,
@@ -368,28 +410,29 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                 },
                 "pre_canon_check": pre_report,
                 "post_canon_check": {"status": "skipped", "reason": "pre_write_failed"},
-                "canon_snapshot_path": str(canon_snapshot_path.relative_to(REPO_ROOT)).replace("\\", "/"),
+                "canon_snapshot_path": _public_path(canon_snapshot_path),
                 "master_canon": master_canon_ref,
                 "project_truth": project_truth_ref,
                 "run_state": state,
             }
 
-        stub_out = execute_stub(
-            run_id=run_id,
-            book_id=book_id,
-            modes=modes,
-            payload=payload,
-            steps=payload.get("steps"),
-        )
-        if inspect.isawaitable(stub_out):
-            stub_out = await stub_out
+        with _execute_stub_storage_scope():
+            stub_out = execute_stub(
+                run_id=run_id,
+                book_id=book_id,
+                modes=modes,
+                payload=payload,
+                steps=payload.get("steps"),
+            )
+            if inspect.isawaitable(stub_out):
+                stub_out = await stub_out
 
-        artifact_paths = normalize_artifact_paths(stub_out)
+        artifact_paths = normalize_public_artifact_paths(normalize_artifact_paths(stub_out))
 
         if is_write:
             for _artifact_path in artifact_paths:
                 try:
-                    _p = Path(_artifact_path)
+                    _p = _path_for_read(Path(_artifact_path))
                     if _p.exists():
                         _doc = json.loads(_p.read_text(encoding="utf-8"))
                         _doc["book_bible"] = dict(book_bible_binding)
@@ -417,7 +460,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
         for _ap in artifact_paths:
             if str(_ap).upper().endswith("_QUALITY.JSON"):
                 try:
-                    _doc = _json_load(Path(_ap), {})
+                    _doc = _json_load(_path_for_read(Path(_ap)), {})
                     _payload = _doc.get("result", {}).get("payload", {})
                     _qd = str(_payload.get("DECISION") or "").upper()
                     if _qd:
@@ -440,7 +483,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                 post_report=post_report,
             )
             if chapter_path:
-                chapter_full = REPO_ROOT / chapter_path
+                chapter_full = _path_for_read(Path(chapter_path))
                 chapter_doc = _json_load(chapter_full, {})
                 canon_memory = commit_chapter_to_canon(
                     book_id=book_id,
@@ -459,9 +502,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                         )
 
                 if isinstance(chapter_doc, dict):
-                    chapter_doc["canon_snapshot_path"] = str(
-                        canon_snapshot_path.relative_to(REPO_ROOT)
-                    ).replace("\\", "/")
+                    chapter_doc["canon_snapshot_path"] = _public_path(canon_snapshot_path)
                     chapter_doc["master_canon"] = dict(master_canon_ref)
                     chapter_doc["project_truth"] = dict(project_truth_ref)
                     if is_write:
@@ -493,10 +534,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
         state["project_truth"] = dict(project_truth_ref)
         if is_write:
             state["book_bible"] = dict(book_bible_binding)
-        (REPO_ROOT / "runs" / run_id / "run_state.json").write_text(
-            json.dumps(state, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        json_write(ensure_run_dirs(run_id) / "run_state.json", state)
         update_latest_run_marker(book_id, run_id)
 
         write_audit(
@@ -526,7 +564,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             },
             "pre_canon_check": pre_report,
             "post_canon_check": post_report,
-            "canon_snapshot_path": str(canon_snapshot_path.relative_to(REPO_ROOT)).replace("\\", "/"),
+            "canon_snapshot_path": _public_path(canon_snapshot_path),
             "chapter_path": chapter_path,
             "master_canon": master_canon_ref,
             "project_truth": project_truth_ref,

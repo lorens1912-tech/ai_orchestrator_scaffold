@@ -10,7 +10,8 @@ from fastapi import HTTPException
 
 from app.p20_core.canon_service import (
     APP_VERSION,
-    REPO_ROOT,
+    _path_for_read,
+    _public_path,
     ensure_book_dirs,
     json_write,
     load_run_state,
@@ -33,6 +34,7 @@ from app.p20_core.project_truth import (
     assert_resume_project_truth_consistency,
     build_project_truth_binding,
 )
+from app.p20_core.storage_paths import get_books_root, get_runs_root
 
 
 def _strip_project_truth_loaded_at(doc: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -52,15 +54,15 @@ def _stamp() -> str:
 
 
 def _rel(path: Path) -> str:
-    return path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
+    return _public_path(path)
 
 
 def _book_dir(book_id: str) -> Path:
-    return REPO_ROOT / "books" / book_id
+    return get_books_root() / book_id
 
 
 def _run_dir(run_id: str) -> Path:
-    return REPO_ROOT / "runs" / run_id
+    return get_runs_root() / run_id
 
 
 def _canon_memory_path(book_id: str) -> Path:
@@ -244,7 +246,7 @@ def _finalize_run(
 
     update_latest_run_marker(book_id, run_id)
 
-    canon_snapshot_abs = REPO_ROOT / artifact_paths["canon_snapshot_path"]
+    canon_snapshot_abs = _path_for_read(Path(artifact_paths["canon_snapshot_path"]))
     write_audit(
         book_id=book_id,
         run_id=run_id,

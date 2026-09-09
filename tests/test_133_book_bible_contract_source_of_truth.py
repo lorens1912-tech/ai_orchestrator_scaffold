@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from pathlib import Path
 from uuid import uuid4
 
 import app.main as main_module
@@ -17,10 +18,20 @@ from app.p20_core.book_bible_contract import (
 from app.p20_core.book_bible_test_helper import ensure_test_book_bible
 
 
-def test_book_bible_contract_module_is_single_source_of_truth_for_helper_and_runtime():
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_book_bible_contract_module_is_single_source_of_truth_for_helper_and_runtime(
+    isolated_agentpro_storage,
+):
     book_id = f"book_bible_contract_source_{uuid4().hex[:8]}"
+    repo_book_dir = REPO_ROOT / "books" / book_id
+
+    assert not repo_book_dir.exists(), repo_book_dir
 
     helper_path = ensure_test_book_bible(book_id)
+    assert helper_path.resolve().is_relative_to(isolated_agentpro_storage.resolve())
+
     helper_payload = json.loads(helper_path.read_text(encoding="utf-8"))
 
     built_payload = build_valid_book_bible_payload(book_id)
@@ -35,6 +46,7 @@ def test_book_bible_contract_module_is_single_source_of_truth_for_helper_and_run
     assert validated_payload == built_payload
     assert loaded_payload["book_id"] == book_id
     assert loaded_payload["_contract"]["path"].endswith(f"{book_id}/book_bible.json")
+    assert not repo_book_dir.exists(), repo_book_dir
 
 
 def test_runtime_and_helper_reference_same_contract_module():

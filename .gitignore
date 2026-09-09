@@ -19,3 +19,4 @@ _p15_smoke_eval.py
 config/auto_retry_policy.json
 
 config/auto_retry_policy.json
+.test_storage/

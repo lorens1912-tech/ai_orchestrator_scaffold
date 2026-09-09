@@ -1,13 +1,203 @@
 from __future__ import annotations
 
+import builtins
+import hashlib
+import os
+import re
+import shutil
 from pathlib import Path
 
 import pytest
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+TEST_STORAGE_ROOT = REPO_ROOT / ".test_storage"
+REAL_STORAGE_ROOTS = tuple((REPO_ROOT / name).resolve() for name in ("books", "runs", "novel_runs"))
+
+os.environ["AGENTPRO_STORAGE_ROOT"] = str(TEST_STORAGE_ROOT)
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _coerce_path(path_value) -> Path | None:
+    if isinstance(path_value, int):
+        return None
+    try:
+        return Path(os.fsdecode(path_value)).resolve()
+    except TypeError:
+        return None
+
+
+def _is_write_mode(mode: str) -> bool:
+    return any(flag in str(mode) for flag in ("w", "a", "x", "+"))
+
+
+def _assert_not_real_storage(path_value, operation: str) -> None:
+    path = _coerce_path(path_value)
+    if path is None:
+        return
+    for root in REAL_STORAGE_ROOTS:
+        if path == root or _is_relative_to(path, root):
+            raise AssertionError(f"Blocked {operation} on real AgentPRO storage path: {path}")
+
+
+_ORIGINAL_OPEN = builtins.open
+_ORIGINAL_PATH_OPEN = Path.open
+_ORIGINAL_PATH_MKDIR = Path.mkdir
+_ORIGINAL_PATH_UNLINK = Path.unlink
+_ORIGINAL_PATH_RMDIR = Path.rmdir
+_ORIGINAL_PATH_TOUCH = Path.touch
+_ORIGINAL_OS_MAKEDIRS = os.makedirs
+_ORIGINAL_OS_MKDIR = os.mkdir
+_ORIGINAL_OS_REMOVE = os.remove
+_ORIGINAL_OS_UNLINK = os.unlink
+_ORIGINAL_OS_RMDIR = os.rmdir
+_ORIGINAL_OS_RENAME = os.rename
+_ORIGINAL_OS_REPLACE = os.replace
+_ORIGINAL_SHUTIL_RMTREE = shutil.rmtree
+_ORIGINAL_SHUTIL_MOVE = shutil.move
+_ORIGINAL_SHUTIL_COPY = shutil.copy
+_ORIGINAL_SHUTIL_COPY2 = shutil.copy2
+_ORIGINAL_SHUTIL_COPYFILE = shutil.copyfile
+_ORIGINAL_SHUTIL_COPYTREE = shutil.copytree
+
+
+def _guarded_open(file, mode="r", *args, **kwargs):
+    if _is_write_mode(mode):
+        _assert_not_real_storage(file, f"open({mode!r})")
+    return _ORIGINAL_OPEN(file, mode, *args, **kwargs)
+
+
+def _guarded_path_open(self, mode="r", *args, **kwargs):
+    if _is_write_mode(mode):
+        _assert_not_real_storage(self, f"Path.open({mode!r})")
+    return _ORIGINAL_PATH_OPEN(self, mode, *args, **kwargs)
+
+
+def _guarded_path_mkdir(self, *args, **kwargs):
+    _assert_not_real_storage(self, "Path.mkdir")
+    return _ORIGINAL_PATH_MKDIR(self, *args, **kwargs)
+
+
+def _guarded_path_unlink(self, *args, **kwargs):
+    _assert_not_real_storage(self, "Path.unlink")
+    return _ORIGINAL_PATH_UNLINK(self, *args, **kwargs)
+
+
+def _guarded_path_rmdir(self, *args, **kwargs):
+    _assert_not_real_storage(self, "Path.rmdir")
+    return _ORIGINAL_PATH_RMDIR(self, *args, **kwargs)
+
+
+def _guarded_path_touch(self, *args, **kwargs):
+    _assert_not_real_storage(self, "Path.touch")
+    return _ORIGINAL_PATH_TOUCH(self, *args, **kwargs)
+
+
+def _guarded_os_makedirs(name, *args, **kwargs):
+    _assert_not_real_storage(name, "os.makedirs")
+    return _ORIGINAL_OS_MAKEDIRS(name, *args, **kwargs)
+
+
+def _guarded_os_mkdir(path, *args, **kwargs):
+    _assert_not_real_storage(path, "os.mkdir")
+    return _ORIGINAL_OS_MKDIR(path, *args, **kwargs)
+
+
+def _guarded_os_remove(path, *args, **kwargs):
+    _assert_not_real_storage(path, "os.remove")
+    return _ORIGINAL_OS_REMOVE(path, *args, **kwargs)
+
+
+def _guarded_os_unlink(path, *args, **kwargs):
+    _assert_not_real_storage(path, "os.unlink")
+    return _ORIGINAL_OS_UNLINK(path, *args, **kwargs)
+
+
+def _guarded_os_rmdir(path, *args, **kwargs):
+    _assert_not_real_storage(path, "os.rmdir")
+    return _ORIGINAL_OS_RMDIR(path, *args, **kwargs)
+
+
+def _guarded_os_rename(src, dst, *args, **kwargs):
+    _assert_not_real_storage(src, "os.rename source")
+    _assert_not_real_storage(dst, "os.rename destination")
+    return _ORIGINAL_OS_RENAME(src, dst, *args, **kwargs)
+
+
+def _guarded_os_replace(src, dst, *args, **kwargs):
+    _assert_not_real_storage(src, "os.replace source")
+    _assert_not_real_storage(dst, "os.replace destination")
+    return _ORIGINAL_OS_REPLACE(src, dst, *args, **kwargs)
+
+
+def _guarded_shutil_rmtree(path, *args, **kwargs):
+    _assert_not_real_storage(path, "shutil.rmtree")
+    return _ORIGINAL_SHUTIL_RMTREE(path, *args, **kwargs)
+
+
+def _guarded_shutil_move(src, dst, *args, **kwargs):
+    _assert_not_real_storage(src, "shutil.move source")
+    _assert_not_real_storage(dst, "shutil.move destination")
+    return _ORIGINAL_SHUTIL_MOVE(src, dst, *args, **kwargs)
+
+
+def _guarded_shutil_copy(src, dst, *args, **kwargs):
+    _assert_not_real_storage(dst, "shutil.copy destination")
+    return _ORIGINAL_SHUTIL_COPY(src, dst, *args, **kwargs)
+
+
+def _guarded_shutil_copy2(src, dst, *args, **kwargs):
+    _assert_not_real_storage(dst, "shutil.copy2 destination")
+    return _ORIGINAL_SHUTIL_COPY2(src, dst, *args, **kwargs)
+
+
+def _guarded_shutil_copyfile(src, dst, *args, **kwargs):
+    _assert_not_real_storage(dst, "shutil.copyfile destination")
+    return _ORIGINAL_SHUTIL_COPYFILE(src, dst, *args, **kwargs)
+
+
+def _guarded_shutil_copytree(src, dst, *args, **kwargs):
+    _assert_not_real_storage(dst, "shutil.copytree destination")
+    return _ORIGINAL_SHUTIL_COPYTREE(src, dst, *args, **kwargs)
+
+
+builtins.open = _guarded_open
+Path.open = _guarded_path_open
+Path.mkdir = _guarded_path_mkdir
+Path.unlink = _guarded_path_unlink
+Path.rmdir = _guarded_path_rmdir
+Path.touch = _guarded_path_touch
+os.makedirs = _guarded_os_makedirs
+os.mkdir = _guarded_os_mkdir
+os.remove = _guarded_os_remove
+os.unlink = _guarded_os_unlink
+os.rmdir = _guarded_os_rmdir
+os.rename = _guarded_os_rename
+os.replace = _guarded_os_replace
+shutil.rmtree = _guarded_shutil_rmtree
+shutil.move = _guarded_shutil_move
+shutil.copy = _guarded_shutil_copy
+shutil.copy2 = _guarded_shutil_copy2
+shutil.copyfile = _guarded_shutil_copyfile
+shutil.copytree = _guarded_shutil_copytree
+
+
+def _storage_slug(nodeid: str) -> str:
+    digest = hashlib.sha256(nodeid.encode("utf-8")).hexdigest()[:12]
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", nodeid).strip("_")
+    return f"{slug[:80]}_{digest}"
+
+
 @pytest.fixture
-def isolated_agentpro_storage(tmp_path, monkeypatch) -> Path:
-    storage_root = tmp_path / "agentpro_storage"
+def isolated_agentpro_storage(request, monkeypatch) -> Path:
+    storage_root = TEST_STORAGE_ROOT / "isolated" / _storage_slug(request.node.nodeid)
     storage_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("AGENTPRO_STORAGE_ROOT", str(storage_root))
     return storage_root

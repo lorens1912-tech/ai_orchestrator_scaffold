@@ -5,7 +5,6 @@ import json
 import hashlib
 
 from dataclasses import dataclass, asdict
-from datetime import datetime, UTC
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -66,15 +65,15 @@ class ProjectTruthBinding:
     contract: str
     path: str
     sha256: str
+    contract_version: str
     source: str
-    loaded_at: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
-def _utc_now_z() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+def _source_relative_path(path: Path, root: Path) -> str:
+    return str(path.relative_to(root)).replace("\\", "/")
 
 
 def _sha256_file(path: Path) -> str:
@@ -106,10 +105,10 @@ def resolve_project_truth(project_root: Path | None = None) -> ProjectTruthBindi
 
     return ProjectTruthBinding(
         contract=PROJECT_TRUTH_CONTRACT,
-        path=str(master_canon_path),
+        path=_source_relative_path(master_canon_path, root),
         sha256=_sha256_file(master_canon_path),
+        contract_version=PROJECT_TRUTH_CONTRACT_VERSION,
         source="repo_file",
-        loaded_at=_utc_now_z(),
     )
 
 

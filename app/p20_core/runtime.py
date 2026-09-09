@@ -5,15 +5,12 @@ import hashlib
 import inspect
 import json
 import os
-import threading
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
 from fastapi import HTTPException
 
-import app.orchestrator_stub as orchestrator_stub
 from app.orchestrator_stub import execute_stub
 from app.p20_core.canon_service import (
     APP_VERSION,
@@ -48,7 +45,6 @@ from app.p20_core.lock_service import (
     release_book_lock,
     release_run_lock,
 )
-from app.p20_core.storage_paths import get_storage_root
 
 MODES_FILE = Path(__file__).resolve().parents[1] / "modes.json"
 
@@ -71,28 +67,6 @@ MASTER_CANON_CONTRACT_FIELDS: tuple[str, ...] = (
 
 MASTER_CANON_CONTRACT_GUARD_FROZEN_VERSION = "1.0"
 MASTER_CANON_CONTRACT_GUARD_FROZEN_REQUIRED_FINGERPRINT = "e0802a2dd5b9383d02cc6cd5649396559b98b5ea37effefd21ef80aa48d0683f"
-
-
-_EXECUTE_STUB_STORAGE_SCOPE_LOCK = threading.RLock()
-
-
-@contextmanager
-def _execute_stub_storage_scope():
-    with _EXECUTE_STUB_STORAGE_SCOPE_LOCK:
-        storage_root = get_storage_root()
-        previous_cwd = Path.cwd()
-        previous_stub_root = getattr(orchestrator_stub, "ROOT", None)
-
-        storage_root.mkdir(parents=True, exist_ok=True)
-        try:
-            if previous_stub_root is not None:
-                orchestrator_stub.ROOT = storage_root
-            os.chdir(storage_root)
-            yield
-        finally:
-            os.chdir(previous_cwd)
-            if previous_stub_root is not None:
-                orchestrator_stub.ROOT = previous_stub_root
 
 
 def build_master_canon_contract_field_payload() -> dict[str, list[str]]:
@@ -416,16 +390,15 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                 "run_state": state,
             }
 
-        with _execute_stub_storage_scope():
-            stub_out = execute_stub(
-                run_id=run_id,
-                book_id=book_id,
-                modes=modes,
-                payload=payload,
-                steps=payload.get("steps"),
-            )
-            if inspect.isawaitable(stub_out):
-                stub_out = await stub_out
+        stub_out = execute_stub(
+            run_id=run_id,
+            book_id=book_id,
+            modes=modes,
+            payload=payload,
+            steps=payload.get("steps"),
+        )
+        if inspect.isawaitable(stub_out):
+            stub_out = await stub_out
 
         artifact_paths = normalize_public_artifact_paths(normalize_artifact_paths(stub_out))
 

@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 import app.orchestrator_stub as orchestrator_stub
 from app.main import app
 from app.p20_core.book_bible_test_helper import ensure_test_book_bible
-from app.p20_core import runtime
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +25,8 @@ def _assert_public_storage_path(path_value: str, *, storage_root: Path, tmp_path
 def test_agent_step_write_and_canon_rebuild_use_configured_storage_root(tmp_path, monkeypatch) -> None:
     storage_root = (tmp_path / "agentpro").resolve()
     monkeypatch.setenv("AGENTPRO_STORAGE_ROOT", str(storage_root))
+    original_cwd = Path.cwd()
+    original_stub_root = orchestrator_stub.ROOT
 
     book_id = f"storage_runtime_{uuid4().hex}"
     run_id = f"storage_runtime_run_{uuid4().hex}"
@@ -61,6 +62,8 @@ def test_agent_step_write_and_canon_rebuild_use_configured_storage_root(tmp_path
     assert write_response.status_code == 200, write_response.text
     write_data = write_response.json()
     assert write_data["ok"] is True, write_data
+    assert Path.cwd() == original_cwd
+    assert orchestrator_stub.ROOT == original_stub_root
 
     write_run_root = storage_root / "runs" / run_id
     write_book_root = storage_root / "books" / book_id
@@ -96,6 +99,8 @@ def test_agent_step_write_and_canon_rebuild_use_configured_storage_root(tmp_path
     rebuild_data = rebuild_response.json()
     assert rebuild_data["ok"] is True, rebuild_data
     assert rebuild_data["chapter_count"] >= 1, rebuild_data
+    assert Path.cwd() == original_cwd
+    assert orchestrator_stub.ROOT == original_stub_root
 
     rebuild_public_paths = [
         rebuild_data["rebuild_artifact_path"],
@@ -118,57 +123,83 @@ def test_agent_step_write_and_canon_rebuild_use_configured_storage_root(tmp_path
     assert all(not path.exists() for path in real_repo_paths)
 
 
-def test_execute_stub_storage_scope_serializes_process_global_state(tmp_path, monkeypatch) -> None:
-    storage_root = (tmp_path / "agentpro_scope").resolve()
+def test_parallel_agent_step_calls_use_configured_storage_without_global_scope(tmp_path, monkeypatch) -> None:
+    storage_root = (tmp_path / "agentpro_parallel").resolve()
     monkeypatch.setenv("AGENTPRO_STORAGE_ROOT", str(storage_root))
 
     original_cwd = Path.cwd()
     original_stub_root = orchestrator_stub.ROOT
-    first_entered = threading.Event()
-    release_first = threading.Event()
-    second_attempting = threading.Event()
-    second_entered = threading.Event()
+    cases = [
+        (
+            f"storage_parallel_book_a_{uuid4().hex}",
+            f"storage_parallel_run_a_{uuid4().hex}",
+        ),
+        (
+            f"storage_parallel_book_b_{uuid4().hex}",
+            f"storage_parallel_run_b_{uuid4().hex}",
+        ),
+    ]
+    for book_id, run_id in cases:
+        assert not (REPO_ROOT / "books" / book_id).exists()
+        assert not (REPO_ROOT / "runs" / run_id).exists()
+        ensure_test_book_bible(book_id)
+
+    start = threading.Barrier(len(cases))
+    results: list[dict[str, object]] = []
     errors: list[BaseException] = []
 
-    def worker_first() -> None:
+    def worker(book_id: str, run_id: str) -> None:
         try:
-            with runtime._execute_stub_storage_scope():
-                first_entered.set()
-                assert Path.cwd() == storage_root
-                assert orchestrator_stub.ROOT == storage_root
-                assert release_first.wait(timeout=5)
+            start.wait(timeout=5)
+            client = TestClient(app)
+            response = client.post(
+                "/agent/step",
+                json={
+                    "mode": "WRITE",
+                    "payload": {
+                        "book_id": book_id,
+                        "run_id": run_id,
+                        "text": (
+                            "Parallel storage isolation scene. The team writes a clean chapter "
+                            "while preserving the configured storage root."
+                        ),
+                    },
+                },
+            )
+            results.append({"book_id": book_id, "run_id": run_id, "response": response})
         except BaseException as exc:
             errors.append(exc)
 
-    def worker_second() -> None:
-        try:
-            assert first_entered.wait(timeout=5)
-            second_attempting.set()
-            with runtime._execute_stub_storage_scope():
-                second_entered.set()
-                assert Path.cwd() == storage_root
-                assert orchestrator_stub.ROOT == storage_root
-        except BaseException as exc:
-            errors.append(exc)
+    threads = [threading.Thread(target=worker, args=case) for case in cases]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
 
-    first = threading.Thread(target=worker_first)
-    second = threading.Thread(target=worker_second)
-    first.start()
-    assert first_entered.wait(timeout=5)
-
-    second.start()
-    assert second_attempting.wait(timeout=5)
-    assert not second_entered.wait(timeout=0.2)
-
-    release_first.set()
-    first.join(timeout=5)
-    second.join(timeout=5)
-
-    assert not first.is_alive()
-    assert not second.is_alive()
+    assert all(not thread.is_alive() for thread in threads)
     assert errors == []
+    assert len(results) == len(cases)
     assert Path.cwd() == original_cwd
     assert orchestrator_stub.ROOT == original_stub_root
-    assert not (REPO_ROOT / "books" / "agentpro_scope").exists()
-    assert not (REPO_ROOT / "runs" / "agentpro_scope").exists()
-    assert storage_root.exists()
+
+    by_run_id = {str(result["run_id"]): result for result in results}
+    for book_id, run_id in cases:
+        response = by_run_id[run_id]["response"]
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["ok"] is True, data
+
+        public_paths = [
+            data["chapter_path"],
+            data["canon_snapshot_path"],
+            *data["artifact_paths"],
+        ]
+        for public_path in public_paths:
+            _assert_public_storage_path(public_path, storage_root=storage_root, tmp_path=tmp_path)
+            assert (storage_root / public_path).exists()
+
+        assert (storage_root / "books" / book_id / "book_bible.json").exists()
+        assert (storage_root / "runs" / run_id / "run_state.json").exists()
+        assert (storage_root / "runs" / run_id / "audit.json").exists()
+        assert not (REPO_ROOT / "books" / book_id).exists()
+        assert not (REPO_ROOT / "runs" / run_id).exists()

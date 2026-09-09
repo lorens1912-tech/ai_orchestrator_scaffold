@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
+from app.p20_core.storage_paths import get_books_root, get_storage_root
+
 BOOK_BIBLE_CONTRACT_VERSION = "1.0"
 
 
@@ -147,11 +149,18 @@ def _map_validator_error_for_runtime(msg: str) -> str:
     return msg
 
 
+def _storage_relative_path(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(get_storage_root().resolve())).replace("\\", "/")
+    except ValueError:
+        return str(path.resolve()).replace("\\", "/")
+
+
 def load_book_bible_or_raise(book_id: str) -> Dict[str, Any]:
     if not _non_empty_text(book_id):
         raise BookBibleContractError("BOOK_ID_MISSING")
 
-    bible_path = Path("books") / str(book_id) / "book_bible.json"
+    bible_path = get_books_root() / str(book_id) / "book_bible.json"
 
     if not bible_path.exists():
         raise BookBibleContractError("BOOK_BIBLE_MISSING")
@@ -168,7 +177,7 @@ def load_book_bible_or_raise(book_id: str) -> Dict[str, Any]:
         raise BookBibleContractError(_map_validator_error_for_runtime(str(e)))
 
     contract = {
-        "path": str(bible_path).replace("\\", "/"),
+        "path": _storage_relative_path(bible_path),
         "sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
         "contract_version": BOOK_BIBLE_CONTRACT_VERSION,
     }
@@ -183,12 +192,12 @@ def load_book_bible_or_raise(book_id: str) -> Dict[str, Any]:
 
 def ensure_test_book_bible(book_id: str) -> Dict[str, Any]:
     payload = build_valid_book_bible_payload(book_id)
-    book_dir = Path("books") / str(book_id)
+    book_dir = get_books_root() / str(book_id)
     book_dir.mkdir(parents=True, exist_ok=True)
     path = book_dir / "book_bible.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return {
-        "path": str(path).replace("\\", "/"),
+        "path": _storage_relative_path(path),
         "payload": payload,
     }
 

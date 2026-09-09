@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.canon_check import canon_check
+from app.p20_core.storage_paths import get_books_root, get_runs_root, get_storage_root
 
 APP_VERSION = "P20.0-novel-core"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -48,8 +49,28 @@ def append_jsonl(path: Path, obj: Dict[str, Any]) -> None:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
 
+def _path_for_read(path: Path) -> Path:
+    if path.is_absolute():
+        return path
+
+    if path.parts and path.parts[0] in {"books", "runs", "audit", "novel_runs"}:
+        return get_storage_root() / path
+
+    return REPO_ROOT / path
+
+
+def _public_path(path: Path) -> str:
+    resolved = path.resolve()
+    for root in (get_storage_root(), REPO_ROOT):
+        try:
+            return str(resolved.relative_to(root.resolve())).replace("\\", "/")
+        except ValueError:
+            pass
+    return str(resolved).replace("\\", "/")
+
+
 def ensure_book_dirs(book_id: str) -> Path:
-    book_dir = BOOKS_ROOT / str(book_id)
+    book_dir = get_books_root() / str(book_id)
     (book_dir / "memory").mkdir(parents=True, exist_ok=True)
     (book_dir / "artifacts" / "canon").mkdir(parents=True, exist_ok=True)
     (book_dir / "chapters").mkdir(parents=True, exist_ok=True)
@@ -67,7 +88,7 @@ def ensure_book_dirs(book_id: str) -> Path:
 
 
 def ensure_run_dirs(run_id: str) -> Path:
-    run_dir = RUNS_ROOT / str(run_id)
+    run_dir = get_runs_root() / str(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 
@@ -106,7 +127,7 @@ def resolve_resume_run_id(book_id: str, payload_run_id: Optional[str], resume: b
         return explicit
 
     book_dir = ensure_book_dirs(book_id)
-    runs_dir = REPO_ROOT / "runs"
+    runs_dir = get_runs_root()
 
     def _new_run_id_local() -> str:
         from datetime import datetime, timezone
@@ -208,7 +229,7 @@ def rebuild_canon_from_chapters(book_id: str) -> Dict[str, Any]:
             continue
 
         chapter_id = str(data.get("chapter_id") or path.stem)
-        chapter_rel = str(path.relative_to(REPO_ROOT)).replace("\\", "/")
+        chapter_rel = _public_path(path)
         run_id = str(data.get("run_id") or "")
         sha256 = str(data.get("sha256") or "")
         accepted_at = str(data.get("created_at") or utc_now_iso())
@@ -332,7 +353,7 @@ def coerce_text(value: Any) -> str:
 def read_artifact_text(path_value: str) -> str:
     p = Path(path_value)
     if not p.is_absolute():
-        p = REPO_ROOT / p
+        p = _path_for_read(p)
     if not p.exists():
         return ""
 
@@ -438,7 +459,7 @@ def save_chapter(
         "created_at": utc_now_iso(),
         "engine": APP_VERSION,
         "source_artifact": source_artifact,
-        "canon_snapshot_path": str(canon_snapshot_path.relative_to(REPO_ROOT)).replace("\\", "/"),
+        "canon_snapshot_path": _public_path(canon_snapshot_path),
         "sha256": sha256_text(text),
         "content": text,
         "text": text,
@@ -446,7 +467,7 @@ def save_chapter(
         "post_canon_check": post_report,
     }
     json_write(chapter_path, doc)
-    return str(chapter_path.relative_to(REPO_ROOT)).replace("\\", "/")
+    return _public_path(chapter_path)
 
 
 def write_audit(
@@ -469,7 +490,7 @@ def write_audit(
         "artifact_paths": artifact_paths,
         "decision": decision,
         "chapter_path": chapter_path,
-        "canon_snapshot_path": str(canon_snapshot_path.relative_to(REPO_ROOT)).replace("\\", "/"),
+        "canon_snapshot_path": _public_path(canon_snapshot_path),
         "master_canon": master_canon,
         "project_truth": project_truth,
         "engine": APP_VERSION,
@@ -480,6 +501,6 @@ def write_audit(
         audit_doc,
     )
 
-    run_dir = REPO_ROOT / "runs" / run_id
+    run_dir = get_runs_root() / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     json_write(run_dir / "audit.json", audit_doc)

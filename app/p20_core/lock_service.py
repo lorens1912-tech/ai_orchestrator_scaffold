@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from app.p20_core.storage_paths import get_books_root, get_runs_root
+
 APP_VERSION = "P20.0-novel-core"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNS_ROOT = REPO_ROOT / "runs"
@@ -16,13 +18,13 @@ def utc_now_iso() -> str:
 
 
 def ensure_run_dir(run_id: str) -> Path:
-    run_dir = RUNS_ROOT / str(run_id)
+    run_dir = get_runs_root() / str(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 
 
 def ensure_book_audit_dir(book_id: str) -> Path:
-    p = BOOKS_ROOT / str(book_id) / "audit"
+    p = get_books_root() / str(book_id) / "audit"
     p.mkdir(parents=True, exist_ok=True)
     return p
 

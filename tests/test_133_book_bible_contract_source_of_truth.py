@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-import app.main as main_module
+import app.p20_core.runtime as runtime_module
 from app.p20_core.book_bible_contract import (
     REQUIRED_BOOK_BIBLE_KEYS,
     REQUIRED_NON_EMPTY_LIST_KEYS,
@@ -51,7 +51,7 @@ def test_book_bible_contract_module_is_single_source_of_truth_for_helper_and_run
 
 def test_runtime_and_helper_reference_same_contract_module():
     helper_source = inspect.getsource(ensure_test_book_bible)
-    runtime_source = inspect.getsource(main_module.agent_step)
+    runtime_source = inspect.getsource(runtime_module.run_agent_step)
 
     assert "build_valid_book_bible_payload" in helper_source
     assert "load_book_bible_or_raise" in runtime_source

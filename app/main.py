@@ -9,9 +9,17 @@ from app.p20_core.canon_rebuild import canon_rebuild_endpoint
 app = FastAPI()
 
 
-def _is_unknown_agent_input_error(exc: ValueError) -> bool:
+def _agent_input_error_status(exc: ValueError) -> int | None:
     detail = str(exc)
-    return detail.startswith("Unknown mode:") or detail.startswith("Unknown preset:")
+    if (
+        detail.startswith("Unknown mode:")
+        or detail.startswith("Unknown preset:")
+        or detail.startswith("Unknown team_id:")
+    ):
+        return 400
+    if detail.startswith("TEAM_OVERRIDE_NOT_ALLOWED:"):
+        return 422
+    return None
 
 
 @app.get("/health")
@@ -34,8 +42,9 @@ async def agent_step(req: AgentStepRequest) -> Dict[str, Any]:
     try:
         return await run_agent_step(req)
     except ValueError as e:
-        if _is_unknown_agent_input_error(e):
-            raise HTTPException(status_code=400, detail=str(e)) from e
+        status_code = _agent_input_error_status(e)
+        if status_code is not None:
+            raise HTTPException(status_code=status_code, detail=str(e)) from e
         raise
     except BookBibleContractError as e:
         return {

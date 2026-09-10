@@ -391,6 +391,7 @@ def execute_stub(*args, **kwargs) -> List[str]:
             or rt_ov.get("team_id")
             or rt_ov.get("team")
             or payload.get("team_id")
+            or payload.get("team")
         )
         team = resolve_team(mode_id, team_override=team_override)
 
@@ -415,6 +416,20 @@ def execute_stub(*args, **kwargs) -> List[str]:
             or tool_in.get("requested_policy")
             or team.get("policy_id")
         )
+
+        team_id = str(team.get("id") or team.get("team_id") or "").strip()
+        team_policy_id = str(team.get("policy_id") or "").strip()
+        team_prompts = team.get("prompts")
+        if team_id:
+            tool_in["team"] = team_id
+            tool_in["team_id"] = team_id
+            tool_in["_team_id"] = team_id
+        if team_policy_id:
+            tool_in["_team_policy_id"] = team_policy_id
+        if requested_model:
+            tool_in["_team_model"] = requested_model
+        if isinstance(team_prompts, dict):
+            tool_in["_team_prompts"] = team_prompts
 
         tool_in["_requested_model"] = requested_model
         tool_in["_requested_policy"] = requested_policy

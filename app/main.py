@@ -41,14 +41,14 @@ def canon_rebuild(body: Dict[str, Any]) -> Dict[str, Any]:
 async def agent_step(req: AgentStepRequest) -> Dict[str, Any]:
     try:
         return await run_agent_step(req)
-    except ValueError as e:
-        status_code = _agent_input_error_status(e)
-        if status_code is not None:
-            raise HTTPException(status_code=status_code, detail=str(e)) from e
-        raise
     except BookBibleContractError as e:
         return {
             "ok": False,
             "decision": "REJECT",
             "error": str(e),
         }
+    except ValueError as e:
+        status_code = _agent_input_error_status(e)
+        if status_code is not None:
+            raise HTTPException(status_code=status_code, detail=str(e)) from e
+        raise

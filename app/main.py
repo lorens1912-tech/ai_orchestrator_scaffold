@@ -6,6 +6,8 @@ from app.p20_core.contracts import AgentStepRequest
 from app.p20_core.book_bible_contract import BookBibleContractError
 from app.p20_core.canon_rebuild import canon_rebuild_endpoint
 from app.config_registry import load_presets
+from app.canon_check import canon_check
+from app.canon_store import load_canon
 
 app = FastAPI()
 
@@ -55,6 +57,18 @@ def config_presets() -> Dict[str, Any]:
 @app.post("/canon/rebuild")
 def canon_rebuild(body: Dict[str, Any]) -> Dict[str, Any]:
     return canon_rebuild_endpoint(body)
+
+
+@app.post("/canon/check_flags")
+def canon_check_flags(body: Dict[str, Any]) -> Dict[str, Any]:
+    book_id = str(body.get("book_id") or "default")
+    text = str(body.get("text") or "")
+    scene_ref = str(body.get("scene_ref") or "")
+    canon = body.get("canon")
+    if not isinstance(canon, dict):
+        canon = load_canon(run_dir=None, book_id=book_id)
+    result = canon_check(text=text, canon=canon, scene_ref=scene_ref)
+    return {"ok": True, "book_id": book_id, "result": result}
 
 
 @app.post("/agent/step")

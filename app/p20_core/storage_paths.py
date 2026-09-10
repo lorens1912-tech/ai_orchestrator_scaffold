@@ -39,6 +39,10 @@ def get_series_root() -> Path:
     return get_storage_root() / "series"
 
 
+def get_system_db_path() -> Path:
+    return get_storage_root() / "agentpro_system.db"
+
+
 __all__ = [
     "get_storage_root",
     "get_books_root",
@@ -47,4 +51,5 @@ __all__ = [
     "get_novel_runs_root",
     "get_projects_root",
     "get_series_root",
+    "get_system_db_path",
 ]

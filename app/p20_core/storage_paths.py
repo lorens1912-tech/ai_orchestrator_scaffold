@@ -31,10 +31,15 @@ def get_novel_runs_root() -> Path:
     return get_storage_root() / "novel_runs"
 
 
+def get_projects_root() -> Path:
+    return get_storage_root() / "projects"
+
+
 __all__ = [
     "get_storage_root",
     "get_books_root",
     "get_runs_root",
     "get_audit_root",
     "get_novel_runs_root",
+    "get_projects_root",
 ]

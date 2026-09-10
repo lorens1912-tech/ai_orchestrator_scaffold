@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.canon_check import canon_check
+from app.p20_core.project_repository import ensure_project_repository_for_book
 from app.p20_core.storage_paths import get_books_root, get_runs_root, get_storage_root
 
 APP_VERSION = "P20.0-novel-core"
@@ -70,6 +71,7 @@ def _public_path(path: Path) -> str:
 
 
 def ensure_book_dirs(book_id: str) -> Path:
+    ensure_project_repository_for_book(str(book_id))
     book_dir = get_books_root() / str(book_id)
     (book_dir / "memory").mkdir(parents=True, exist_ok=True)
     (book_dir / "artifacts" / "canon").mkdir(parents=True, exist_ok=True)

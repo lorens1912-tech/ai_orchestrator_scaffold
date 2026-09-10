@@ -1,285 +1,1044 @@
 # MASTER_CANON_AGENTPRO
-# WERSJA NADRZĘDNA / KONSTYTUCJA SYSTEMU
+## WERSJA 2 — APPROVED / KONSTYTUCJA SYSTEMU
+## STATUS: ZAMKNIĘTY / NAJWYŻSZE ŹRÓDŁO PRAWDY
 
-## 0. STATUS DOKUMENTU
-- Ten dokument jest najwyższym źródłem prawdy dla AgentPRO.
-- W razie konfliktu pierwszeństwo ma ten dokument nad:
-  - handoffami,
-  - opisami w czatach,
-  - lokalnymi README,
-  - kodem tymczasowym,
-  - shimami,
-  - doraźnymi fixami,
-  - niejawnie przyjętymi praktykami.
-- Ten dokument definiuje tożsamość, granice i reguły systemu.
-- Ten dokument nie opisuje wszystkiego; definiuje to, czego nie wolno naruszyć.
+======================================================================
+0. ROLA DOKUMENTU
+======================================================================
 
-## 1. TOŻSAMOŚĆ SYSTEMU
-- AgentPRO jest prywatną, profesjonalną aplikacją-autorską do tworzenia książek na Amazon USA.
-- AgentPRO nie jest generatorem treści.
-- AgentPRO jest systemem autorskim klasy produkcyjnej.
-- Agent jest wewnętrznym engine’em systemu, nie tożsamością całego produktu.
-- Celem systemu jest wysoka wartość literacka, rynkowa i operacyjna.
-- System ma obsługiwać:
-  - długie powieści,
-  - poradniki,
-  - tłumaczenie,
-  - adaptację stylu,
-  - ciągły proces autorski od kanonu do gotowego tekstu.
-- Pamięć, kanon, audyt, wznowienia, jakość i izolacja projektów są obowiązkowe.
+MASTER_CANON_AGENTPRO definiuje to, CO MUSI BYĆ PRAWDĄ o AgentPRO.
 
-## 2. ZASADA APP-FIRST
-- System jest aplikacją, nie skryptem, nie runtime’em pomocniczym i nie zbiorem testowych obejść.
-- Backend musi działać poprawnie bez UI.
-- UI jest klientem systemu, a nie współautorem logiki.
-- Core systemu nie może zależeć od UI, terminala, układu okien ani ręcznych procedur operatorskich.
-- Architektura systemu jest nadrzędna wobec wygody chwilowej.
-- Nie wolno poświęcać architektury dla doraźnego obejścia.
+Nie jest instrukcją implementacyjną i nie opisuje chwilowego stanu kodu.
 
-## 3. ZASADA ŹRÓDŁA PRAWDY
-- Oficjalny porządek źródeł prawdy jest następujący:
-  1. MASTER_CANON_AGENTPRO
-  2. projektowy canon / book_bible / project truth
-  3. zamknięte decyzje projektowe
-  4. handoff
-  5. bieżący krok wykonawczy
-- Niższa warstwa nie może cicho redefiniować wyższej.
-- Model nie może stać się źródłem prawdy przez samą generację.
-- Tekst wygenerowany przez model nie jest automatycznie prawdą projektową.
-- Każda trwała zmiana stanu musi być jawna, zapisana i audytowalna.
+W razie konfliktu pierwszeństwo ma kolejno:
 
-## 4. ZASADA UI
-- UI jest wyłącznie warstwą operatorską.
-- UI nie zawiera logiki biznesowej ani decyzyjnej.
-- UI komunikuje się tylko przez oficjalne API.
-- UI nie wpływa na pamięć, kanon, deterministykę ani zasady wykonawcze.
-- UI nie może wymuszać zmian w core engine.
-- UI nie jest źródłem prawdy.
-- System musi zachować tę samą logikę niezależnie od obecności lub braku UI.
+MASTER_CANON_AGENTPRO
+→ CANON SERII / CANON KSIĄŻKI / BOOK BIBLE / PROJECT TRUTH
+→ ZATWIERDZONE DECYZJE UŻYTKOWNIKA I ZAMKNIĘTE KONTRAKTY
+→ ZATWIERDZONY STAN / HANDOFF
+→ BIEŻĄCY KROK
+→ IMPLEMENTACJA
+→ TESTY
+→ WYNIK MODELU.
 
-## 5. ZASADA SILNIKA
-- P20.x jest jedynym silnikiem produkcyjnym.
-- P0 jest wyłącznie eksperymentalny lub testowy.
-- Zakaz mieszania P0 i P20.x w jednym runtime.
-- Endpointy użytkownika i UI działają wyłącznie na P20.x.
-- Compat, fallback, hotfix i shim są dopuszczalne wyłącznie przejściowo.
-- Żadna warstwa przejściowa nie może stać się trwałym fundamentem systemu.
-- Każda funkcja docelowa ma zostać przeniesiona do czystego P20.x albo usunięta.
+Niższa warstwa nie może cicho redefiniować wyższej.
 
-## 6. ZASADA JEDNEGO RUNTIME’U PRODUKCYJNEGO
-- System ma mieć jeden oficjalny runtime produkcyjny.
-- Równoległe ścieżki wykonawcze mogą istnieć wyłącznie tymczasowo i muszą mieć plan usunięcia.
-- Test przechodzący na shimie nie jest dowodem czystej architektury.
-- Każda publiczna ścieżka wykonania musi być zgodna z produkcyjnym ownerem systemu.
-- Publiczny kontrakt API nie może zmieniać znaczenia w zależności od wewnętrznego obejścia.
+======================================================================
+1. TOŻSAMOŚĆ AGENTPRO
+======================================================================
 
-## 7. PRIORYTET TRYBÓW
-- Novel mode ma absolutny priorytet strategiczny.
-- Najpierw domykany jest novel mode.
-- Guide mode nie może rozmywać, opóźniać ani destabilizować novel mode.
-- Multi-project jest dozwolony tylko w guide mode.
-- Rozwój guide mode jest wtórny wobec stabilnego toru novel mode.
+AgentPRO jest prywatną, profesjonalną aplikacją-autorską do tworzenia książek na rynek Amazon USA.
 
-## 8. NOVEL MODE
-- Novel mode oznacza tryb produkcyjnego pisania długiej powieści.
-- Novel mode jest projektowany dla 100k+ słów.
-- Spójność długiej formy jest ważniejsza niż szybkość generacji.
-- W novel mode może istnieć tylko jeden aktywny projekt powieściowy na jeden aktywny runtime produkcyjny użytkownika.
-- Aktywny projekt powieściowy oznacza projekt, do którego runtime może wykonywać zapis, wznowienie lub walidację kanonu.
-- Równoległe powieści mogą istnieć jako dane, ale tylko jedna może być aktywnie wykonywana w novel mode w tym samym czasie.
+AgentPRO nie jest generatorem treści.
 
-## 9. KONTRAKT POWIEŚCIOWY
-- Każdy projekt powieściowy musi posiadać `book_bible.json`.
-- `book_bible.json` jest obowiązkowym kontraktem projektu, nie dodatkiem.
-- Bez ważnego `book_bible.json` nie wolno wykonać zapisu rozdziału.
-- Każdy rozdział musi być zapisany jako osobny artefakt `chapter_XXX.json`.
-- Nie wolno pisać rozdziału bez walidacji kanonu przed zapisem.
-- Nie wolno zaakceptować rozdziału niezgodnego z kanonem.
-- Nie wolno cicho naprawiać zgodności po fakcie bez jawnej decyzji i audytu.
+Agent jest wewnętrznym engine’em aplikacji, nie całym produktem.
 
-## 10. GUIDE MODE
-- Guide mode może obsługiwać równoległe projekty.
-- Każdy projekt guide mode ma izolowany run, pamięć i artefakty.
-- Guide mode jest logicznie oddzielony od novel mode.
-- Żaden element guide mode nie może zanieczyszczać pamięci, kanonu ani stanu novel mode.
-- Obowiązuje kontrola anty-duplikacji i kontroli podobieństwa między poradnikami.
-- Multi-project w guide mode nie znosi wymogu audytu i izolacji.
+Celem AgentPRO jest wysoka wartość literacka, rynkowa i operacyjna tekstu oraz pełna kontrola procesu autorskiego.
 
-## 11. IZOLACJA PAMIĘCI
-- Zero przecieków pamięci między projektami.
-- Brak transferu kontekstu bez jawnego importu.
-- Każdy projekt ma własną pamięć operacyjną, długą i artefaktową.
-- Wspólna pamięć między książkami jest zabroniona, chyba że zostanie jawnie wykonany import.
-- Import musi być:
-  - jawny,
-  - ograniczony zakresem,
-  - zapisany w audycie,
-  - możliwy do odtworzenia.
-- Izolacja pamięci jest wymogiem twardym.
+======================================================================
+2. ZASADA APP-FIRST
+======================================================================
 
-## 12. WZNOWIENIA
-- Wznowienie jest dozwolone wyłącznie w granicach tego samego projektu.
-- Domyślne wznowienie jest dozwolone wyłącznie dla zgodnego `project_id`, `book_id`, `run_id` i audytu.
-- Wznowienie nie może przekroczyć granic obcego projektu.
-- Wznowienie nie może używać stanu, którego pochodzenie nie jest audytowalne.
-- Wznowienie z niezgodnym project truth, canon sha albo obcym run state musi zostać zablokowane.
-- Kontrolowane odgałęzienie jest dozwolone tylko jako jawna operacja fork/clone/import z własnym audytem; nie jako cichy resume.
+AgentPRO jest aplikacją.
 
-## 13. KANON
-- Kanon jest nadrzędny wobec generacji tekstu.
-- Generacja ma służyć kanonowi, a nie go redefiniować.
-- Źródłami kanonu są wyłącznie:
-  - `book_bible.json`,
-  - jawny timeline projektu,
-  - jawne fakty projektu,
-  - jawne decyzje projektu,
-  - zatwierdzone rozdziały,
-  - jawnie zapisane reguły projektu,
-  - jawne, audytowalne importy.
-- Kanon nie może być nadpisywany przez model w sposób cichy.
-- Każda zmiana kanonu musi być:
-  - jawna,
-  - walidowalna,
-  - audytowalna,
-  - zapisana.
-- Brak zgodności z kanonem oznacza blokadę zapisu.
+Backend musi działać poprawnie bez UI.
 
-## 14. WALIDACJA KANONU
-- Każdy zapis trwały musi przejść walidację kanonu.
-- Walidacja przed zapisem jest obowiązkowa.
-- Walidacja po zapisie kontrolnym jest obowiązkowa wszędzie tam, gdzie architektura kroku tego wymaga.
-- Pozytywny wynik generacji nie unieważnia negatywnego wyniku walidacji.
-- Jeśli walidacja i generacja są sprzeczne, pierwszeństwo ma walidacja.
+UI jest wyłącznie warstwą operatorską.
 
-## 15. JAKOŚĆ I DECYZJE
-- Bramka jakości działa wyłącznie w modelu:
-  - ACCEPT
-  - REVISE
-  - REJECT
-- Inne statusy nie mogą zastępować tej triady jako kontraktu procesu.
-- ACCEPT oznacza zgodę na przejście do następnego dozwolonego kroku.
-- REVISE oznacza konieczność poprawy bez uznania wyniku za końcowo zaakceptowany.
-- REJECT oznacza blokadę przejścia lub zapisu zgodnie z regułami danego kroku.
-- Jakość nie jest tylko opinią modelu.
-- Jakość jest częścią kontraktu wykonawczego systemu.
+UI nie może być właścicielem:
+- pamięci,
+- Kanonu,
+- decyzji jakościowych,
+- orkiestracji,
+- model routingu,
+- storage,
+- logiki domenowej.
 
-## 16. AUDYT
-- Każdy run musi być audytowalny.
-- Każdy step musi być audytowalny.
-- Każdy trwały artifact musi być audytowalny.
-- Audyt musi pozwalać odtworzyć:
-  - wejście,
-  - decyzję,
-  - źródła prawdy,
-  - zależności,
-  - artefakty,
-  - wynik końcowy.
-- Dobrze wyglądający chaos bez śladu audytu jest traktowany jako błąd systemowy.
+UI nie może wpływać na pamięć, Kanon ani deterministykę procesu.
 
-## 17. DETERMINISTYCZNA ORKIESTRACJA
-- Determinizm oznacza deterministyczną orkiestrację procesu, nie absolutnie identyczny tekst modelu w każdych warunkach.
-- Muszą być deterministyczne:
-  - kolejność kroków,
-  - źródła prawdy użyte w kroku,
-  - reguły decyzji,
-  - zapis audytu,
-  - kontrola przejść między krokami,
-  - zasady resume i locków,
-  - kontrakt artefaktów.
-- Niedeterministyczny model nie zwalnia systemu z deterministycznej kontroli procesu.
+======================================================================
+3. OFICJALNA GRANICA API
+======================================================================
 
-## 18. LOCKI I OCHRONA STANU
-- Konflikty run lock i book lock są błędami krytycznymi.
-- System nie może wykonywać zapisu, jeśli aktywny lock narusza integralność projektu lub runu.
-- Locki muszą być sprawdzalne, audytowalne i spójne z zasadą wznowień.
-- Ominięcie locka przez obejście aplikacyjne jest zabronione.
+UI komunikuje się z backendem wyłącznie przez oficjalne API.
 
-## 19. ARCHITEKTURA / ENDPOINTY / TESTY
-- Architektura, endpointy i testy muszą być zgodne.
-- Endpointy są częścią kontraktu systemu.
-- Testy kontraktowe są częścią kontraktu systemu.
-- Żaden endpoint nie może publicznie udawać kontraktu sprzecznego z rzeczywistym runtime.
-- Żaden test nie może wymuszać zachowania sprzecznego z master canonem.
-- Jeśli test jest sprzeczny z master canonem, poprawia się test, a nie łamie canon.
-- Jeśli kod jest sprzeczny z master canonem, poprawia się kod, a nie narrację o kodzie.
+Wewnętrzny backend nie powinien komunikować się ze sobą przez HTTP do localhost, jeżeli może użyć serwisów/repozytoriów bezpośrednio.
 
-## 20. SHIMY / COMPAT / MIGRACJE
-- Shim jest dozwolony tylko jako warstwa przejściowa.
-- Compat jest dozwolony tylko jako warstwa przejściowa.
-- Fallback jest dozwolony tylko jako warstwa przejściowa.
-- Każda warstwa przejściowa musi mieć:
-  - jawny status tymczasowy,
-  - jawny zakres,
-  - jawne ryzyko,
-  - plan usunięcia.
-- Nie wolno budować trwałej architektury na obejściach.
+Oficjalnym ownerem API pozostaje app.main.
 
-## 21. WORKFLOW
-- Workflow użytkownika ma być elastyczny.
-- Elastyczność dotyczy sposobu pracy, nie zasad bezpieczeństwa i spójności.
-- Opcjonalne mogą być:
-  - agent writes,
-  - user edits,
-  - discussion mode,
-  - external import,
-  - kolejność niektórych kroków roboczych.
-- Nieopcjonalne są:
-  - walidacja kanonu,
-  - audyt,
-  - izolacja pamięci,
-  - zgodność z kontraktem jakości,
-  - zgodność z kontraktem runtime.
-- Workflow ma być konfigurowalny, ale nie anarchiczny.
+app.main ma być cienką warstwą transportową, a nie alternatywnym silnikiem domenowym.
 
-## 22. TŁUMACZENIE I ADAPTACJA
-- Tłumaczenie i adaptacja są integralną częścią systemu.
-- Adaptacja ma zachować sens, intencję, siłę narracyjną i jakość literacką oryginału.
-- Tekst docelowy ma brzmieć jak tekst napisany natywnie, nie jak tłumaczenie techniczne.
-- Adaptacja nie może naruszać kanonu projektu bez jawnej decyzji.
+======================================================================
+4. SILNIK PRODUKCYJNY
+======================================================================
 
-## 23. CIĄGŁOŚĆ
-- Każdy nowy czat jest kontynuacją projektu, jeśli istnieje już ustalony stan.
-- Zakaz redefiniowania projektu od zera bez jawnej decyzji.
-- Zmiana kierunku wymaga jawnej decyzji projektowej.
-- Handoff nie jest nowym źródłem prawdy; jest nośnikiem ciągłości.
-- System ma chronić ciągłość między czatami, runami i etapami pracy.
+P20.x jest jedynym silnikiem produkcyjnym AgentPRO.
 
-## 24. STABILNOŚĆ PRODUKCYJNA
-- Wznowienia, audyt, odporność na przerwania i brak konfliktów plików są obowiązkowe.
-- Niestabilne entrypointy, dryf runtime, konflikt kontraktów i niejawne mutacje stanu są błędami krytycznymi.
-- Najpierw stabilność i zgodność kontraktu, potem rozbudowa funkcji.
-- Najpierw jeden czysty runtime produkcyjny, potem rozszerzenia.
+P0 jest wyłącznie eksperymentalny, testowy lub historyczny.
 
-## 25. DYSCYPLINA DECYZYJNA
-- Tezy o stanie systemu muszą być oznaczane jako:
-  - [DOWÓD]
-  - [SPECYFIKACJA]
-  - [ZAŁOŻENIE]
-- Nie wolno sprzedawać założeń jako faktów.
-- Jeśli stan systemu jest niepewny, najpierw audyt, potem wniosek.
-- Prawda o stanie systemu ma pierwszeństwo przed wygodną narracją.
+P0 i P20.x nie mogą być mieszane w jednym produkcyjnym runtime.
 
-## 26. ZAKRES DOKUMENTU
-- Ten dokument definiuje konstytucję systemu.
-- Ten dokument nie zawiera:
-  - protokołu operatorskiego okien,
-  - formatu odpowiedzi czatowych,
-  - komend terminalowych 1:1,
-  - lokalnych instrukcji uruchamiania.
-- Takie reguły mają żyć w osobnych dokumentach operacyjnych.
-- Nie wolno mieszać warstwy konstytucyjnej z warstwą operatorską.
+Compat, shim, hotfix i fallback mogą istnieć przejściowo, ale nie mogą stać się docelowym fundamentem.
 
-## 27. REGUŁA KOŃCOWA
-- Najpierw jeden stabilny, czysty, zgodny z canonem runtime AgentPRO.
-- Potem pełna zgodność architektury, endpointów i testów.
-- Potem rozbudowa funkcji.
-- Novel mode, kanon, izolacja pamięci, audyt i jakość pozostają priorytetem absolutnym.
+======================================================================
+5. DETERMINISTYCZNA ORKIESTRACJA
+======================================================================
 
-## 28. TEST POPRAWNOŚCI INTERPRETACJI
-- Jeśli istnieją dwie interpretacje reguły, prawidłowa jest ta, która:
-  - lepiej chroni kanon,
-  - lepiej chroni izolację projektów,
-  - lepiej chroni audyt,
-  - lepiej chroni deterministyczną orkiestrację,
-  - lepiej chroni czysty runtime P20.x,
-  - mniej zależy od shimów i wyjątków.
+Deterministyczność AgentPRO oznacza deterministyczny proces, nie gwarancję identycznego tekstu LLM.
+
+Deterministyczne muszą być co najmniej:
+- kolejność kroków,
+- wybór polityki,
+- źródła prawdy,
+- przejścia między stanami,
+- zasady resume,
+- zasady locków,
+- zapis audytu,
+- kontrakt artefaktów.
+
+======================================================================
+6. PROJEKT JAKO GRANICA IZOLACJI
+======================================================================
+
+Każdy run należy dokładnie do jednego projektu.
+
+Każdy projekt ma własną tożsamość, pamięć, Kanon, Book Bible, styl, research, artefakty, runy, locki, audyt i tłumaczenia.
+
+Zero przecieków pamięci pomiędzy niezależnymi projektami.
+
+Transfer danych pomiędzy projektami jest możliwy tylko przez jawny, audytowalny import.
+
+======================================================================
+7. NOVEL MODE MA PRIORYTET
+======================================================================
+
+Novel Mode jest priorytetowym trybem AgentPRO.
+
+Dla powieści obowiązuje jedna aktywnie wykonywana książka na danym torze produkcyjnym użytkownika.
+
+System może przechowywać wiele projektów, lecz Novel Mode nie może cicho mieszać ich kontekstu ani stanu.
+
+Guide Mode pozostaje logicznie odseparowany i nie może destabilizować Novel Mode.
+
+======================================================================
+8. DŁUGA FORMA
+======================================================================
+
+AgentPRO musi być projektowany dla powieści 100k–200k+ słów oraz serii/sag wielotomowych.
+
+Architektura pamięci i kontroli nie może zakładać, że cały rękopis mieści się w jednym promptcie.
+
+Analiza długiej formy jest hierarchiczna.
+
+======================================================================
+9. HIERARCHIA NARRACYJNA
+======================================================================
+
+Dla powieści obowiązuje model:
+
+SERIES
+→ VOLUME / BOOK
+→ ACT
+→ SEQUENCE
+→ CHAPTER
+→ SCENE.
+
+Struktura narracyjna jest danymi systemu, nie tylko tekstem konspektu.
+
+======================================================================
+10. SERIES CANON I VOLUME CANON
+======================================================================
+
+Seria może posiadać własny Series Canon oraz Series Memory.
+
+Tom/książka posiada własny Book/Volume Canon i Book Bible.
+
+Book Canon nie może cicho naruszać Series Canon.
+
+Zmiana wspólnej prawdy serii wymaga kontrolowanej decyzji i analizy wpływu.
+
+======================================================================
+11. BOOK BIBLE
+======================================================================
+
+Każdy projekt powieściowy musi posiadać book_bible.json.
+
+Book Bible jest obowiązkowym kontraktem projektu.
+
+Nie wolno zapisać produkcyjnego rozdziału bez ważnego Book Bible i walidacji Kanonu.
+
+Book Bible nie jest jedyną pamięcią książki.
+
+======================================================================
+12. ARTEFAKT ROZDZIAŁU
+======================================================================
+
+Każdy rozdział produkcyjny jest zapisywany jako wersjonowany artefakt chapter_XXX.json.
+
+Rozdział musi mieć identyfikowalne pochodzenie, wersję, parent version, źródła kontekstu, model, rolę, status jakości i hash.
+
+Nie wolno cicho nadpisywać zaakceptowanej wersji.
+
+======================================================================
+13. STABILNE TOŻSAMOŚCI ENCJI
+======================================================================
+
+Kluczowe encje mają trwałe ID niezależne od nazw.
+
+Zmiana nazwy postaci, miejsca, organizacji lub innej encji nie może niszczyć jej relacji i historii.
+
+======================================================================
+14. LLM NIE JEST PAMIĘCIĄ
+======================================================================
+
+LLM nie jest pamięcią projektu.
+
+Pamięć znajduje się w trwałym, audytowalnym stanie AgentPRO.
+
+Model otrzymuje wyłącznie kontekst przygotowany dla konkretnego zadania.
+
+======================================================================
+15. PAMIĘĆ HIERARCHICZNA
+======================================================================
+
+AgentPRO utrzymuje pamięć na poziomie odpowiednim do skali:
+- scena,
+- rozdział,
+- sekwencja,
+- akt,
+- książka,
+- seria.
+
+Po zamknięciu tomu system może tworzyć trwały snapshot stanu potrzebny następnym tomom.
+
+======================================================================
+16. KANON NAD GENERACJĄ
+======================================================================
+
+Kanon ma pierwszeństwo przed generacją.
+
+Model nie może stać się źródłem prawdy tylko dlatego, że coś wygenerował.
+
+Nowa informacja staje się trwałą prawdą dopiero po przejściu właściwego procesu akceptacji i zapisu.
+
+======================================================================
+17. WALIDACJA PRZED ZAPISEM
+======================================================================
+
+Nie wolno pisać i utrwalać produkcyjnego rozdziału bez walidacji obowiązującego Kanonu.
+
+Jeżeli tekst narusza Kanon, nie może zostać zaakceptowany jako poprawny artefakt końcowy.
+
+======================================================================
+18. FROZEN FACT
+======================================================================
+
+frozen oznacza ochronę integralności kanonicznej.
+
+frozen=true oznacza: nie wolno automatycznie zmienić tego elementu bez formalnego procesu zmiany Kanonu.
+
+frozen nie oznacza: wklejaj ten fakt do każdego promptu.
+
+======================================================================
+19. AUTHOR_LOCKED
+======================================================================
+
+author_locked oznacza blokadę nałożoną przez użytkownika.
+
+Element author_locked nie może zostać zmieniony bez zgody użytkownika.
+
+frozen i author_locked są niezależnymi osiami ochrony.
+
+======================================================================
+20. ZMIANA KANONU
+======================================================================
+
+Zmiana chronionego Kanonu wymaga co najmniej:
+
+CHANGE PROPOSAL
+→ IMPACT ANALYSIS
+→ USER APPROVAL
+→ VERSIONED CHANGE
+→ INVALIDATION / REBUILD danych pochodnych
+→ AUDIT.
+
+======================================================================
+21. LOCK TECHNICZNY
+======================================================================
+
+PROJECT / BOOK / RUN LOCK jest mechanizmem technicznym i nie jest tym samym co frozen ani author_locked.
+
+Konflikt locków blokujący integralność zapisu jest błędem krytycznym.
+
+======================================================================
+22. WIEDZA POSTACI
+======================================================================
+
+AgentPRO musi wiedzieć nie tylko kim jest postać, ale również:
+- co wie,
+- czego nie wie,
+- w co wierzy,
+- co podejrzewa,
+- kiedy uzyskała informację,
+- kiedy informacja przestała być prawdziwa.
+
+======================================================================
+23. WIEDZA CZYTELNIKA
+======================================================================
+
+System śledzi stan wiedzy czytelnika niezależnie od stanu wiedzy postaci.
+
+Reveal, twist i payoff nie mogą być kontrolowane wyłącznie przez pamięć modelu.
+
+======================================================================
+24. CHARAKTER I STAN POSTACI
+======================================================================
+
+Ważna postać ma trwały profil oraz wersjonowany stan.
+
+Profil obejmuje tożsamość, biografię, wygląd, psychologię, reakcje, historię, cele, relacje, wiedzę i bieżący stan.
+
+======================================================================
+25. GŁOS POSTACI
+======================================================================
+
+Ważna postać może posiadać osobny VoiceProfile.
+
+Głos postaci jest profilem zachowania językowego, nie pojedynczą powtarzaną frazą.
+
+Profil może zależeć od rozmówcy, sytuacji i stanu emocjonalnego.
+
+======================================================================
+26. RELACJE
+======================================================================
+
+Relacje postaci są wersjonowanym stanem w czasie.
+
+System ma móc ustalić, jaka relacja obowiązywała w określonej scenie/tomie.
+
+======================================================================
+27. THREADS / SETUP / PAYOFF
+======================================================================
+
+AgentPRO śledzi aktywne wątki, otwarcia, progresję, zamknięcia, setupy i payoffy.
+
+Wielotomowe wątki mogą należeć do Series Scope.
+
+======================================================================
+28. CAUSALITY
+======================================================================
+
+System musi pozwalać kontrolować zależności przyczynowo-skutkowe.
+
+Zmiana faktu, wydarzenia lub decyzji fabularnej może wymagać analizy wpływu na późniejsze sceny i artefakty.
+
+======================================================================
+29. SCENE CONTRACT
+======================================================================
+
+Scena jest kontrolowanym kontraktem narracyjnym, zawierającym cel, uczestników, POV, miejsce, czas, konflikt, stawkę, outcome, zmianę stanu oraz istotne wymagania kanoniczne.
+
+======================================================================
+30. MIEJSCE I TRASA
+======================================================================
+
+Miejsce jest encją.
+
+Trasa jest encją.
+
+Fizyczna wiarygodność ruchu, odległości, czasu i logistyki może podlegać walidacji.
+
+======================================================================
+31. REALNE I FIKCYJNE
+======================================================================
+
+System rozróżnia fakty realne, niezweryfikowane, projektowo-kanoniczne, fikcyjne oraz fikcyjne nakładki na rzeczywisty świat.
+
+Fikcja świadoma nie może być automatycznie traktowana jako błąd researchu.
+
+======================================================================
+32. RESEARCH JAKO PIERWSZORZĘDNA WARSTWA
+======================================================================
+
+Research jest trwałym, audytowalnym procesem.
+
+Minimalny przepływ:
+
+SOURCE
+→ CLAIM
+→ VERIFY
+→ DECISION
+→ opcjonalnie CANON.
+
+Research nie staje się automatycznie Kanonem.
+
+======================================================================
+33. PROVENANCE
+======================================================================
+
+Każdy istotny fakt, claim, decyzja, ocena i artefakt powinien mieć możliwe do odtworzenia pochodzenie.
+
+System musi wiedzieć skąd dana informacja pochodzi i jaka wersja źródła ją ustanowiła.
+
+======================================================================
+34. TERMINOLOGIA
+======================================================================
+
+AgentPRO może prowadzić semantyczny rejestr terminów, definicji oraz polityki prezentacji: inline, footnote, endnote, glossary, none.
+
+Decyzja semantyczna jest oddzielona od fizycznego składu strony.
+
+======================================================================
+35. STYLE PROFILE
+======================================================================
+
+Styl książki jest wersjonowanym profilem projektu.
+
+System może posiadać style funkcjonalne dla różnych zadań i warstw tekstu.
+
+Styl nie jest utożsamiany z jedną nazwą autora ani prostym promptem.
+
+======================================================================
+36. REFERENCJE AUTORSKIE
+======================================================================
+
+Jeżeli styl korzysta z inspiracji znanymi autorami, AgentPRO przechowuje i stosuje abstrakcyjne cechy warsztatowe, a nie polecenie kopiowania rozpoznawalnego głosu konkretnego żyjącego autora.
+
+======================================================================
+37. NATURALNOŚĆ TEKSTU
+======================================================================
+
+Celem jest naturalna, literacka proza wysokiej jakości.
+
+AgentPRO nie jest systemem do obchodzenia detektorów AI.
+
+Ocena naturalności służy jakości literackiej, nie ukrywaniu pochodzenia tekstu.
+
+======================================================================
+38. MODE / ROLE / PRESET
+======================================================================
+
+MODE, ROLE i PRESET są trzema różnymi pojęciami.
+
+MODE = rodzaj operacji.
+ROLE = odpowiedzialność wykonawcza.
+PRESET = orkiestracja kroków.
+
+Nie wolno ich scalać w jeden parametr o zmiennym znaczeniu.
+
+======================================================================
+39. ROLA NIE JEST MODELEM
+======================================================================
+
+Rola jest funkcją systemową.
+
+Model jest wymiennym wykonawcą wybranym przez Model Router.
+
+AgentPRO nie może być trwale zależny od jednego providera/modelu.
+
+======================================================================
+40. MODEL ROUTER
+======================================================================
+
+System rozróżnia requested_model i effective_model.
+
+Audyt zapisuje model rzeczywiście użyty.
+
+System nie może raportować użytkownikowi modelu innego niż faktycznie użyty.
+
+======================================================================
+41. PARAMETRY MODELU
+======================================================================
+
+Dla wywołań mających znaczenie dla audytu system zapisuje efektywne parametry istotne dla wyniku, w zakresie wspieranym przez providera/model.
+
+Może to obejmować temperature, top_p, seed, reasoning effort i inne parametry polityki.
+
+======================================================================
+42. EMBEDDING / SEMANTIC RETRIEVAL PROVENANCE
+======================================================================
+
+Jeżeli system używa embeddingów lub innego retrievalu semantycznego, identyfikacja modelu/wersji indeksu musi być audytowalna i uwzględniana w polityce unieważniania danych pochodnych.
+
+======================================================================
+43. CONTEXT BUILDER
+======================================================================
+
+Przed istotnym wywołaniem modelu AgentPRO buduje kontrolowany ContextPackage.
+
+Model nie pobiera samowolnie całej pamięci projektu.
+
+Context Builder zna budżet kontekstu przed retrievalem.
+
+======================================================================
+44. CONTEXT PROFILE PER ROLE
+======================================================================
+
+Każda rola posiada własny profil kontekstu.
+
+Pisarz, Krytyk, Strażnik Ciągłości i Badacz nie muszą otrzymywać tych samych danych.
+
+======================================================================
+45. MUST_INCLUDE
+======================================================================
+
+Elementy oznaczone must_include muszą wejść do odpowiedniego ContextPackage.
+
+Krytyczny Kanon nie może być cicho obcięty z powodu overflow.
+
+======================================================================
+46. RELEVANCJA ZAMROŻONYCH FAKTÓW
+======================================================================
+
+frozen/author_locked fact trafia do kontekstu, jeżeli jest relewantny dla zadania albo wymuszony polityką.
+
+Ochrona faktu w pamięci nie oznacza automatycznej obecności w każdym promptcie.
+
+======================================================================
+47. RECENCY
+======================================================================
+
+Recency ma znaczenie narracyjne, nie numeryczne.
+
+Nie wolno wyznaczać ważności na podstawie samego ID encji.
+
+Stary fakt może pozostać krytycznie ważny, jeżeli jest związany grafowo, fabularnie lub przez payoff.
+
+======================================================================
+48. SPRZECZNOŚCI W KONTEKŚCIE
+======================================================================
+
+Nierozstrzygnięta sprzeczność nie może zostać ukryta przez ranking.
+
+Jeżeli jest relewantna, ContextPackage zawiera ostrzeżenie i reprezentuje konflikt zgodnie z polityką.
+
+======================================================================
+49. CONTEXT OVERFLOW
+======================================================================
+
+Gdy kontekst krytyczny przekracza budżet, system nie może cicho usuwać obowiązkowej prawdy.
+
+Może kolejno redukować dane nieobowiązkowe, stosować reprezentacje strukturalne/kompresję bez utraty sensu, dzielić zadanie, wykonywać analizę pomocniczą lub użyć większego modelu zgodnie z polityką.
+
+Nierozwiązywalny konflikt budżetu jest eskalowany.
+
+======================================================================
+50. CONTEXT TRACE
+======================================================================
+
+ContextPackage jest audytowalny.
+
+System zapisuje dlaczego element został włączony, jaka reprezentacja została użyta i jaki był koszt kontekstu.
+
+Pełny trace odrzuconych kandydatów może być diagnostyczny, nie musi być zawsze trwałym masowym artefaktem.
+
+======================================================================
+51. CONTEXT HASH
+======================================================================
+
+context_hash musi zależeć od treści i wersji elementów kontekstu, ich reprezentacji, polityki, Kanonu, Book Bible, stylu oraz innych elementów mających wpływ na użyty kontekst.
+
+Hashowanie musi być stabilne dla tej samej kanonicznej reprezentacji danych.
+
+======================================================================
+52. RETRY TECHNICZNY
+======================================================================
+
+Techniczny retry tego samego kroku nie jest nową próbą twórczą.
+
+Powinien używać tego samego zapisanego ContextPackage, jeżeli retry dotyczy tej samej logicznej operacji.
+
+======================================================================
+53. REEVALUATION
+======================================================================
+
+PONÓW TECHNICZNIE i OCEŃ PONOWNIE to różne operacje.
+
+Reevaluation tworzy nową ocenę i nowe evaluation_id.
+
+======================================================================
+54. QUALITY GATE
+======================================================================
+
+Bramka jakości ma trzy decyzje:
+
+ACCEPT
+REVISE
+REJECT.
+
+Te decyzje nie są tym samym co status technicznego wykonania kroku.
+
+======================================================================
+55. QUALITY ≠ EXECUTION STATUS
+======================================================================
+
+Krok może wykonać się technicznie poprawnie i jednocześnie otrzymać REVISE albo REJECT.
+
+System przechowuje te dwa wymiary oddzielnie.
+
+======================================================================
+56. PĘTLA POPRAWY
+======================================================================
+
+REVISE prowadzi do ukierunkowanej poprawy opartej na konkretnych wykrytych problemach.
+
+System nie powinien bez potrzeby przepisywać całego tekstu, jeżeli wymagane są lokalne poprawki.
+
+======================================================================
+57. EVALUATION RECORD
+======================================================================
+
+Ocena jakości jest wersjonowanym rekordem z kryteriami, kontekstem, modelem, parametrami, decyzją i uzasadnieniem.
+
+======================================================================
+58. EVALUATION CACHE
+======================================================================
+
+System może cache’ować ukończoną ocenę na podstawie kompletnego klucza zależnego od artefaktu, kryteriów, promptu, modelu i kontekstu.
+
+Cache nie może maskować świadomej operacji OCEŃ PONOWNIE.
+
+======================================================================
+59. QA SCENY
+======================================================================
+
+Scena może być oceniana pod kątem celu, konfliktu, stawki, zmiany stanu, spójności, stylu, wiedzy, miejsca, czasu i skutku narracyjnego.
+
+======================================================================
+60. QA ROZDZIAŁU
+======================================================================
+
+Rozdział przechodzi kontrolę struktury, spójności, stylu, głosów, wiedzy, Kanonu i jakości jako całość.
+
+======================================================================
+61. QA KSIĄŻKI
+======================================================================
+
+Po ukończeniu rozdziałów system wykonuje analizę całej książki hierarchicznie, obejmując m.in. strukturę, causality, pacing, tension, arcs, continuity, knowledge states, reader knowledge, threads, setups/payoffs, styl, głosy, redundancję, research i final quality.
+
+======================================================================
+62. CANDIDATE MASTER
+======================================================================
+
+Wersja spełniająca wewnętrzne kryteria AgentPRO może zostać Candidate Master.
+
+Candidate Master nie jest jeszcze Source Masterem.
+
+======================================================================
+63. ZEWNĘTRZNI KRYTYCY
+======================================================================
+
+Zewnętrzny niezależny krytyk/evaluator nie jest częścią AgentPRO.
+
+Może oceniać eksportowaną książkę z zewnątrz, ale nie uzyskuje automatycznie prawa do zmiany Kanonu lub pamięci AgentPRO.
+
+======================================================================
+64. SOURCE MASTER
+======================================================================
+
+Source Master powstaje tylko po jawnej finalnej akceptacji użytkownika.
+
+To użytkownik podejmuje decyzję, że dana wersja źródłowa jest Masterem do tłumaczeń i publikacji.
+
+======================================================================
+65. TŁUMACZENIE TYLKO JAWNE
+======================================================================
+
+Tłumaczenie nie startuje automatycznie.
+
+Rozpoczyna się dopiero na polecenie użytkownika i po istnieniu właściwego Source Mastera.
+
+======================================================================
+66. NIEZALEŻNE GAŁĘZIE JĘZYKOWE
+======================================================================
+
+en-US i en-GB są niezależnymi bezpośrednimi gałęziami od Source Mastera.
+
+Jedna nie powinna być domyślnie tłumaczeniem drugiej.
+
+======================================================================
+67. TRANSLATION BIBLE
+======================================================================
+
+Każda gałąź tłumaczeniowa może posiadać Translation Bible zawierającą decyzje terminologiczne, nazewnicze, stylistyczne i lokalizacyjne.
+
+======================================================================
+68. NATURALNA TRANSLACJA LITERACKA
+======================================================================
+
+Tekst docelowy ma brzmieć jak naturalna literatura w języku docelowym, przy zachowaniu Kanonu, intencji, tonu i funkcji narracyjnej Source Mastera.
+
+======================================================================
+69. HUMAN EDIT
+======================================================================
+
+Ręczna zmiana użytkownika jest pierwszorzędną wersją artefaktu.
+
+Po ręcznej zmianie system ponownie waliduje wymagane zależności: Kanon, pamięć, wiedzę, styl, jakość i inne dotknięte warstwy.
+
+======================================================================
+70. PROVENANCE WERSJI
+======================================================================
+
+Każda trwała wersja zna swoje pochodzenie: parent, powód zmiany, rolę, model, człowieka, ocenę, Kanon i kontekst tam, gdzie dotyczy.
+
+======================================================================
+71. RUN / STEP / ARTIFACT
+======================================================================
+
+Podstawowy ślad wykonawczy pozostaje:
+
+RUN
+→ STEPS
+→ ARTIFACTS.
+
+Każdy z tych poziomów musi być audytowalny.
+
+======================================================================
+72. PEŁNY AUDYT
+======================================================================
+
+Audyt umożliwia odtworzenie:
+- kto/co uruchomiło operację,
+- project_id/book_id/run_id/step_id,
+- źródeł prawdy,
+- wersji Kanonu,
+- Book Bible,
+- kontekstu,
+- modelu i efektywnych parametrów,
+- wejścia,
+- decyzji,
+- wyniku,
+- artefaktów,
+- zależności i zmian trwałego stanu.
+
+======================================================================
+73. RESUME
+======================================================================
+
+Resume jest dozwolone tylko w kompatybilnym kontekście tego samego projektu/książki/runu/audytu i zgodnej prawdy projektowej.
+
+Cross-project resume jest zabronione.
+
+======================================================================
+74. FORK
+======================================================================
+
+Fork/clone jest nową jawnie identyfikowaną linią stanu.
+
+Fork nie może udawać kontynuacji tego samego runu.
+
+======================================================================
+75. IDEMPOTENCE
+======================================================================
+
+Operacje mogące być ponawiane po przerwaniu muszą być projektowane tak, aby nie tworzyć cichych duplikatów ani podwójnych zmian stanu.
+
+======================================================================
+76. ATOMICZNOŚĆ I DURABILITY
+======================================================================
+
+Trwały zapis nie może pozostawiać systemu w pozornie zaakceptowanym, ale częściowo zapisanym stanie bez mechanizmu wykrycia i recovery.
+
+======================================================================
+77. STORAGE JEST WEWNĘTRZNY
+======================================================================
+
+Ścieżki i fizyczny storage są detalem infrastruktury.
+
+Logika domenowa nie może być na stałe związana z rozsianymi bezpośrednimi ścieżkami plikowymi lub SQL.
+
+======================================================================
+78. REPOSITORY LAYER
+======================================================================
+
+Dostęp do trwałego stanu domenowego jest abstrahowany przez repozytoria związane z właściwym Project/Series Context.
+
+Repository Layer ma umożliwić zmianę fizycznej technologii bez przebudowy reguł domenowych.
+
+======================================================================
+79. STORAGE PER PROJECT
+======================================================================
+
+Zgodnie z ADR-0001 niezależna książka docelowo posiada własny project.db.
+
+Dane wielu niezależnych książek nie mogą polegać na jednym wspólnym domain DB jako jedynym mechanizmie izolacji.
+
+======================================================================
+80. SERIES STORAGE
+======================================================================
+
+Seria może posiadać własny series.db dla jawnie współdzielonego Series Canon/Memory.
+
+Dostęp do Series Scope wymaga potwierdzonego członkostwa projektu w serii.
+
+======================================================================
+81. SYSTEM STORAGE
+======================================================================
+
+AgentPRO może posiadać mały agentpro_system.db dla rejestru aplikacji, konfiguracji i technicznego schedulera.
+
+Nie jest to magazyn literackiej pamięci wszystkich książek.
+
+======================================================================
+82. CROSS-STORE CONSISTENCY
+======================================================================
+
+project.db + series.db + artefakty plikowe nie są magicznie jedną transakcją SQLite.
+
+Architektura musi posiadać jawny protokół commit/recovery/idempotency dla operacji przekraczających granice storage.
+
+======================================================================
+83. MIGRACJE
+======================================================================
+
+Zmiany schematu i storage muszą być wersjonowane i migracyjne.
+
+Nie wolno niszczyć istniejących projektów w celu uproszczenia implementacji.
+
+======================================================================
+84. SAFE STOP / CRASH RECOVERY
+======================================================================
+
+System musi bezpiecznie zatrzymywać i wznawiać pracę po przerwaniu, zachowując audyt i integralność stanu.
+
+======================================================================
+85. DERIVED INDEXES
+======================================================================
+
+FTS, embeddingi, cache retrievalu, pomocnicze summaries i inne indeksy pochodne nie są źródłem prawdy.
+
+Muszą być możliwe do odbudowania lub unieważnienia.
+
+======================================================================
+86. GRAPH
+======================================================================
+
+Graf przechowuje zależności pomiędzy encjami i wspiera continuity, retrieval oraz impact analysis.
+
+Pierwsza implementacja nie wymaga osobnego serwera grafowego.
+
+======================================================================
+87. IMPACT ANALYSIS
+======================================================================
+
+Przed zmianą ważnego elementu chronionego system może wyliczać wpływ na fakty, relacje, sceny, wątki, wiedzę, timeline i artefakty zależne.
+
+======================================================================
+88. PROJECT SCOPE
+======================================================================
+
+PROJECT scope jest domyślną granicą danych książki.
+
+Repozytorium projektu powinno być związane z jednym ProjectStorageContext, zamiast przyjmować arbitralny project_id przy każdej operacji.
+
+======================================================================
+89. SERIES SCOPE
+======================================================================
+
+SERIES scope jest jawnie współdzielonym wyjątkiem od pełnej izolacji książek.
+
+Dostęp do danych serii nie może być globalny.
+
+======================================================================
+90. SKALOWANIE DO 7 PROJEKTÓW
+======================================================================
+
+Architektura docelowo obsługuje do 7 aktywnych projektów książkowych bez przebudowy fundamentów.
+
+Każdy run nadal należy do jednego projektu.
+
+Równoległość nie znosi izolacji.
+
+======================================================================
+91. SCHEDULER
+======================================================================
+
+Przyszły Scheduler może zarządzać kolejką, priorytetami, limitami providerów, stop/resume i fairness.
+
+Scheduler nie jest właścicielem Kanonu, pamięci ani jakości.
+
+======================================================================
+92. TESTY SĄ DOWODEM, NIE PRAWDĄ
+======================================================================
+
+Testy są dowodem zachowania określonego kontraktu, ale nie mogą redefiniować Master Canonu.
+
+Przechodzący test nie dowodzi DONE, jeżeli produkcyjna ścieżka używa innego kodu lub omija wymaganie.
+
+======================================================================
+93. TEST ISOLATION
+======================================================================
+
+Testy nie mogą modyfikować realnego storage użytkownika.
+
+Każdy test wymagający storage pracuje na izolowanym środowisku testowym.
+
+======================================================================
+94. EVIDENCE DISCIPLINE
+======================================================================
+
+Twierdzenia o aktualnym stanie implementacji oznacza się jako:
+[DOWÓD]
+[SPECYFIKACJA]
+[ZAŁOŻENIE].
+
+Założenie nie może być prezentowane jako stan faktyczny.
+
+======================================================================
+95. USER APPROVAL
+======================================================================
+
+Użytkownik zachowuje finalne prawo do decyzji twórczych i zatwierdzenia Source Mastera.
+
+System ma automatyzować pracę, ale nie odbiera użytkownikowi kontroli nad zamkniętymi decyzjami.
+
+======================================================================
+96. BRAK CICHYCH MUTACJI
+======================================================================
+
+Żadna rola, UI ani model nie może cicho zmienić chronionej prawdy projektu.
+
+Każda trwała mutacja musi przejść przez właściwy punkt egzekwowania reguł domenowych.
+
+======================================================================
+97. DOMAIN MUTATION GUARD
+======================================================================
+
+Ochrona frozen i author_locked jest egzekwowana centralnie przez Domain Mutation Guard lub równoważny pojedynczy mechanizm domenowy.
+
+Nie wolno pozostawić tej reguły do dobrowolnego przestrzegania przez każdą rolę osobno.
+
+======================================================================
+98. PRIORYTET INTEGRALNOŚCI
+======================================================================
+
+W razie konfliktu priorytety są następujące:
+
+integralność projektu
+→ tożsamość projektu
+→ Kanon
+→ pamięć
+→ izolacja
+→ recoverability
+→ audyt
+→ poprawna orkiestracja
+→ jakość książki
+→ funkcjonalność
+→ UI
+→ szybkość
+→ koszt.
+
+======================================================================
+99. JAKOŚĆ LITERACKA I RYNKOWA
+======================================================================
+
+Celem końcowym nie jest jedynie technicznie poprawny pipeline.
+
+AgentPRO ma wspierać tworzenie książek o wysokiej wartości literackiej i rynkowej.
+
+======================================================================
+100. ARCHITEKTURA NIE JEST KANONEM
+======================================================================
+
+Master Canon określa WHAT.
+
+ARCHITEKTURA_AGENTPRO określa HOW.
+
+Architektura nie może zmieniać obowiązujących zasad Master Canonu.
+
+======================================================================
+101. ROADMAPA NIE JEST KANONEM
+======================================================================
+
+ROADMAPA_AGENTPRO określa NOW / NEXT / LATER / TARGET.
+
+Roadmapa może zmieniać kolejność implementacji bez zmiany tożsamości i twardych reguł systemu.
+
+======================================================================
+102. AKTUALNY STAN NIE JEST DOCELOWYM OGRANICZENIEM
+======================================================================
+
+To, że obecny kod realizuje tylko część architektury, nie oznacza, że część brakująca przestaje być wymaganiem docelowym.
+
+Jednocześnie element przyszły nie jest automatycznie aktualnym blockerem, jeżeli Roadmapa świadomie umieszcza go później.
+
+======================================================================
+103. GUIDE MODE
+======================================================================
+
+Guide Mode może istnieć jako odrębny tor produkcyjny.
+
+Jego rozwój jest odłożony do czasu dojrzałości Novel Mode.
+
+Guide Mode nie może mieszać pamięci, Kanonu ani stanu z Novel Mode.
+
+======================================================================
+104. ZEWNĘTRZNY IMPORT
+======================================================================
+
+Dane zewnętrzne, pliki użytkownika i research są importowane jako jawne źródła z provenance.
+
+Import nie staje się automatycznie kanoniczną prawdą.
+
+======================================================================
+105. AUDYTOWALNA DECYZJA AUTORA
+======================================================================
+
+Decyzje użytkownika mające znaczenie dla fabuły, Kanonu, stylu, researchu i publikacji mogą być utrwalane jako wersjonowane AuthorDecision.
+
+======================================================================
+106. SPRZECZNOŚĆ NIE JEST UKRYWANA
+======================================================================
+
+Jeżeli system wykryje sprzeczne źródła lub fakty, rejestruje konflikt i jego status.
+
+Nie wolno losowo wybrać jednej wersji i cicho usunąć drugiej.
+
+======================================================================
+107. DEFINICJA PRODUKCYJNEGO DONE
+======================================================================
+
+Element jest produkcyjnie DONE dopiero, gdy:
+- istnieje w aktywnym P20.x,
+- realizuje właściwy kontrakt,
+- jest project-aware,
+- respektuje Kanon i izolację,
+- posiada wymagany audyt,
+- posiada idempotencję/recovery tam, gdzie wymagane,
+- posiada odpowiednie testy,
+- nie zależy od przypadkowej ścieżki legacy.
+
+Sama obecność pliku, klasy, endpointu lub testu nie oznacza DONE.
+
+======================================================================
+108. REGUŁA KOŃCOWA
+======================================================================
+
+AGENTPRO JEST APLIKACJĄ-AUTOREM, NIE GENERATOREM TREŚCI.
+
+P20.x JEST JEDYNYM SILNIKIEM PRODUKCYJNYM.
+
+LLM NIE JEST PAMIĘCIĄ.
+
+KANON I STRUKTURALNY STAN SĄ ŹRÓDŁEM PRAWDY.
+
+BOOK BIBLE JEST OBOWIĄZKOWY.
+
+NIE WOLNO PISAĆ I ZAPISYWAĆ PRODUKCYJNEGO ROZDZIAŁU BEZ WALIDACJI KANONU.
+
+KAŻDY ROZDZIAŁ MA WERSJONOWANY chapter_XXX.json.
+
+QUALITY = ACCEPT / REVISE / REJECT.
+
+TECHNICZNY RETRY ≠ REEVALUATION.
+
+SOURCE MASTER POWSTAJE TYLKO PO AKCEPTACJI UŻYTKOWNIKA.
+
+TŁUMACZENIE JEST JAWNĄ OPERACJĄ OD SOURCE MASTER.
+
+UI JEST TYLKO WARSTWĄ OPERATORSKĄ.
+
+ZERO PRZECIEKÓW PAMIĘCI MIĘDZY NIEZALEŻNYMI PROJEKTAMI.
+
+PEŁNY RUN / STEP / ARTIFACT / CANON / MEMORY / MODEL AUDIT JEST CZĘŚCIĄ KONTRAKTU.

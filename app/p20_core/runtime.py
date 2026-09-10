@@ -176,6 +176,49 @@ def build_request_payload(req: AgentStepRequest) -> Dict[str, Any]:
     return payload
 
 
+def _request_has_explicit_modes(req: AgentStepRequest, payload: Dict[str, Any]) -> bool:
+    if isinstance(payload.get("modes"), list) and payload["modes"]:
+        return True
+    if req.modes:
+        return True
+    if payload.get("mode") or req.mode:
+        return True
+    return False
+
+
+def _preset_doc(preset_id: str) -> Dict[str, Any]:
+    preset_key = str(preset_id or "").upper().strip()
+    presets_data = load_presets()
+    presets = presets_data.get("presets") if isinstance(presets_data, dict) else presets_data
+    if isinstance(presets, list):
+        for item in presets:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or item.get("preset_id") or item.get("name") or "").upper().strip()
+            if item_id == preset_key:
+                return item
+    raise ValueError(f"Unknown preset: {preset_key}")
+
+
+def _preset_modes(preset_id: str) -> List[str]:
+    doc = _preset_doc(preset_id)
+    modes = doc.get("modes")
+    if isinstance(modes, list) and modes:
+        return [str(x).upper().strip() for x in modes if str(x).strip()]
+
+    steps = doc.get("steps")
+    if isinstance(steps, list):
+        step_modes = [
+            str(item.get("mode")).upper().strip()
+            for item in steps
+            if isinstance(item, dict) and item.get("mode")
+        ]
+        if step_modes:
+            return step_modes
+
+    return ["WRITE"]
+
+
 def resolve_modes(req: AgentStepRequest, payload: Dict[str, Any]) -> List[str]:
     if isinstance(payload.get("modes"), list) and payload["modes"]:
         return [str(x).upper() for x in payload["modes"]]
@@ -188,8 +231,8 @@ def resolve_modes(req: AgentStepRequest, payload: Dict[str, Any]) -> List[str]:
         return [str(mode).upper()]
 
     preset = str(payload.get("preset") or req.preset or "").upper()
-    if preset in {"DEFAULT", "PIPELINE_DRAFT", "ORCH_STANDARD", "WRITING_STANDARD", "DRAFT_EDIT_QUALITY"}:
-        return ["WRITE"]
+    if preset:
+        return _preset_modes(preset)
 
     return ["WRITE"]
 
@@ -259,6 +302,9 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
     payload["run_id"] = run_id
 
     modes = resolve_modes(req, payload)
+    preset_id = str(payload.get("preset") or req.preset or "").upper().strip()
+    preset_doc = _preset_doc(preset_id) if preset_id else {}
+    preset_only_execution = bool(preset_id) and not _request_has_explicit_modes(req, payload)
     scene_ref = str(payload.get("scene_ref") or payload.get("scene") or "").strip() or None
     is_write = "WRITE" in modes
     book_bible_binding: Dict[str, Any] = {}
@@ -396,10 +442,11 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                 "run_state": state,
             }
 
+        stub_modes = None if preset_only_execution else modes
         stub_out = execute_stub(
             run_id=run_id,
             book_id=book_id,
-            modes=modes,
+            modes=stub_modes,
             payload=payload,
             steps=payload.get("steps"),
         )
@@ -542,7 +589,24 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
         else:
             quality_gate_reasons = [] if decision == "ACCEPT" else ["post_write_canon_check_failed"]
 
-        return {
+        stop_fields: Dict[str, Any] = {}
+        if (
+            quality_decision
+            and quality_decision != "ACCEPT"
+            and isinstance(preset_doc, dict)
+            and bool(preset_doc.get("stop_on_quality_non_accept"))
+        ):
+            stop_fields = {
+                "stopped": True,
+                "stop_reason": "QUALITY_NON_ACCEPT",
+                "stop": {
+                    "mode": "QUALITY",
+                    "decision": quality_decision,
+                    "blocked": True,
+                },
+            }
+
+        response = {
             "ok": execution_ok,
             "status": "ok" if execution_ok else "error",
             "run_id": run_id,
@@ -565,6 +629,8 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             "run_state": state,
             "canon_memory": canon_memory,
         }
+        response.update(stop_fields)
+        return response
     finally:
         if run_lock_acquired:
             release_run_lock(run_id)

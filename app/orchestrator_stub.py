@@ -291,6 +291,36 @@ def _runtime_override_for(payload: Dict[str, Any], mode_id: str) -> Dict[str, An
     return cand if isinstance(cand, dict) else {}
 
 
+def _quality_decision(result: Dict[str, Any]) -> str:
+    payload = result.get("payload") if isinstance(result, dict) else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return str(payload.get("DECISION") or payload.get("decision") or "").upper().strip()
+
+
+def _quality_retry_steps(preset_doc: Dict[str, Any], decision: str, attempts_done: int) -> List[StepItem]:
+    retry = preset_doc.get("quality_retry") if isinstance(preset_doc, dict) else None
+    if not isinstance(retry, dict):
+        return []
+
+    try:
+        max_attempts = int(retry.get("max_attempts") or 0)
+    except Exception:
+        max_attempts = 0
+    if attempts_done >= max_attempts:
+        return []
+
+    retry_on = retry.get("on")
+    if not isinstance(retry_on, list) or not retry_on:
+        retry_on = ["REVISE", "REJECT"]
+    retry_on = [str(x).upper().strip() for x in retry_on]
+    if str(decision).upper().strip() not in retry_on:
+        return []
+
+    edit_mode = str(retry.get("edit_mode") or "EDIT").upper().strip() or "EDIT"
+    return [{"mode": edit_mode}, {"mode": "QUALITY"}]
+
+
 def _normalize_execute_call(*args, **kwargs) -> Tuple[str, str, List[str], Dict[str, Any], Optional[List[Any]]]:
     run_id = kwargs.get("run_id")
     book_id = kwargs.get("book_id")
@@ -345,6 +375,7 @@ def execute_stub(*args, **kwargs) -> List[str]:
         payload = _p15_hardfail_quality_payload(payload2)
 
     preset_id = payload.get("_preset_id") or payload.get("preset")
+    preset_doc = _find_preset_raw(str(preset_id)) if preset_id else None
 
     run_dir = _run_dir(run_id)
     steps_dir = run_dir / "steps"
@@ -362,6 +393,8 @@ def execute_stub(*args, **kwargs) -> List[str]:
     else:
         preset_steps = _preset_steps(str(preset_id)) if preset_id else None
         queue = list(preset_steps) if preset_steps else [{"mode": m} for m in modes]
+
+    quality_retry_attempts = 0
 
     _atomic_write_json(
         steps_dir / "000_SEQUENCE.json",
@@ -393,7 +426,13 @@ def execute_stub(*args, **kwargs) -> List[str]:
             or payload.get("team_id")
             or payload.get("team")
         )
-        team = resolve_team(mode_id, team_override=team_override)
+        try:
+            team = resolve_team(mode_id, team_override=team_override)
+        except ValueError as exc:
+            if preset_id and team_override and str(exc).startswith("TEAM_OVERRIDE_NOT_ALLOWED:"):
+                team = resolve_team(mode_id)
+            else:
+                raise
 
         tool_in: Dict[str, Any] = dict(payload)
         if isinstance(rt_ov.get("payload"), dict):
@@ -482,6 +521,25 @@ def execute_stub(*args, **kwargs) -> List[str]:
 
         _atomic_write_json(step_path, step_doc)
         artifact_paths.append(_public_storage_path(step_path))
+
+        if mode_id == "QUALITY" and isinstance(preset_doc, dict):
+            q_decision = _quality_decision(result)
+            if q_decision and q_decision != "ACCEPT":
+                retry_steps = _quality_retry_steps(preset_doc, q_decision, quality_retry_attempts)
+                if retry_steps:
+                    quality_retry_attempts += 1
+                    queue = list(retry_steps) + queue
+                    continue
+
+                if bool(preset_doc.get("stop_on_quality_non_accept")):
+                    state["stopped"] = True
+                    state["stop_reason"] = "QUALITY_NON_ACCEPT"
+                    state["stop"] = {
+                        "mode": "QUALITY",
+                        "decision": q_decision,
+                        "blocked": True,
+                    }
+                    break
 
     state["last_step"] = step_index
     state["completed_steps"] = step_index
@@ -1516,10 +1574,11 @@ def execute_stub(*args, **kwargs):
         if mid not in _OWNER_ORCH_EXEC_MODES:
             raise ValueError(f"Unknown mode: {mid}")
 
+    prev_modes = None if explicit_modes is None and preset_id else modes_exec
     arts = _owner_orch_prev_execute_stub_20260325(
         run_id=run_id,
         book_id=book_id,
-        modes=modes_exec,
+        modes=prev_modes,
         payload=payload_exec,
         steps=steps,
     )

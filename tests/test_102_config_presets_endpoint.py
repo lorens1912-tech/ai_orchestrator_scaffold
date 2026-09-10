@@ -1,7 +1,9 @@
 import unittest
-import requests
+from fastapi.testclient import TestClient
 
-BASE = "http://127.0.0.1:8001"
+from app.main import app
+
+client = TestClient(app)
 
 
 def _extract_preset_ids(j: dict) -> list:
@@ -26,7 +28,7 @@ def _extract_preset_ids(j: dict) -> list:
 
 class Test102ConfigPresetsEndpoint(unittest.TestCase):
     def test_config_presets_has_orch(self):
-        r = requests.get(f"{BASE}/config/presets", timeout=10)
+        r = client.get("/config/presets")
         self.assertEqual(r.status_code, 200, r.text)
 
         j = r.json()
@@ -38,4 +40,3 @@ class Test102ConfigPresetsEndpoint(unittest.TestCase):
 
         self.assertIn("ORCH_STANDARD", preset_ids, preset_ids)
         self.assertIn("ORCH_STOP_TEST", preset_ids, preset_ids)
-

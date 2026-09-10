@@ -5,6 +5,7 @@ from app.p20_core.runtime import run_agent_step, health_payload, config_validate
 from app.p20_core.contracts import AgentStepRequest
 from app.p20_core.book_bible_contract import BookBibleContractError
 from app.p20_core.canon_rebuild import canon_rebuild_endpoint
+from app.config_registry import load_presets
 
 app = FastAPI()
 
@@ -30,6 +31,25 @@ def health():
 @app.get("/config/validate")
 def config_validate():
     return config_validate_payload()
+
+
+@app.get("/config/presets")
+def config_presets() -> Dict[str, Any]:
+    raw = load_presets()
+    presets = raw.get("presets") if isinstance(raw, dict) else raw
+    if isinstance(raw, dict):
+        preset_ids = list(raw.get("preset_ids") or [])
+        presets_count = int(raw.get("presets_count") or len(preset_ids))
+    else:
+        preset_ids = [str(item.get("id")) for item in presets if isinstance(item, dict) and item.get("id")]
+        presets_count = len(preset_ids)
+    return {
+        "ok": True,
+        "source": "config_registry",
+        "presets": presets,
+        "preset_ids": preset_ids,
+        "presets_count": presets_count,
+    }
 
 
 @app.post("/canon/rebuild")

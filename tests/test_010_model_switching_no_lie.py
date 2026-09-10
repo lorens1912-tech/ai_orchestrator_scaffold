@@ -1,7 +1,8 @@
-import os
-import requests
+from fastapi.testclient import TestClient
 
-BASE = os.getenv("BASE_URL", "http://127.0.0.1:8001")
+from app.main import app
+
+client = TestClient(app)
 
 
 def _post(model: str, prompt: str = "ping", temperature=0.0):
@@ -9,7 +10,7 @@ def _post(model: str, prompt: str = "ping", temperature=0.0):
     if temperature is not None:
         payload["temperature"] = temperature
 
-    r = requests.post(f"{BASE}/debug/model/llm", json=payload, timeout=120)
+    r = client.post("/debug/model/llm", json=payload)
     if r.status_code != 200:
         raise AssertionError(f"HTTP {r.status_code} body={r.text}")
     return r.json(), r.headers
@@ -31,4 +32,3 @@ def test_model_switching_per_request_matches_provider_family():
 
     # dwa requesty pod rząd, bez restartu, dwie różne rodziny
     assert a["provider_model_family"] != b["provider_model_family"]
-

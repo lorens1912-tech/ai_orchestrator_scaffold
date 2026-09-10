@@ -8,8 +8,10 @@ from app.p20_core.canon_rebuild import canon_rebuild_endpoint
 from app.config_registry import load_presets
 from app.canon_check import canon_check
 from app.canon_store import load_canon
+from app.debug_model_router import router as debug_model_router
 
 app = FastAPI()
+app.include_router(debug_model_router)
 
 
 def _agent_input_error_status(exc: ValueError) -> int | None:

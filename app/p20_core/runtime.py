@@ -434,6 +434,8 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
 
         post_report = run_canon_check(output_text, canon_snapshot, scene_ref)
         decision = "REJECT" if canon_blocks(post_report) else "ACCEPT"
+        quality_decision = ""
+        quality_reasons: List[str] = []
 
         # QUALITY override (KANON)
         for _ap in artifact_paths:
@@ -443,7 +445,13 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                     _payload = _doc.get("result", {}).get("payload", {})
                     _qd = str(_payload.get("DECISION") or "").upper()
                     if _qd:
+                        quality_decision = _qd
                         decision = _qd
+                    _raw_reasons = _payload.get("REASONS")
+                    if _raw_reasons is None:
+                        _raw_reasons = _payload.get("REJECT_REASONS")
+                    if isinstance(_raw_reasons, list):
+                        quality_reasons = [str(x) for x in _raw_reasons]
                 except Exception:
                     pass
                 break
@@ -528,9 +536,15 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             project_truth=project_truth_ref,
         )
 
+        execution_ok = decision == "ACCEPT" or bool(quality_decision)
+        if quality_decision and decision != "ACCEPT":
+            quality_gate_reasons = quality_reasons
+        else:
+            quality_gate_reasons = [] if decision == "ACCEPT" else ["post_write_canon_check_failed"]
+
         return {
-            "ok": decision == "ACCEPT",
-            "status": "ok" if decision == "ACCEPT" else "error",
+            "ok": execution_ok,
+            "status": "ok" if execution_ok else "error",
             "run_id": run_id,
             "book_id": book_id,
             "mode_ids": modes,
@@ -539,7 +553,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             "artifact_count": len(artifact_paths),
             "quality_gate": {
                 "decision": decision,
-                "reasons": [] if decision == "ACCEPT" else ["post_write_canon_check_failed"],
+                "reasons": quality_gate_reasons,
             },
             "pre_canon_check": pre_report,
             "post_canon_check": post_report,

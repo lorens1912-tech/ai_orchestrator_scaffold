@@ -1661,6 +1661,107 @@ Dynamiczna wiedza trafia do strukturalnej pamięci.
 
 
 ======================================================================
+44A. STRUCTURED MEMORY EXTRACTION INTEGRITY
+======================================================================
+
+Ekstrakcja pamięci ze sceny jest osobnym procesem integralnościowym.
+
+Obowiązkowy przepływ:
+
+SCENE SOURCE
+→ STRUCTURED EXTRACTION CANDIDATE
+→ VERIFICATION AGAINST SOURCE SCENE
+→ ACCEPT / REVISE / REJECT
+→ COMMIT TO STRUCTURED MEMORY.
+
+Ekstraktor i weryfikator ekstrakcji są logicznie odrębnymi rolami
+lub odrębnymi wywołaniami. Ten sam wynik LLM nie może sam siebie
+zatwierdzić jako pamięć kanoniczną.
+
+Weryfikacja ekstrakcji sprawdza osobno:
+
+PRECISION:
+
+- kandydat nie zawiera faktów,
+- zdarzeń,
+- stanu postaci,
+- zmian relacji,
+- wiedzy,
+- zapowiedzi,
+- spłat,
+- ani innych danych, które nie wynikają ze źródłowej sceny.
+
+COMPLETENESS:
+
+- kandydat nie pomija istotnych faktów,
+- zdarzeń,
+- zmian stanu,
+- zmian wiedzy,
+- zmian relacji,
+- otwarcia lub zamknięcia wątku,
+- setupu,
+- payoffu,
+- ani innych istotnych konsekwencji źródłowej sceny.
+
+Status ekstrakcji pamięci jest niezależny od statusu jakości tekstu:
+
+memory_extraction_status
+!=
+scene_quality_status.
+
+ACCEPT tekstu nie oznacza automatycznie ACCEPT ekstrakcji pamięci.
+
+REJECT ekstrakcji pamięci nie oznacza automatycznie REJECT tekstu
+sceny.
+
+Ekstrakcja pamięci posiada własną pętlę:
+
+ACCEPT
+REVISE
+REJECT.
+
+Pętla ma limit prób. Po przekroczeniu limitu system nie zgaduje
+brakujących danych, tylko eskaluje decyzję do użytkownika.
+
+Mechanizm obejmuje co najmniej:
+
+- FactRecord,
+- KnowledgeEvent,
+- CharacterState,
+- Relationship changes,
+- EventRecord,
+- Thread,
+- Setup,
+- Payoff.
+
+Każdy kandydat pamięci posiada provenance wskazujące dokładną scenę
+lub artifact source, z którego pochodzi.
+
+Dane wygenerowane przez ekstraktor LLM nie mogą automatycznie wejść
+do kanonicznej Structured Memory.
+
+Zestaw powiązanych encji wynikających z jednej sceny jest zatwierdzany
+logicznie jako całość. Nie wolno zatwierdzić tylko wygodnej części
+kandydata, jeżeli pozostała część jest wymagana do zachowania
+spójności sceny.
+
+Commit danych pamięci w obrębie project.db jest atomowy dla
+zaakceptowanego zestawu encji sceny:
+
+ACCEPTED MEMORY ENTITY SET
+→ ATOMIC PROJECT.DB COMMIT.
+
+Nie wolno udawać jednej transakcji ACID obejmującej jednocześnie:
+
+- project.db,
+- series.db,
+- artefakty plikowe.
+
+Propagacja zaakceptowanej pamięci poza project.db podlega późniejszemu
+commit/recovery/outbox protocol zgodnemu z ADR-0001.
+
+
+======================================================================
 45. PROFIL STYLU KSIĄŻKI
 ======================================================================
 

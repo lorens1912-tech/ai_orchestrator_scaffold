@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from .run_lock import acquire_book_lock
 from .run_store import atomic_write_json
+from app.p20_core.book_bible_contract import build_valid_book_bible_payload
+from app.p20_core.storage_paths import get_books_root
 
 router = APIRouter(prefix="/books", tags=["books"])
 
@@ -19,24 +21,18 @@ def _safe_book_id(book_id: str) -> str:
         return "default"
     return re.sub(r"[^a-zA-Z0-9_\-]", "_", b)
 
-def _root() -> Path:
-    return Path(__file__).resolve().parents[1]
-
 def _bible_path(book_id: str) -> Path:
-    root = _root()
     bid = _safe_book_id(book_id)
-    p = root / "books" / bid / "book_bible.json"
+    p = get_books_root() / bid / "book_bible.json"
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
 
 def _default_bible(book_id: str) -> Dict[str, Any]:
-    return {
-        "book_id": _safe_book_id(book_id),
-        "title": "",
-        "canon": {"characters": [], "locations": [], "timeline": [], "rules_of_world": []},
-        "continuity_rules": {"flag_unknown_entities": True, "force_unknown_entities": False},
-        "meta": {"version": 1},
-    }
+    payload = build_valid_book_bible_payload(_safe_book_id(book_id))
+    payload["canon"] = {"characters": [], "locations": [], "timeline": [], "rules_of_world": []}
+    payload["continuity_rules"] = {"flag_unknown_entities": True, "force_unknown_entities": False}
+    payload["meta"] = {"version": 1}
+    return payload
 
 def _read_or_init(book_id: str) -> Dict[str, Any]:
     p = _bible_path(book_id)

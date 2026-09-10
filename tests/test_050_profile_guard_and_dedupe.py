@@ -43,7 +43,7 @@ def test_profile_guard_and_dedupe(monkeypatch, isolated_agentpro_storage):
     )
 
     body = {
-        "preset": "DRAFT_EDIT_QUALITY",
+        "preset": "ORCH_STANDARD",
         "modes": ["WRITE", "CRITIC", "EDIT", "QUALITY"],
         "book_id": book_id,
         "payload": {

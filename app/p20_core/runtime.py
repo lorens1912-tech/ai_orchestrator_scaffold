@@ -12,6 +12,7 @@ from typing import Any, Dict, List
 from fastapi import HTTPException
 
 from app.orchestrator_stub import execute_stub
+from app.config_registry import load_presets
 from app.p20_core.canon_service import (
     APP_VERSION,
     REPO_ROOT,
@@ -124,19 +125,24 @@ def health_payload() -> Dict[str, Any]:
 
 def config_validate_payload() -> Dict[str, Any]:
     mode_ids = load_mode_ids()
+    presets = load_presets()
+    preset_ids = list(presets.get("preset_ids") or [])
+    presets_count = int(presets.get("presets_count") or len(preset_ids))
     return {
         "ok": True,
         "mode_ids": mode_ids,
         "modes_count": len(mode_ids),
-        "presets_count": 1,
-        "presets_source": "p20_core",
+        "preset_ids": preset_ids,
+        "presets_count": presets_count,
+        "presets_source": "config_registry",
         "bad_presets": [],
         "missing_tools": {},
         "data": {
             "mode_ids": mode_ids,
             "modes_count": len(mode_ids),
-            "presets_count": 1,
-            "presets_source": "p20_core",
+            "preset_ids": preset_ids,
+            "presets_count": presets_count,
+            "presets_source": "config_registry",
         },
     }
 

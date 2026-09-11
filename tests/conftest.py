@@ -5,6 +5,7 @@ import hashlib
 import os
 import re
 import shutil
+import uuid
 from pathlib import Path
 
 import pytest
@@ -12,9 +13,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEST_STORAGE_ROOT = REPO_ROOT / ".test_storage"
+TEST_SESSION_STORAGE_ROOT = TEST_STORAGE_ROOT / "sessions" / uuid.uuid4().hex
 REAL_STORAGE_ROOTS = tuple((REPO_ROOT / name).resolve() for name in ("books", "runs", "novel_runs"))
 
-os.environ["AGENTPRO_STORAGE_ROOT"] = str(TEST_STORAGE_ROOT)
+os.environ["AGENTPRO_STORAGE_ROOT"] = str(TEST_SESSION_STORAGE_ROOT)
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -197,7 +199,7 @@ def _storage_slug(nodeid: str) -> str:
 
 @pytest.fixture
 def isolated_agentpro_storage(request, monkeypatch) -> Path:
-    storage_root = TEST_STORAGE_ROOT / "isolated" / _storage_slug(request.node.nodeid)
+    storage_root = TEST_SESSION_STORAGE_ROOT / "isolated" / _storage_slug(request.node.nodeid)
     storage_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("AGENTPRO_STORAGE_ROOT", str(storage_root))
     return storage_root

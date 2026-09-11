@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 from app.p20_core.storage_paths import (
     get_books_root,
@@ -18,7 +18,7 @@ from app.p20_core.storage_paths import (
 )
 
 
-PROJECT_DB_SCHEMA_VERSION = 1
+PROJECT_DB_SCHEMA_VERSION = 2
 PROJECT_DB_FILENAME = "project.db"
 SERIES_DB_SCHEMA_VERSION = 1
 SERIES_DB_FILENAME = "series.db"
@@ -415,6 +415,49 @@ class SchemaMigrationRunner:
         return self.inspect(conn)
 
 
+def _create_project_structured_memory_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS project_structured_memory_records (
+            scope_type TEXT NOT NULL,
+            scope_id TEXT NOT NULL,
+            record_type TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (scope_type, scope_id, record_type, record_id)
+        )
+        """
+    )
+
+
+def _apply_project_schema_v1_to_v2(conn: sqlite3.Connection) -> None:
+    _create_project_structured_memory_table(conn)
+    if _table_exists(conn, "project_identity"):
+        conn.execute(
+            """
+            UPDATE project_identity
+            SET schema_version = ?
+            WHERE id = 1
+            """,
+            (PROJECT_DB_SCHEMA_VERSION,),
+        )
+
+
+def _validate_project_schema_v2(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "project_structured_memory_records"):
+        raise SchemaMigrationError("project structured memory table is missing")
+
+
+PROJECT_DB_MIGRATIONS = (
+    SchemaMigration(
+        source_version=1,
+        target_version=2,
+        apply=_apply_project_schema_v1_to_v2,
+        validate=_validate_project_schema_v2,
+    ),
+)
+
+
 class ProjectDomainTransaction:
     def __init__(self, conn: sqlite3.Connection, scope: StorageScope) -> None:
         self._conn = conn
@@ -473,6 +516,58 @@ class ProjectDomainTransaction:
                 _normalize_domain_id(state_id, "state_id"),
                 _normalize_domain_id(character_id, "character_id"),
                 str(payload_json),
+            ),
+        )
+
+    def add_structured_memory_record(
+        self,
+        record: Any,
+        *,
+        scope: StorageScope | None = None,
+    ) -> None:
+        record_scope = self._scope if scope is None else _require_matching_scope(
+            self._scope,
+            scope,
+            ProjectStorageError,
+        )
+        declared_scope = getattr(record, "scope", None)
+        if declared_scope is not None:
+            _require_matching_scope(record_scope, declared_scope, ProjectStorageError)
+        if hasattr(record, "require_project_scope"):
+            record.require_project_scope(record_scope)
+
+        record_type = _normalize_domain_id(
+            getattr(record, "memory_record_type", ""),
+            "record_type",
+        )
+        record_id = _normalize_domain_id(
+            str(getattr(record, "record_id", "")),
+            "record_id",
+        )
+        to_json = getattr(record, "to_json", None)
+        if not callable(to_json):
+            raise ProjectStorageError("structured memory record must provide to_json")
+        payload_json = str(to_json())
+
+        self._conn.execute(
+            """
+            INSERT INTO project_structured_memory_records (
+                scope_type,
+                scope_id,
+                record_type,
+                record_id,
+                payload_json
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(scope_type, scope_id, record_type, record_id)
+            DO UPDATE SET payload_json = excluded.payload_json
+            """,
+            (
+                record_scope.scope_type.value,
+                record_scope.scope_id,
+                record_type,
+                record_id,
+                payload_json,
             ),
         )
 
@@ -657,6 +752,7 @@ class ProjectRepository:
                 )
                 """
             )
+            _create_project_structured_memory_table(conn)
             self._ensure_identity(conn)
 
     def _ensure_identity(self, conn: sqlite3.Connection) -> None:
@@ -743,7 +839,7 @@ class ProjectRepository:
 
     def migrate_schema(
         self,
-        migrations: Iterable[SchemaMigration],
+        migrations: Iterable[SchemaMigration] | None = None,
         *,
         target_version: int | None = None,
     ) -> SchemaStatus:
@@ -753,7 +849,7 @@ class ProjectRepository:
         try:
             return SchemaMigrationRunner(
                 target_version=target_version or PROJECT_DB_SCHEMA_VERSION,
-                migrations=migrations,
+                migrations=PROJECT_DB_MIGRATIONS if migrations is None else migrations,
             ).migrate(conn)
         finally:
             conn.close()
@@ -827,6 +923,51 @@ class ProjectRepository:
             ).fetchall()
             return {
                 str(row["state_id"]): {
+                    "scope_type": str(row["scope_type"]),
+                    "scope_id": str(row["scope_id"]),
+                }
+                for row in rows
+            }
+
+    def list_structured_memory_records(
+        self,
+        record_type: str | None = None,
+    ) -> dict[str, str]:
+        self.initialize()
+        with self.connect() as conn:
+            if record_type is None:
+                rows = conn.execute(
+                    """
+                    SELECT record_id, payload_json
+                    FROM project_structured_memory_records
+                    ORDER BY record_type, record_id
+                    """
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT record_id, payload_json
+                    FROM project_structured_memory_records
+                    WHERE record_type = ?
+                    ORDER BY record_id
+                    """,
+                    (_normalize_domain_id(record_type, "record_type"),),
+                ).fetchall()
+            return {str(row["record_id"]): str(row["payload_json"]) for row in rows}
+
+    def list_structured_memory_record_scopes(self) -> dict[str, dict[str, str]]:
+        self.initialize()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT record_id, record_type, scope_type, scope_id
+                FROM project_structured_memory_records
+                ORDER BY record_type, record_id
+                """
+            ).fetchall()
+            return {
+                str(row["record_id"]): {
+                    "record_type": str(row["record_type"]),
                     "scope_type": str(row["scope_type"]),
                     "scope_id": str(row["scope_id"]),
                 }
@@ -1177,6 +1318,7 @@ def ensure_system_repository() -> SystemRepository:
 
 __all__ = [
     "PROJECT_DB_FILENAME",
+    "PROJECT_DB_MIGRATIONS",
     "PROJECT_DB_SCHEMA_VERSION",
     "SERIES_DB_FILENAME",
     "SERIES_DB_SCHEMA_VERSION",

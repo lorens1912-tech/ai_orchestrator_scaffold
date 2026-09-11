@@ -177,7 +177,7 @@ def _scene_contract(**overrides):
         "threads_progressed": ["THREAD-archive"],
         "threads_closed": [],
         "setups_created": ["SETUP-marker"],
-        "payoffs_completed": ["SETUP-old-map"],
+        "payoffs_completed": ["PAYOFF-old-map"],
         "reader_knowledge_added": ["CONTEXT-reader-marker"],
         "target_tension": 5,
         "target_pace": 4,

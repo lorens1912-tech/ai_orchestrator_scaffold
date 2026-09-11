@@ -38,6 +38,8 @@ class DomainNamespace(str, Enum):
     EVENT = "EVENT"
     THREAD = "THREAD"
     SETUP = "SETUP"
+    PAYOFF = "PAYOFF"
+    KNOWLEDGE = "KNOWLEDGE"
     SOURCE = "SOURCE"
     RESEARCH = "RESEARCH"
     CLAIM = "CLAIM"
@@ -185,6 +187,19 @@ def _optional_id(
     return require_domain_id(value, namespace, field_name)
 
 
+def _any_domain_id(value: DomainId | str, field_name: str) -> DomainId:
+    try:
+        return value if isinstance(value, DomainId) else DomainId.parse(value)
+    except DomainContractError as exc:
+        raise DomainContractError(f"{field_name} must be a valid domain id") from exc
+
+
+def _optional_any_domain_id(value: DomainId | str | None, field_name: str) -> DomainId | None:
+    if value is None:
+        return None
+    return _any_domain_id(value, field_name)
+
+
 def _positive_int(value: Any, field_name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise DomainContractError(f"{field_name} must be a positive integer")
@@ -203,6 +218,34 @@ def _number(value: Any, field_name: str) -> int | float:
     return value
 
 
+def _confidence(value: Any, field_name: str = "confidence") -> int | float:
+    score = _number(value, field_name)
+    if score < 0 or score > 1:
+        raise DomainContractError(f"{field_name} must be between 0 and 1")
+    return score
+
+
+def _bool(value: Any, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise DomainContractError(f"{field_name} must be a boolean")
+    return value
+
+
+def _optional_time(value: Any, field_name: str) -> str | None:
+    return _optional_text(value, field_name)
+
+
+def _validate_temporal_range(valid_from: str | None, valid_to: str | None) -> None:
+    if valid_from is not None and valid_to is not None and valid_to < valid_from:
+        raise DomainContractError("valid_to must not be earlier than valid_from")
+
+
+def _text_tuple(values: Iterable[str], field_name: str) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)) or values is None:
+        raise DomainContractError(f"{field_name} must be a list")
+    return tuple(_required_text(value, field_name) for value in values)
+
+
 def _id_list(
     values: Iterable[DomainId | str],
     namespace: DomainNamespace,
@@ -211,6 +254,23 @@ def _id_list(
     if isinstance(values, (str, bytes)) or values is None:
         raise DomainContractError(f"{field_name} must be a list")
     return tuple(require_domain_id(value, namespace, field_name) for value in values)
+
+
+def _any_id_list(values: Iterable[DomainId | str], field_name: str) -> tuple[DomainId, ...]:
+    if isinstance(values, (str, bytes)) or values is None:
+        raise DomainContractError(f"{field_name} must be a list")
+    return tuple(_any_domain_id(value, field_name) for value in values)
+
+
+def _require_provenance(record_name: str, *sources: Any) -> None:
+    for source in sources:
+        if isinstance(source, tuple) and source:
+            return
+        if isinstance(source, DomainId):
+            return
+        if isinstance(source, str) and source:
+            return
+    raise DomainContractError(f"{record_name} provenance is required")
 
 
 def _serialize_value(value: Any) -> Any:
@@ -243,6 +303,24 @@ class SerializableRecord:
 
     def with_updates(self, **changes: Any):
         return replace(self, **changes)
+
+
+class ProjectScopedRecord(SerializableRecord):
+    @property
+    def record_id(self) -> DomainId:
+        raise NotImplementedError
+
+    @property
+    def memory_record_type(self) -> str:
+        raise NotImplementedError
+
+    @property
+    def scope(self) -> StorageScope:
+        return StorageScope.project(str(self.project_id))
+
+    def require_project_scope(self, scope: StorageScope) -> None:
+        if scope != self.scope:
+            raise DomainContractError("structured memory record project scope does not match")
 
 
 @dataclass(frozen=True)
@@ -519,7 +597,7 @@ class SceneContract(SerializableRecord):
         for name in ("threads_opened", "threads_progressed", "threads_closed"):
             object.__setattr__(self, name, _id_list(getattr(self, name), DomainNamespace.THREAD, name))
         object.__setattr__(self, "setups_created", _id_list(self.setups_created, DomainNamespace.SETUP, "setups_created"))
-        object.__setattr__(self, "payoffs_completed", _id_list(self.payoffs_completed, DomainNamespace.SETUP, "payoffs_completed"))
+        object.__setattr__(self, "payoffs_completed", _id_list(self.payoffs_completed, DomainNamespace.PAYOFF, "payoffs_completed"))
         object.__setattr__(self, "reader_knowledge_added", _id_list(self.reader_knowledge_added, DomainNamespace.CONTEXT, "reader_knowledge_added"))
         object.__setattr__(self, "target_tension", _number(self.target_tension, "target_tension"))
         object.__setattr__(self, "target_pace", _number(self.target_pace, "target_pace"))
@@ -534,18 +612,331 @@ class SceneContract(SerializableRecord):
             raise DomainContractError("scene contract project scope does not match")
 
 
+@dataclass(frozen=True)
+class FactRecord(ProjectScopedRecord):
+    fact_id: DomainId | str
+    project_id: DomainId | str
+    subject_id: DomainId | str
+    predicate: str
+    object_type: str
+    object_id: DomainId | str | None
+    object_value: Any
+    reality_status: str
+    verification_status: str
+    confidence: int | float
+    frozen: bool
+    author_locked: bool
+    valid_from: str | None
+    valid_to: str | None
+    established_event_id: DomainId | str | None
+    established_scene_id: DomainId | str | None
+    source_artifact_ref: str | None
+    source_refs: Iterable[str]
+    canon_version: int
+    version: int
+    created_at: str
+    updated_at: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "fact_id", require_domain_id(self.fact_id, DomainNamespace.FACT, "fact_id"))
+        object.__setattr__(self, "project_id", require_domain_id(self.project_id, DomainNamespace.PROJECT, "project_id"))
+        object.__setattr__(self, "subject_id", _any_domain_id(self.subject_id, "subject_id"))
+        object.__setattr__(self, "predicate", _required_text(self.predicate, "predicate"))
+        object.__setattr__(self, "object_type", _required_text(self.object_type, "object_type"))
+        object.__setattr__(self, "object_id", _optional_any_domain_id(self.object_id, "object_id"))
+        if self.object_id is None and self.object_value is None:
+            raise DomainContractError("object_id or object_value is required")
+        object.__setattr__(self, "object_value", _ensure_json_compatible(self.object_value, "object_value"))
+        for name in ("reality_status", "verification_status", "created_at", "updated_at"):
+            object.__setattr__(self, name, _required_text(getattr(self, name), name))
+        object.__setattr__(self, "confidence", _confidence(self.confidence))
+        object.__setattr__(self, "frozen", _bool(self.frozen, "frozen"))
+        object.__setattr__(self, "author_locked", _bool(self.author_locked, "author_locked"))
+        object.__setattr__(self, "valid_from", _optional_time(self.valid_from, "valid_from"))
+        object.__setattr__(self, "valid_to", _optional_time(self.valid_to, "valid_to"))
+        _validate_temporal_range(self.valid_from, self.valid_to)
+        object.__setattr__(self, "established_event_id", _optional_id(self.established_event_id, DomainNamespace.EVENT, "established_event_id"))
+        object.__setattr__(self, "established_scene_id", _optional_id(self.established_scene_id, DomainNamespace.SCENE, "established_scene_id"))
+        object.__setattr__(self, "source_artifact_ref", _optional_text(self.source_artifact_ref, "source_artifact_ref"))
+        object.__setattr__(self, "source_refs", _text_tuple(self.source_refs, "source_refs"))
+        _require_provenance("fact", self.established_scene_id, self.source_artifact_ref, self.source_refs)
+        object.__setattr__(self, "canon_version", _positive_int(self.canon_version, "canon_version"))
+        object.__setattr__(self, "version", _positive_int(self.version, "version"))
+
+    @property
+    def record_id(self) -> DomainId:
+        return self.fact_id
+
+    @property
+    def memory_record_type(self) -> str:
+        return "FACT"
+
+
+@dataclass(frozen=True)
+class CharacterState(ProjectScopedRecord):
+    state_id: DomainId | str
+    project_id: DomainId | str
+    character_id: DomainId | str
+    source_scene_id: DomainId | str | None
+    source_event_id: DomainId | str | None
+    source_artifact_ref: str | None
+    state_payload: Any
+    valid_from: str | None
+    valid_to: str | None
+    version: int
+    created_at: str
+    updated_at: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "state_id", require_domain_id(self.state_id, DomainNamespace.CONTEXT, "state_id"))
+        object.__setattr__(self, "project_id", require_domain_id(self.project_id, DomainNamespace.PROJECT, "project_id"))
+        object.__setattr__(self, "character_id", require_domain_id(self.character_id, DomainNamespace.CHARACTER, "character_id"))
+        object.__setattr__(self, "source_scene_id", _optional_id(self.source_scene_id, DomainNamespace.SCENE, "source_scene_id"))
+        object.__setattr__(self, "source_event_id", _optional_id(self.source_event_id, DomainNamespace.EVENT, "source_event_id"))
+        object.__setattr__(self, "source_artifact_ref", _optional_text(self.source_artifact_ref, "source_artifact_ref"))
+        _require_provenance("character state", self.source_scene_id, self.source_event_id, self.source_artifact_ref)
+        object.__setattr__(self, "state_payload", _ensure_json_compatible(self.state_payload, "state_payload"))
+        object.__setattr__(self, "valid_from", _optional_time(self.valid_from, "valid_from"))
+        object.__setattr__(self, "valid_to", _optional_time(self.valid_to, "valid_to"))
+        _validate_temporal_range(self.valid_from, self.valid_to)
+        object.__setattr__(self, "version", _positive_int(self.version, "version"))
+        for name in ("created_at", "updated_at"):
+            object.__setattr__(self, name, _required_text(getattr(self, name), name))
+
+    @property
+    def record_id(self) -> DomainId:
+        return self.state_id
+
+    @property
+    def memory_record_type(self) -> str:
+        return "CHARACTER_STATE"
+
+
+@dataclass(frozen=True)
+class EventRecord(ProjectScopedRecord):
+    event_id: DomainId | str
+    project_id: DomainId | str
+    event_type: str
+    time_start: str
+    time_end: str
+    narrative_order: int
+    location_id: DomainId | str | None
+    participant_ids: Iterable[DomainId | str]
+    description: str
+    cause_refs: Iterable[DomainId | str]
+    effect_refs: Iterable[DomainId | str]
+    source_scene_id: DomainId | str | None
+    source_artifact_ref: str | None
+    canon_status: str
+    version: int
+    created_at: str
+    updated_at: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "event_id", require_domain_id(self.event_id, DomainNamespace.EVENT, "event_id"))
+        object.__setattr__(self, "project_id", require_domain_id(self.project_id, DomainNamespace.PROJECT, "project_id"))
+        for name in ("event_type", "time_start", "time_end", "description", "canon_status", "created_at", "updated_at"):
+            object.__setattr__(self, name, _required_text(getattr(self, name), name))
+        if self.time_end < self.time_start:
+            raise DomainContractError("time_end must not be earlier than time_start")
+        object.__setattr__(self, "narrative_order", _non_negative_int(self.narrative_order, "narrative_order"))
+        object.__setattr__(self, "location_id", _optional_id(self.location_id, DomainNamespace.PLACE, "location_id"))
+        object.__setattr__(self, "participant_ids", _any_id_list(self.participant_ids, "participant_ids"))
+        object.__setattr__(self, "cause_refs", _id_list(self.cause_refs, DomainNamespace.EVENT, "cause_refs"))
+        object.__setattr__(self, "effect_refs", _id_list(self.effect_refs, DomainNamespace.EVENT, "effect_refs"))
+        object.__setattr__(self, "source_scene_id", _optional_id(self.source_scene_id, DomainNamespace.SCENE, "source_scene_id"))
+        object.__setattr__(self, "source_artifact_ref", _optional_text(self.source_artifact_ref, "source_artifact_ref"))
+        _require_provenance("event", self.source_scene_id, self.source_artifact_ref)
+        object.__setattr__(self, "version", _positive_int(self.version, "version"))
+
+    @property
+    def record_id(self) -> DomainId:
+        return self.event_id
+
+    @property
+    def memory_record_type(self) -> str:
+        return "EVENT"
+
+
+@dataclass(frozen=True)
+class KnowledgeEvent(ProjectScopedRecord):
+    knowledge_event_id: DomainId | str
+    project_id: DomainId | str
+    character_id: DomainId | str
+    fact_id: DomainId | str | None
+    event_id: DomainId | str | None
+    knowledge_status: str
+    learned_at_scene_id: DomainId | str
+    learned_at_event_id: DomainId | str | None
+    learned_from_character_id: DomainId | str | None
+    source_ref: str | None
+    valid_from: str | None
+    valid_to: str | None
+    confidence: int | float
+    version: int
+    created_at: str
+    updated_at: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "knowledge_event_id", require_domain_id(self.knowledge_event_id, DomainNamespace.KNOWLEDGE, "knowledge_event_id"))
+        object.__setattr__(self, "project_id", require_domain_id(self.project_id, DomainNamespace.PROJECT, "project_id"))
+        object.__setattr__(self, "character_id", require_domain_id(self.character_id, DomainNamespace.CHARACTER, "character_id"))
+        object.__setattr__(self, "fact_id", _optional_id(self.fact_id, DomainNamespace.FACT, "fact_id"))
+        object.__setattr__(self, "event_id", _optional_id(self.event_id, DomainNamespace.EVENT, "event_id"))
+        if self.fact_id is None and self.event_id is None:
+            raise DomainContractError("fact_id or event_id is required")
+        object.__setattr__(self, "knowledge_status", _required_text(self.knowledge_status, "knowledge_status"))
+        object.__setattr__(self, "learned_at_scene_id", require_domain_id(self.learned_at_scene_id, DomainNamespace.SCENE, "learned_at_scene_id"))
+        object.__setattr__(self, "learned_at_event_id", _optional_id(self.learned_at_event_id, DomainNamespace.EVENT, "learned_at_event_id"))
+        object.__setattr__(self, "learned_from_character_id", _optional_id(self.learned_from_character_id, DomainNamespace.CHARACTER, "learned_from_character_id"))
+        object.__setattr__(self, "source_ref", _optional_text(self.source_ref, "source_ref"))
+        _require_provenance("knowledge event", self.learned_at_scene_id, self.source_ref)
+        object.__setattr__(self, "valid_from", _optional_time(self.valid_from, "valid_from"))
+        object.__setattr__(self, "valid_to", _optional_time(self.valid_to, "valid_to"))
+        _validate_temporal_range(self.valid_from, self.valid_to)
+        object.__setattr__(self, "confidence", _confidence(self.confidence))
+        object.__setattr__(self, "version", _positive_int(self.version, "version"))
+        for name in ("created_at", "updated_at"):
+            object.__setattr__(self, name, _required_text(getattr(self, name), name))
+
+    @property
+    def record_id(self) -> DomainId:
+        return self.knowledge_event_id
+
+    @property
+    def memory_record_type(self) -> str:
+        return "KNOWLEDGE_EVENT"
+
+
+@dataclass(frozen=True)
+class ThreadRecord(ProjectScopedRecord):
+    thread_id: DomainId | str
+    project_id: DomainId | str
+    name: str
+    description: str
+    importance: int | float
+    opened_scene_id: DomainId | str
+    closed_scene_id: DomainId | str | None
+    status: str
+    payoff_required: bool
+    target_payoff: str | None
+    actual_payoff_ref: DomainId | str | None
+    deliberately_left_reason: str | None
+    version: int
+    created_at: str
+    updated_at: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "thread_id", require_domain_id(self.thread_id, DomainNamespace.THREAD, "thread_id"))
+        object.__setattr__(self, "project_id", require_domain_id(self.project_id, DomainNamespace.PROJECT, "project_id"))
+        for name in ("name", "description", "status", "created_at", "updated_at"):
+            object.__setattr__(self, name, _required_text(getattr(self, name), name))
+        object.__setattr__(self, "importance", _number(self.importance, "importance"))
+        object.__setattr__(self, "opened_scene_id", require_domain_id(self.opened_scene_id, DomainNamespace.SCENE, "opened_scene_id"))
+        object.__setattr__(self, "closed_scene_id", _optional_id(self.closed_scene_id, DomainNamespace.SCENE, "closed_scene_id"))
+        object.__setattr__(self, "payoff_required", _bool(self.payoff_required, "payoff_required"))
+        object.__setattr__(self, "target_payoff", _optional_text(self.target_payoff, "target_payoff"))
+        object.__setattr__(self, "actual_payoff_ref", _optional_id(self.actual_payoff_ref, DomainNamespace.PAYOFF, "actual_payoff_ref"))
+        object.__setattr__(self, "deliberately_left_reason", _optional_text(self.deliberately_left_reason, "deliberately_left_reason"))
+        if self.status == "DELIBERATELY_LEFT" and self.deliberately_left_reason is None:
+            raise DomainContractError("deliberately_left_reason is required")
+        object.__setattr__(self, "version", _positive_int(self.version, "version"))
+
+    @property
+    def record_id(self) -> DomainId:
+        return self.thread_id
+
+    @property
+    def memory_record_type(self) -> str:
+        return "THREAD"
+
+
+@dataclass(frozen=True)
+class SetupRecord(ProjectScopedRecord):
+    setup_id: DomainId | str
+    project_id: DomainId | str
+    created_scene_id: DomainId | str
+    description: str
+    importance: int | float
+    expected_payoff: str
+    target_range: str
+    actual_payoff_scene_id: DomainId | str | None
+    status: str
+    version: int
+    created_at: str
+    updated_at: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "setup_id", require_domain_id(self.setup_id, DomainNamespace.SETUP, "setup_id"))
+        object.__setattr__(self, "project_id", require_domain_id(self.project_id, DomainNamespace.PROJECT, "project_id"))
+        object.__setattr__(self, "created_scene_id", require_domain_id(self.created_scene_id, DomainNamespace.SCENE, "created_scene_id"))
+        for name in ("description", "expected_payoff", "target_range", "status", "created_at", "updated_at"):
+            object.__setattr__(self, name, _required_text(getattr(self, name), name))
+        object.__setattr__(self, "importance", _number(self.importance, "importance"))
+        object.__setattr__(self, "actual_payoff_scene_id", _optional_id(self.actual_payoff_scene_id, DomainNamespace.SCENE, "actual_payoff_scene_id"))
+        object.__setattr__(self, "version", _positive_int(self.version, "version"))
+
+    @property
+    def record_id(self) -> DomainId:
+        return self.setup_id
+
+    @property
+    def memory_record_type(self) -> str:
+        return "SETUP"
+
+
+@dataclass(frozen=True)
+class PayoffRecord(ProjectScopedRecord):
+    payoff_id: DomainId | str
+    project_id: DomainId | str
+    setup_id: DomainId | str
+    completed_scene_id: DomainId | str
+    description: str
+    source_artifact_ref: str | None
+    status: str
+    version: int
+    created_at: str
+    updated_at: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payoff_id", require_domain_id(self.payoff_id, DomainNamespace.PAYOFF, "payoff_id"))
+        object.__setattr__(self, "project_id", require_domain_id(self.project_id, DomainNamespace.PROJECT, "project_id"))
+        object.__setattr__(self, "setup_id", require_domain_id(self.setup_id, DomainNamespace.SETUP, "setup_id"))
+        object.__setattr__(self, "completed_scene_id", require_domain_id(self.completed_scene_id, DomainNamespace.SCENE, "completed_scene_id"))
+        for name in ("description", "status", "created_at", "updated_at"):
+            object.__setattr__(self, name, _required_text(getattr(self, name), name))
+        object.__setattr__(self, "source_artifact_ref", _optional_text(self.source_artifact_ref, "source_artifact_ref"))
+        _require_provenance("payoff", self.completed_scene_id, self.source_artifact_ref)
+        object.__setattr__(self, "version", _positive_int(self.version, "version"))
+
+    @property
+    def record_id(self) -> DomainId:
+        return self.payoff_id
+
+    @property
+    def memory_record_type(self) -> str:
+        return "PAYOFF"
+
+
 __all__ = [
     "DOMAIN_RECORD_SCHEMA_VERSION",
     "ActRecord",
     "BookRecord",
+    "CharacterState",
     "ChapterRecord",
     "DomainContractError",
     "DomainId",
     "DomainNamespace",
+    "EventRecord",
+    "FactRecord",
+    "KnowledgeEvent",
+    "PayoffRecord",
     "ProjectRecord",
     "SceneContract",
     "SequenceRecord",
     "SeriesRecord",
+    "SetupRecord",
+    "ThreadRecord",
     "build_domain_id",
     "parse_domain_id",
     "require_domain_id",

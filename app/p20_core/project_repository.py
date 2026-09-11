@@ -5,6 +5,7 @@ import sqlite3
 from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Iterator
 
@@ -42,6 +43,19 @@ class SchemaMigrationError(ValueError):
     pass
 
 
+class ScopeValidationError(ValueError):
+    pass
+
+
+class SeriesAccessError(ValueError):
+    pass
+
+
+class ScopeType(str, Enum):
+    PROJECT = "PROJECT"
+    SERIES = "SERIES"
+
+
 @dataclass(frozen=True)
 class ProjectStorageContext:
     project_id: str
@@ -56,6 +70,10 @@ class ProjectStorageContext:
         data = asdict(self)
         return {key: str(value) for key, value in data.items()}
 
+    @property
+    def scope(self) -> StorageScope:
+        return StorageScope.project(self.project_id)
+
 
 @dataclass(frozen=True)
 class SeriesStorageContext:
@@ -68,6 +86,10 @@ class SeriesStorageContext:
     def to_dict(self) -> dict[str, str]:
         data = asdict(self)
         return {key: str(value) for key, value in data.items()}
+
+    @property
+    def scope(self) -> StorageScope:
+        return StorageScope.series(self.series_id)
 
 
 @dataclass(frozen=True)
@@ -125,6 +147,89 @@ def _assert_relative_to(
         raise error_type(f"{field_name} escapes storage root") from exc
 
 
+@dataclass(frozen=True)
+class StorageScope:
+    scope_type: ScopeType
+    scope_id: str
+
+    def __post_init__(self) -> None:
+        if isinstance(self.scope_type, ScopeType):
+            scope_type = self.scope_type
+        else:
+            try:
+                scope_type = ScopeType(str(self.scope_type))
+            except ValueError as exc:
+                raise ScopeValidationError("scope_type must be PROJECT or SERIES") from exc
+        scope_id = _normalize_identifier(
+            self.scope_id,
+            "scope_id",
+            ScopeValidationError,
+        )
+        object.__setattr__(self, "scope_type", scope_type)
+        object.__setattr__(self, "scope_id", scope_id)
+
+    @classmethod
+    def project(cls, project_id: str) -> StorageScope:
+        return cls(ScopeType.PROJECT, project_id)
+
+    @classmethod
+    def series(cls, series_id: str) -> StorageScope:
+        return cls(ScopeType.SERIES, series_id)
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "scope_type": self.scope_type.value,
+            "scope_id": self.scope_id,
+        }
+
+
+@dataclass(frozen=True)
+class SeriesAccessContext:
+    project_scope: StorageScope
+    series_scope: StorageScope
+
+    def __post_init__(self) -> None:
+        project_scope = self.project_scope
+        series_scope = self.series_scope
+        if not isinstance(project_scope, StorageScope):
+            raise SeriesAccessError("project_scope must be a StorageScope")
+        if not isinstance(series_scope, StorageScope):
+            raise SeriesAccessError("series_scope must be a StorageScope")
+        if project_scope.scope_type != ScopeType.PROJECT:
+            raise SeriesAccessError("project_scope must be PROJECT")
+        if series_scope.scope_type != ScopeType.SERIES:
+            raise SeriesAccessError("series_scope must be SERIES")
+
+    @classmethod
+    def bind(cls, project_id: str, series_id: str) -> SeriesAccessContext:
+        return cls(
+            project_scope=StorageScope.project(project_id),
+            series_scope=StorageScope.series(series_id),
+        )
+
+    @property
+    def project_id(self) -> str:
+        return self.project_scope.scope_id
+
+    @property
+    def series_id(self) -> str:
+        return self.series_scope.scope_id
+
+    def require_project(self, project_id: str) -> None:
+        if self.project_scope != StorageScope.project(project_id):
+            raise SeriesAccessError("project scope is not bound to requested project")
+
+    def require_series(self, series_id: str) -> None:
+        if self.series_scope != StorageScope.series(series_id):
+            raise SeriesAccessError("project is not bound to requested series scope")
+
+    def to_dict(self) -> dict[str, dict[str, str]]:
+        return {
+            "project_scope": self.project_scope.to_dict(),
+            "series_scope": self.series_scope.to_dict(),
+        }
+
+
 def _normalize_domain_id(
     value: str,
     field_name: str,
@@ -134,6 +239,26 @@ def _normalize_domain_id(
     if not normalized:
         raise error_type(f"{field_name} is required")
     return normalized
+
+
+def _coerce_storage_scope(
+    scope: StorageScope,
+    error_type: type[ValueError],
+) -> StorageScope:
+    if not isinstance(scope, StorageScope):
+        raise error_type("scope must be a StorageScope")
+    return scope
+
+
+def _require_matching_scope(
+    repository_scope: StorageScope,
+    record_scope: StorageScope,
+    error_type: type[ValueError],
+) -> StorageScope:
+    resolved_scope = _coerce_storage_scope(record_scope, error_type)
+    if resolved_scope != repository_scope:
+        raise error_type("record scope does not match repository scope")
+    return resolved_scope
 
 
 def _schema_status(current_version: int | None, required_version: int) -> SchemaStatus:
@@ -291,28 +416,60 @@ class SchemaMigrationRunner:
 
 
 class ProjectDomainTransaction:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: sqlite3.Connection, scope: StorageScope) -> None:
         self._conn = conn
+        self._scope = _coerce_storage_scope(scope, ProjectStorageError)
 
-    def add_fact_record(self, fact_id: str, payload_json: str) -> None:
+    @property
+    def scope(self) -> StorageScope:
+        return self._scope
+
+    def add_fact_record(
+        self,
+        fact_id: str,
+        payload_json: str,
+        *,
+        scope: StorageScope | None = None,
+    ) -> None:
+        record_scope = self._scope if scope is None else _require_matching_scope(
+            self._scope,
+            scope,
+            ProjectStorageError,
+        )
         self._conn.execute(
             """
-            INSERT INTO project_fact_records (fact_id, payload_json)
-            VALUES (?, ?)
+            INSERT INTO project_fact_records (scope_type, scope_id, fact_id, payload_json)
+            VALUES (?, ?, ?, ?)
             """,
             (
+                record_scope.scope_type.value,
+                record_scope.scope_id,
                 _normalize_domain_id(fact_id, "fact_id"),
                 str(payload_json),
             ),
         )
 
-    def add_character_state(self, state_id: str, character_id: str, payload_json: str) -> None:
+    def add_character_state(
+        self,
+        state_id: str,
+        character_id: str,
+        payload_json: str,
+        *,
+        scope: StorageScope | None = None,
+    ) -> None:
+        record_scope = self._scope if scope is None else _require_matching_scope(
+            self._scope,
+            scope,
+            ProjectStorageError,
+        )
         self._conn.execute(
             """
-            INSERT INTO project_character_states (state_id, character_id, payload_json)
-            VALUES (?, ?, ?)
+            INSERT INTO project_character_states (scope_type, scope_id, state_id, character_id, payload_json)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
+                record_scope.scope_type.value,
+                record_scope.scope_id,
                 _normalize_domain_id(state_id, "state_id"),
                 _normalize_domain_id(character_id, "character_id"),
                 str(payload_json),
@@ -389,6 +546,27 @@ class StorageResolver:
             return None
         return self.resolve_series(series_id)
 
+    def resolve_series_access(
+        self,
+        project_id: str,
+        series_id: str,
+    ) -> SeriesAccessContext:
+        project_context = self.resolve_project(project_id)
+        series_context = self.resolve_series(series_id)
+        return SeriesAccessContext(
+            project_scope=project_context.scope,
+            series_scope=series_context.scope,
+        )
+
+    def resolve_optional_series_access(
+        self,
+        project_id: str,
+        series_id: str | None,
+    ) -> SeriesAccessContext | None:
+        if series_id is None or not str(series_id).strip():
+            return None
+        return self.resolve_series_access(project_id, series_id)
+
     def resolve_system(self) -> SystemStorageContext:
         storage_root = self.storage_root
         database_path = get_system_db_path().resolve() if self._storage_root is None else storage_root / SYSTEM_DB_FILENAME
@@ -408,6 +586,13 @@ class ProjectRepository:
     @property
     def db_path(self) -> Path:
         return self.context.project_db_path
+
+    @property
+    def scope(self) -> StorageScope:
+        return self.context.scope
+
+    def require_scope(self, scope: StorageScope) -> None:
+        _require_matching_scope(self.scope, scope, ProjectStorageError)
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -454,6 +639,8 @@ class ProjectRepository:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS project_fact_records (
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL,
                     fact_id TEXT PRIMARY KEY,
                     payload_json TEXT NOT NULL
                 )
@@ -462,6 +649,8 @@ class ProjectRepository:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS project_character_states (
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL,
                     state_id TEXT PRIMARY KEY,
                     character_id TEXT NOT NULL,
                     payload_json TEXT NOT NULL
@@ -525,6 +714,10 @@ class ProjectRepository:
                 (str(key), str(value)),
             )
 
+    def set_scoped_metadata(self, scope: StorageScope, key: str, value: str) -> None:
+        self.require_scope(scope)
+        self.set_metadata(key, value)
+
     def get_metadata(self, key: str) -> str | None:
         self.initialize()
         with self.connect() as conn:
@@ -570,7 +763,7 @@ class ProjectRepository:
         self.initialize()
         with self.connect() as conn:
             conn.execute("BEGIN")
-            tx = ProjectDomainTransaction(conn)
+            tx = ProjectDomainTransaction(conn, self.scope)
             try:
                 yield tx
                 conn.commit()
@@ -585,6 +778,24 @@ class ProjectRepository:
                 "SELECT fact_id, payload_json FROM project_fact_records ORDER BY fact_id"
             ).fetchall()
             return {str(row["fact_id"]): str(row["payload_json"]) for row in rows}
+
+    def list_fact_record_scopes(self) -> dict[str, dict[str, str]]:
+        self.initialize()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT fact_id, scope_type, scope_id
+                FROM project_fact_records
+                ORDER BY fact_id
+                """
+            ).fetchall()
+            return {
+                str(row["fact_id"]): {
+                    "scope_type": str(row["scope_type"]),
+                    "scope_id": str(row["scope_id"]),
+                }
+                for row in rows
+            }
 
     def list_character_states(self) -> dict[str, dict[str, str]]:
         self.initialize()
@@ -604,6 +815,24 @@ class ProjectRepository:
                 for row in rows
             }
 
+    def list_character_state_scopes(self) -> dict[str, dict[str, str]]:
+        self.initialize()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT state_id, scope_type, scope_id
+                FROM project_character_states
+                ORDER BY state_id
+                """
+            ).fetchall()
+            return {
+                str(row["state_id"]): {
+                    "scope_type": str(row["scope_type"]),
+                    "scope_id": str(row["scope_id"]),
+                }
+                for row in rows
+            }
+
 
 class SeriesRepository:
     def __init__(self, context: SeriesStorageContext) -> None:
@@ -612,6 +841,13 @@ class SeriesRepository:
     @property
     def db_path(self) -> Path:
         return self.context.database_path
+
+    @property
+    def scope(self) -> StorageScope:
+        return self.context.scope
+
+    def require_scope(self, scope: StorageScope) -> None:
+        _require_matching_scope(self.scope, scope, SeriesStorageError)
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -708,6 +944,10 @@ class SeriesRepository:
                 """,
                 (str(key), str(value)),
             )
+
+    def set_scoped_metadata(self, scope: StorageScope, key: str, value: str) -> None:
+        self.require_scope(scope)
+        self.set_metadata(key, value)
 
     def get_metadata(self, key: str) -> str | None:
         self.initialize()
@@ -897,6 +1137,34 @@ def ensure_series_repository(series_id: str | None) -> SeriesRepository | None:
     return repository
 
 
+def resolve_project_series_access_context(
+    project_id: str,
+    series_id: str,
+) -> SeriesAccessContext:
+    return StorageResolver().resolve_series_access(project_id, series_id)
+
+
+def resolve_optional_project_series_access_context(
+    project_id: str,
+    series_id: str | None,
+) -> SeriesAccessContext | None:
+    return StorageResolver().resolve_optional_series_access(project_id, series_id)
+
+
+def ensure_series_repository_for_access(
+    access_context: SeriesAccessContext | None,
+    *,
+    requested_series_id: str | None = None,
+) -> SeriesRepository | None:
+    if access_context is None:
+        return None
+    if not isinstance(access_context, SeriesAccessContext):
+        raise SeriesAccessError("access_context must be a SeriesAccessContext")
+    if requested_series_id is not None:
+        access_context.require_series(requested_series_id)
+    return ensure_series_repository(access_context.series_id)
+
+
 def resolve_system_context() -> SystemStorageContext:
     return StorageResolver().resolve_system()
 
@@ -922,17 +1190,25 @@ __all__ = [
     "SchemaMigrationError",
     "SchemaMigrationRunner",
     "SchemaStatus",
+    "ScopeType",
+    "ScopeValidationError",
     "SeriesRepository",
+    "SeriesAccessContext",
+    "SeriesAccessError",
     "SeriesStorageContext",
     "SeriesStorageError",
     "StorageResolver",
+    "StorageScope",
     "SystemRepository",
     "SystemStorageContext",
     "SystemStorageError",
     "ensure_project_repository_for_book",
     "ensure_series_repository",
+    "ensure_series_repository_for_access",
     "ensure_system_repository",
     "resolve_book_project_context",
+    "resolve_optional_project_series_access_context",
+    "resolve_project_series_access_context",
     "resolve_series_context",
     "resolve_system_context",
 ]

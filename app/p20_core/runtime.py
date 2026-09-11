@@ -11,8 +11,8 @@ from typing import Any, Dict, List
 
 from fastapi import HTTPException
 
-from app.orchestrator_stub import execute_stub
 from app.config_registry import load_presets
+from app.p20_core.executor import execute_p20 as execute_stub
 from app.p20_core.canon_service import (
     APP_VERSION,
     REPO_ROOT,

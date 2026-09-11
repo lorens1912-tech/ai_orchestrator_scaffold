@@ -9,6 +9,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Iterator
 
+from app.p20_core.domain_mutation_guard import (
+    DEFAULT_MUTATION_POLICY,
+    DomainMutationGuard,
+    MutationContext,
+    MutationPolicy,
+    MutationSource,
+    MutationType,
+)
 from app.p20_core.storage_paths import (
     get_books_root,
     get_projects_root,
@@ -524,6 +532,9 @@ class ProjectDomainTransaction:
         record: Any,
         *,
         scope: StorageScope | None = None,
+        mutation_source: MutationSource | str = MutationSource.AUTOMATION,
+        actor_id: str | None = None,
+        mutation_policy: MutationPolicy = DEFAULT_MUTATION_POLICY,
     ) -> None:
         record_scope = self._scope if scope is None else _require_matching_scope(
             self._scope,
@@ -548,6 +559,39 @@ class ProjectDomainTransaction:
         if not callable(to_json):
             raise ProjectStorageError("structured memory record must provide to_json")
         payload_json = str(to_json())
+        existing = self._conn.execute(
+            """
+            SELECT payload_json
+            FROM project_structured_memory_records
+            WHERE scope_type = ?
+              AND scope_id = ?
+              AND record_type = ?
+              AND record_id = ?
+            """,
+            (
+                record_scope.scope_type.value,
+                record_scope.scope_id,
+                record_type,
+                record_id,
+            ),
+        ).fetchone()
+        mutation_type = MutationType.CREATE if existing is None else MutationType.UPDATE
+        decision = DomainMutationGuard(mutation_policy).evaluate(
+            current_payload=None if existing is None else str(existing["payload_json"]),
+            proposed_payload=payload_json,
+            context=MutationContext(
+                project_id=record_scope.scope_id,
+                record_type=record_type,
+                record_id=record_id,
+                mutation_type=mutation_type,
+                source=mutation_source,
+                actor_id=actor_id,
+            ),
+        )
+        if decision.denied:
+            raise ProjectStorageError(
+                f"domain mutation denied: {decision.reason_code.value}"
+            )
 
         self._conn.execute(
             """

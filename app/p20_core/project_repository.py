@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
+from collections import deque
 from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.p20_core.domain_records import EdgeRecord
+    from app.p20_core.project_graph import (
+        DependencyTraversalPolicy, DependencyTraversalStep, GraphNodeRef,
+    )
 
 from app.p20_core.domain_mutation_guard import (
     DEFAULT_MUTATION_POLICY,
@@ -26,7 +34,7 @@ from app.p20_core.storage_paths import (
 )
 
 
-PROJECT_DB_SCHEMA_VERSION = 2
+PROJECT_DB_SCHEMA_VERSION = 3
 PROJECT_DB_FILENAME = "project.db"
 SERIES_DB_SCHEMA_VERSION = 1
 SERIES_DB_FILENAME = "series.db"
@@ -447,7 +455,7 @@ def _apply_project_schema_v1_to_v2(conn: sqlite3.Connection) -> None:
             SET schema_version = ?
             WHERE id = 1
             """,
-            (PROJECT_DB_SCHEMA_VERSION,),
+            (2,),
         )
 
 
@@ -456,12 +464,53 @@ def _validate_project_schema_v2(conn: sqlite3.Connection) -> None:
         raise SchemaMigrationError("project structured memory table is missing")
 
 
+def _create_project_edges_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS edges (
+            scope_type TEXT NOT NULL CHECK (scope_type = 'PROJECT'),
+            scope_id TEXT NOT NULL,
+            edge_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            relation_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (scope_type, scope_id, edge_id)
+        )
+        """
+    )
+    for side in ("source", "target"):
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS edges_{side} "
+            f"ON edges(scope_type, scope_id, {side}_id, edge_id)"
+        )
+
+
+def _apply_project_schema_v2_to_v3(conn: sqlite3.Connection) -> None:
+    _create_project_edges_table(conn)
+    if _table_exists(conn, "project_identity"):
+        conn.execute("UPDATE project_identity SET schema_version = 3 WHERE id = 1")
+
+
+def _validate_project_schema_v3(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "SELECT scope_type, scope_id, edge_id, source_id, target_id, relation_type, "
+        "payload_json FROM edges LIMIT 0"
+    )
+
+
 PROJECT_DB_MIGRATIONS = (
     SchemaMigration(
         source_version=1,
         target_version=2,
         apply=_apply_project_schema_v1_to_v2,
         validate=_validate_project_schema_v2,
+    ),
+    SchemaMigration(
+        source_version=2,
+        target_version=3,
+        apply=_apply_project_schema_v2_to_v3,
+        validate=_validate_project_schema_v3,
     ),
 )
 
@@ -474,6 +523,24 @@ class ProjectDomainTransaction:
     @property
     def scope(self) -> StorageScope:
         return self._scope
+
+    def add_edge(
+        self, record: EdgeRecord, *, source_scope: StorageScope, target_scope: StorageScope,
+    ) -> None:
+        from app.p20_core.domain_records import EdgeRecord
+
+        if not isinstance(record, EdgeRecord):
+            raise ProjectStorageError("graph write requires an EdgeRecord")
+        record = EdgeRecord(**record.to_dict())
+        for scope in (record.scope, source_scope, target_scope):
+            _require_matching_scope(self.scope, scope, ProjectStorageError)
+        # Creation only: duplicate identity cannot overwrite a dependency or its provenance.
+        self._conn.execute(
+            "INSERT INTO edges (scope_type, scope_id, edge_id, source_id, target_id, "
+            "relation_type, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (record.scope_type, record.scope_id, record.edge_id, str(record.source_id),
+             str(record.target_id), record.relation_type.value, record.to_json()),
+        )
 
     def add_fact_record(
         self,
@@ -797,6 +864,7 @@ class ProjectRepository:
                 """
             )
             _create_project_structured_memory_table(conn)
+            _create_project_edges_table(conn)
             self._ensure_identity(conn)
 
     def _ensure_identity(self, conn: sqlite3.Connection) -> None:
@@ -910,6 +978,93 @@ class ProjectRepository:
             except Exception:
                 conn.rollback()
                 raise
+
+    def _decode_edge(self, row: sqlite3.Row) -> EdgeRecord:
+        from app.p20_core.domain_records import EdgeRecord
+
+        try:
+            record = EdgeRecord(**json.loads(row["payload_json"]))
+            self.require_scope(record.scope)
+            for key in ("scope_type", "scope_id", "edge_id", "source_id", "target_id", "relation_type"):
+                if record.to_dict()[key] != row[key]:
+                    raise ProjectStorageError(f"edge index/payload mismatch: {key}")
+            return record
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ProjectStorageError("malformed project edge") from exc
+
+    def get_edge(self, edge_id: str) -> EdgeRecord | None:
+        self.initialize()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM edges WHERE scope_type = ? AND scope_id = ? AND edge_id = ?",
+                (self.scope.scope_type.value, self.scope.scope_id, edge_id),
+            ).fetchone()
+            return None if row is None else self._decode_edge(row)
+
+    def list_edges(self) -> tuple[EdgeRecord, ...]:
+        self.initialize()
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM edges WHERE scope_type = ? AND scope_id = ? ORDER BY edge_id",
+                (self.scope.scope_type.value, self.scope.scope_id),
+            ).fetchall()
+            return tuple(self._decode_edge(row) for row in rows)
+
+    def traverse_dependencies(
+        self, start: GraphNodeRef, policy: DependencyTraversalPolicy | None = None,
+    ) -> tuple[DependencyTraversalStep, ...]:
+        from app.p20_core.project_graph import (
+            DependencyTraversalPolicy, DependencyTraversalStep, GraphNodeRef,
+            GraphTraversalLimitError, TraversalDirection,
+        )
+
+        if not isinstance(start, GraphNodeRef):
+            raise ProjectStorageError("traversal requires a scoped GraphNodeRef")
+        self.require_scope(start.scope)
+        policy = DependencyTraversalPolicy() if policy is None else policy
+        if not isinstance(policy, DependencyTraversalPolicy):
+            raise ProjectStorageError("traversal requires a DependencyTraversalPolicy")
+        self.initialize()
+        pending = deque([(start.node_id, 0)])
+        visited_nodes = {str(start.node_id)}
+        visited_edges: set[str] = set()
+        result = []
+        with self.connect() as conn:
+            # One SQLite read snapshot for the entire multi-hop traversal.
+            conn.execute("BEGIN")
+            while pending:
+                node, depth = pending.popleft()
+                if depth >= policy.max_depth or policy.relation_types == ():
+                    continue
+                params: list[Any] = [self.scope.scope_type.value, self.scope.scope_id]
+                if policy.direction == TraversalDirection.BOTH:
+                    predicate = "(source_id = ? OR target_id = ?)"
+                    params.extend([str(node), str(node)])
+                else:
+                    side = "target" if policy.direction == TraversalDirection.INCOMING else "source"
+                    predicate = f"{side}_id = ?"
+                    params.append(str(node))
+                if policy.relation_types is not None:
+                    predicate += " AND relation_type IN (" + ",".join("?" for _ in policy.relation_types) + ")"
+                    params.extend(r.value for r in policy.relation_types)
+                params.append(policy.max_edges + 1)
+                rows = conn.execute(
+                    "SELECT * FROM edges WHERE scope_type = ? AND scope_id = ? AND "
+                    + predicate + " ORDER BY edge_id LIMIT ?", params,
+                )
+                for row in rows:
+                    edge = self._decode_edge(row)
+                    if edge.edge_id in visited_edges:
+                        continue
+                    if len(visited_edges) >= policy.max_edges:
+                        raise GraphTraversalLimitError("dependency traversal max_edges exceeded")
+                    visited_edges.add(edge.edge_id)
+                    target = edge.target_id if str(edge.source_id) == str(node) else edge.source_id
+                    result.append(DependencyTraversalStep(edge, depth + 1, node, target))
+                    if str(target) not in visited_nodes:
+                        visited_nodes.add(str(target))
+                        pending.append((target, depth + 1))
+        return tuple(result)
 
     def list_fact_records(self) -> dict[str, str]:
         self.initialize()

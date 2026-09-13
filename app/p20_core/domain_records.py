@@ -323,6 +323,81 @@ class ProjectScopedRecord(SerializableRecord):
             raise DomainContractError("structured memory record project scope does not match")
 
 
+class EdgeRelationType(str, Enum):
+    KNOWS = "KNOWS"
+    BELIEVES = "BELIEVES"
+    RELATED_TO = "RELATED_TO"
+    LOCATED_AT = "LOCATED_AT"
+    PRESENT_IN = "PRESENT_IN"
+    REVEALS = "REVEALS"
+    REQUIRES = "REQUIRES"
+    USES = "USES"
+    OPENS = "OPENS"
+    PROGRESSES = "PROGRESSES"
+    CLOSES = "CLOSES"
+    SETS_UP = "SETS_UP"
+    PAYS_OFF = "PAYS_OFF"
+    CAUSES = "CAUSES"
+    MOTIVATES = "MOTIVATES"
+    CONTRADICTS = "CONTRADICTS"
+    DEPENDS_ON = "DEPENDS_ON"
+    PART_OF = "PART_OF"
+
+
+@dataclass(frozen=True)
+class EdgeRecord(SerializableRecord):
+    edge_id: str
+    scope_type: str
+    scope_id: str
+    source_type: str
+    source_id: DomainId | str
+    relation_type: EdgeRelationType | str
+    target_type: str
+    target_id: DomainId | str
+    valid_from: str | None
+    valid_to: str | None
+    confidence: int | float
+    source_ref: str | None
+    version: int
+
+    def __post_init__(self) -> None:
+        edge_id = _required_text(self.edge_id, "edge_id")
+        if not _SAFE_ID_BODY.fullmatch(edge_id):
+            raise DomainContractError("edge_id contains unsafe characters")
+        scope = StorageScope(self.scope_type, self.scope_id)
+        if scope.scope_type.value != "PROJECT":
+            raise DomainContractError("edge scope must be PROJECT")
+        object.__setattr__(self, "scope_type", scope.scope_type.value)
+        object.__setattr__(self, "scope_id", scope.scope_id)
+        for side in ("source", "target"):
+            node_id = _any_domain_id(getattr(self, f"{side}_id"), f"{side}_id")
+            node_type = getattr(self, f"{side}_type")
+            if node_type not in {node_id.namespace.name, node_id.namespace.value}:
+                raise DomainContractError(f"{side}_type does not match domain id namespace")
+            if node_id.namespace == DomainNamespace.PROJECT and str(node_id) != scope.scope_id:
+                raise DomainContractError("cross-project edge endpoint is forbidden")
+            object.__setattr__(self, f"{side}_id", node_id)
+            object.__setattr__(self, f"{side}_type", node_id.namespace.name)
+        try:
+            relation = EdgeRelationType(self.relation_type)
+        except ValueError as exc:
+            raise DomainContractError("unsupported edge relation_type") from exc
+        object.__setattr__(self, "relation_type", relation)
+        for name in ("valid_from", "valid_to"):
+            object.__setattr__(self, name, _optional_time(getattr(self, name), name))
+        _validate_temporal_range(self.valid_from, self.valid_to)
+        confidence = _confidence(self.confidence)
+        if confidence != confidence:
+            raise DomainContractError("confidence must be finite")
+        object.__setattr__(self, "source_ref", _optional_text(self.source_ref, "source_ref"))
+        object.__setattr__(self, "version", _positive_int(self.version, "version"))
+
+    @property
+    def scope(self) -> StorageScope:
+        # Both endpoints are local to this scope; IDs never trigger global lookup.
+        return StorageScope.project(self.scope_id)
+
+
 @dataclass(frozen=True)
 class ProjectRecord(SerializableRecord):
     project_id: DomainId | str
@@ -927,6 +1002,8 @@ __all__ = [
     "DomainContractError",
     "DomainId",
     "DomainNamespace",
+    "EdgeRecord",
+    "EdgeRelationType",
     "EventRecord",
     "FactRecord",
     "KnowledgeEvent",

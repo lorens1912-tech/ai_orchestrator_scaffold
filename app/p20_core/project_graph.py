@@ -39,8 +39,20 @@ class DependencyTraversalPolicy:
     max_depth: int = 2
     relation_types: tuple[EdgeRelationType | str, ...] | None = None
     max_edges: int = 10000
+    relation_directions: tuple[tuple[EdgeRelationType | str, TraversalDirection | str], ...] | None = None
+    read_only: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.read_only, bool):
+            raise DomainContractError("read_only must be boolean")
+        if self.relation_directions is not None:
+            try:
+                directions = tuple((EdgeRelationType(r), TraversalDirection(d)) for r, d in self.relation_directions)
+            except (ValueError, TypeError) as exc:
+                raise DomainContractError("invalid relation direction policy") from exc
+            if len({r for r, _ in directions}) != len(directions):
+                raise DomainContractError("duplicate relation direction")
+            object.__setattr__(self, "relation_directions", tuple(sorted(directions)))
         try:
             object.__setattr__(self, "direction", TraversalDirection(self.direction))
         except ValueError as exc:

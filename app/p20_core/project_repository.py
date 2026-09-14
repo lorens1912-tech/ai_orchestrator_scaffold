@@ -1010,6 +1010,23 @@ class ProjectRepository:
             ).fetchall()
             return tuple(self._decode_edge(row) for row in rows)
 
+    @contextmanager
+    def _graph_read_connection(self) -> Iterator[sqlite3.Connection]:
+        # Analysis must not initialize a database or run a schema migration.
+        conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA query_only = ON")
+            conn.execute("BEGIN")
+            if _read_schema_version(conn) != PROJECT_DB_SCHEMA_VERSION:
+                raise ProjectStorageError("graph analysis requires current schema; use controlled migration")
+            identity = conn.execute("SELECT project_id, book_id FROM project_identity WHERE id = 1").fetchone()
+            if identity is None or identity["project_id"] != self.context.project_id or identity["book_id"] != self.context.book_id:
+                raise ProjectStorageError("project.db identity does not match repository context")
+            yield conn
+        finally:
+            conn.close()
+
     def traverse_dependencies(
         self, start: GraphNodeRef, policy: DependencyTraversalPolicy | None = None,
     ) -> tuple[DependencyTraversalStep, ...]:
@@ -1024,14 +1041,19 @@ class ProjectRepository:
         policy = DependencyTraversalPolicy() if policy is None else policy
         if not isinstance(policy, DependencyTraversalPolicy):
             raise ProjectStorageError("traversal requires a DependencyTraversalPolicy")
-        self.initialize()
+        if not policy.read_only:
+            self.initialize()
         pending = deque([(start.node_id, 0)])
         visited_nodes = {str(start.node_id)}
         visited_edges: set[str] = set()
+        examined_edges: set[str] = set()
         result = []
-        with self.connect() as conn:
+        connection = self._graph_read_connection() if policy.read_only else self.connect()
+        directions = None if policy.relation_directions is None else dict(policy.relation_directions)
+        with connection as conn:
             # One SQLite read snapshot for the entire multi-hop traversal.
-            conn.execute("BEGIN")
+            if not conn.in_transaction:
+                conn.execute("BEGIN")
             while pending:
                 node, depth = pending.popleft()
                 if depth >= policy.max_depth or policy.relation_types == ():
@@ -1056,6 +1078,15 @@ class ProjectRepository:
                     edge = self._decode_edge(row)
                     if edge.edge_id in visited_edges:
                         continue
+                    if edge.edge_id not in examined_edges:
+                        if len(examined_edges) >= policy.max_edges:
+                            raise GraphTraversalLimitError("dependency traversal max_edges exceeded")
+                        examined_edges.add(edge.edge_id)
+                    if directions is not None:
+                        direction = directions.get(edge.relation_type)
+                        outgoing = str(edge.source_id) == str(node)
+                        if direction is None or (direction == TraversalDirection.OUTGOING and not outgoing) or (direction == TraversalDirection.INCOMING and outgoing):
+                            continue
                     if len(visited_edges) >= policy.max_edges:
                         raise GraphTraversalLimitError("dependency traversal max_edges exceeded")
                     visited_edges.add(edge.edge_id)

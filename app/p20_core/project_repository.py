@@ -36,7 +36,7 @@ from app.p20_core.storage_paths import (
 
 PROJECT_DB_SCHEMA_VERSION = 3
 PROJECT_DB_FILENAME = "project.db"
-SERIES_DB_SCHEMA_VERSION = 1
+SERIES_DB_SCHEMA_VERSION = 2
 SERIES_DB_FILENAME = "series.db"
 SYSTEM_DB_SCHEMA_VERSION = 1
 SYSTEM_DB_FILENAME = "agentpro_system.db"
@@ -511,6 +511,99 @@ PROJECT_DB_MIGRATIONS = (
         target_version=3,
         apply=_apply_project_schema_v2_to_v3,
         validate=_validate_project_schema_v3,
+    ),
+)
+
+
+def _create_series_memory_tables(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS series_memberships (
+            project_id TEXT PRIMARY KEY,
+            book_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS series_state_records (
+            scope_type TEXT NOT NULL CHECK (scope_type = 'SERIES'),
+            scope_id TEXT NOT NULL,
+            state_kind TEXT NOT NULL,
+            record_type TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            source_project_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (scope_type, scope_id, state_kind, record_type, record_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS volume_closing_snapshots (
+            snapshot_id TEXT PRIMARY KEY,
+            scope_type TEXT NOT NULL CHECK (scope_type = 'SERIES'),
+            scope_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            book_id TEXT NOT NULL,
+            source_state_version INTEGER NOT NULL,
+            semantic_hash TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            UNIQUE (scope_type, scope_id, project_id, book_id, semantic_hash)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS series_operations (
+            operation_id TEXT PRIMARY KEY,
+            semantic_hash TEXT NOT NULL,
+            result_type TEXT NOT NULL,
+            result_id TEXT NOT NULL,
+            result_payload_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS series_snapshots_lookup
+        ON volume_closing_snapshots (
+            scope_type, scope_id, source_state_version DESC, snapshot_id
+        )
+        """
+    )
+
+
+def _apply_series_schema_v1_to_v2(conn: sqlite3.Connection) -> None:
+    _create_series_memory_tables(conn)
+    if _table_exists(conn, "series_identity"):
+        conn.execute("UPDATE series_identity SET schema_version = 2 WHERE id = 1")
+
+
+def _validate_series_schema_v2(conn: sqlite3.Connection) -> None:
+    conn.execute("SELECT project_id, book_id, payload_json FROM series_memberships LIMIT 0")
+    conn.execute(
+        "SELECT scope_type, scope_id, state_kind, record_type, record_id, "
+        "source_project_id, payload_json FROM series_state_records LIMIT 0"
+    )
+    conn.execute(
+        "SELECT snapshot_id, scope_type, scope_id, project_id, book_id, "
+        "source_state_version, semantic_hash, payload_json "
+        "FROM volume_closing_snapshots LIMIT 0"
+    )
+    conn.execute(
+        "SELECT operation_id, semantic_hash, result_type, result_id, "
+        "result_payload_json FROM series_operations LIMIT 0"
+    )
+
+
+SERIES_DB_MIGRATIONS = (
+    SchemaMigration(
+        source_version=1,
+        target_version=2,
+        apply=_apply_series_schema_v1_to_v2,
+        validate=_validate_series_schema_v2,
     ),
 )
 
@@ -1261,6 +1354,7 @@ class SeriesRepository:
                 )
                 """
             )
+            _create_series_memory_tables(conn)
             self._ensure_identity(conn)
 
     def _ensure_identity(self, conn: sqlite3.Connection) -> None:
@@ -1335,6 +1429,430 @@ class SeriesRepository:
             rows = conn.execute("SELECT key, value FROM series_metadata ORDER BY key").fetchall()
             return {str(row["key"]): str(row["value"]) for row in rows}
 
+    def _require_access_context(self, access: SeriesAccessContext) -> None:
+        if not isinstance(access, SeriesAccessContext):
+            raise SeriesAccessError("access must be a SeriesAccessContext")
+        access.require_series(self.context.series_id)
+
+    def register_member(self, access: SeriesAccessContext, membership: Any) -> Any:
+        from app.p20_core.series_memory import SeriesMembershipRecord
+
+        self._require_access_context(access)
+        if not isinstance(membership, SeriesMembershipRecord):
+            raise SeriesStorageError("membership must be a SeriesMembershipRecord")
+        membership.require_access(access)
+        self.initialize()
+        with self.connect() as conn:
+            existing = conn.execute(
+                "SELECT payload_json FROM series_memberships WHERE project_id = ?",
+                (access.project_id,),
+            ).fetchone()
+            payload_json = membership.to_json()
+            if existing is not None:
+                if str(existing["payload_json"]) != payload_json:
+                    raise SeriesStorageError("series membership identity cannot be changed")
+                return membership
+            conn.execute(
+                "INSERT INTO series_memberships (project_id, book_id, payload_json) "
+                "VALUES (?, ?, ?)",
+                (access.project_id, str(membership.book_id), payload_json),
+            )
+        return membership
+
+    def _require_registered_member(
+        self,
+        conn: sqlite3.Connection,
+        access: SeriesAccessContext,
+    ) -> Any:
+        from app.p20_core.series_memory import SeriesMembershipRecord
+
+        self._require_access_context(access)
+        row = conn.execute(
+            "SELECT payload_json FROM series_memberships WHERE project_id = ?",
+            (access.project_id,),
+        ).fetchone()
+        if row is None:
+            raise SeriesAccessError("project is not a registered member of the series")
+        membership = SeriesMembershipRecord(**json.loads(str(row["payload_json"])))
+        membership.require_access(access)
+        return membership
+
+    @staticmethod
+    def _read_operation(
+        conn: sqlite3.Connection,
+        *,
+        operation_id: str,
+        semantic_hash: str,
+        result_type: str,
+    ) -> str | None:
+        row = conn.execute(
+            "SELECT semantic_hash, result_type, result_payload_json "
+            "FROM series_operations WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if (
+            str(row["semantic_hash"]) != semantic_hash
+            or str(row["result_type"]) != result_type
+        ):
+            raise SeriesStorageError("operation identity was already used for different input")
+        return str(row["result_payload_json"])
+
+    @staticmethod
+    def _record_operation(
+        conn: sqlite3.Connection,
+        *,
+        operation_id: str,
+        semantic_hash: str,
+        result_type: str,
+        result_id: str,
+        result_payload_json: str,
+    ) -> None:
+        conn.execute(
+            "INSERT INTO series_operations (operation_id, semantic_hash, result_type, "
+            "result_id, result_payload_json) VALUES (?, ?, ?, ?, ?)",
+            (operation_id, semantic_hash, result_type, result_id, result_payload_json),
+        )
+
+    def _upsert_series_state_record(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        access: SeriesAccessContext,
+        record: Any,
+        mutation_source: MutationSource | str,
+        actor_id: str | None,
+        mutation_policy: MutationPolicy,
+    ) -> None:
+        from app.p20_core.series_memory import SeriesStateRecord
+
+        if not isinstance(record, SeriesStateRecord):
+            raise SeriesStorageError("series state write requires a SeriesStateRecord")
+        record.require_access(access)
+        _require_matching_scope(self.scope, record.scope, SeriesStorageError)
+        existing = conn.execute(
+            "SELECT payload_json FROM series_state_records "
+            "WHERE scope_type = ? AND scope_id = ? AND state_kind = ? "
+            "AND record_type = ? AND record_id = ?",
+            (
+                ScopeType.SERIES.value,
+                self.context.series_id,
+                record.state_kind.value,
+                record.record_type,
+                str(record.record_id),
+            ),
+        ).fetchone()
+        decision = DomainMutationGuard(mutation_policy).evaluate(
+            current_payload=None if existing is None else str(existing["payload_json"]),
+            proposed_payload=record.to_json(),
+            context=MutationContext(
+                project_id=access.project_id,
+                record_type=record.record_type,
+                record_id=str(record.record_id),
+                mutation_type=MutationType.CREATE if existing is None else MutationType.UPDATE,
+                source=mutation_source,
+                actor_id=actor_id,
+            ),
+        )
+        if decision.denied:
+            raise SeriesStorageError(
+                f"domain mutation denied: {decision.reason_code.value}"
+            )
+        conn.execute(
+            """
+            INSERT INTO series_state_records (
+                scope_type, scope_id, state_kind, record_type, record_id,
+                source_project_id, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(scope_type, scope_id, state_kind, record_type, record_id)
+            DO UPDATE SET
+                source_project_id = excluded.source_project_id,
+                payload_json = excluded.payload_json
+            """,
+            (
+                ScopeType.SERIES.value,
+                self.context.series_id,
+                record.state_kind.value,
+                record.record_type,
+                str(record.record_id),
+                str(record.source_project_id),
+                record.to_json(),
+            ),
+        )
+
+    def _save_series_state(
+        self,
+        access: SeriesAccessContext,
+        record: Any,
+        *,
+        expected_kind: Any,
+        mutation_source: MutationSource | str,
+        actor_id: str | None,
+        mutation_policy: MutationPolicy,
+    ) -> Any:
+        from app.p20_core.series_memory import SeriesStateRecord
+
+        self._require_access_context(access)
+        if not isinstance(record, SeriesStateRecord):
+            raise SeriesStorageError("series state write requires a SeriesStateRecord")
+        if record.state_kind != expected_kind:
+            raise SeriesStorageError(f"record must use {expected_kind.value} state kind")
+        record.require_access(access)
+        self.initialize()
+        with self.connect() as conn:
+            self._require_registered_member(conn, access)
+            replay = self._read_operation(
+                conn,
+                operation_id=record.operation_id,
+                semantic_hash=record.semantic_identity,
+                result_type=record.state_kind.value,
+            )
+            if replay is not None:
+                return SeriesStateRecord(**json.loads(replay))
+            self._upsert_series_state_record(
+                conn,
+                access=access,
+                record=record,
+                mutation_source=mutation_source,
+                actor_id=actor_id,
+                mutation_policy=mutation_policy,
+            )
+            self._record_operation(
+                conn,
+                operation_id=record.operation_id,
+                semantic_hash=record.semantic_identity,
+                result_type=record.state_kind.value,
+                result_id=str(record.record_id),
+                result_payload_json=record.to_json(),
+            )
+        return record
+
+    def save_series_canon(
+        self,
+        access: SeriesAccessContext,
+        record: Any,
+        *,
+        mutation_source: MutationSource | str = MutationSource.AUTHOR,
+        actor_id: str | None = None,
+        mutation_policy: MutationPolicy = DEFAULT_MUTATION_POLICY,
+    ) -> Any:
+        from app.p20_core.series_memory import SeriesStateKind
+
+        return self._save_series_state(
+            access,
+            record,
+            expected_kind=SeriesStateKind.CANON,
+            mutation_source=mutation_source,
+            actor_id=actor_id,
+            mutation_policy=mutation_policy,
+        )
+
+    def save_series_memory(
+        self,
+        access: SeriesAccessContext,
+        record: Any,
+        *,
+        mutation_source: MutationSource | str = MutationSource.AUTOMATION,
+        actor_id: str | None = None,
+        mutation_policy: MutationPolicy = DEFAULT_MUTATION_POLICY,
+    ) -> Any:
+        from app.p20_core.series_memory import SeriesStateKind
+
+        return self._save_series_state(
+            access,
+            record,
+            expected_kind=SeriesStateKind.MEMORY,
+            mutation_source=mutation_source,
+            actor_id=actor_id,
+            mutation_policy=mutation_policy,
+        )
+
+    def _list_series_state(
+        self,
+        access: SeriesAccessContext,
+        state_kind: Any,
+    ) -> tuple[Any, ...]:
+        from app.p20_core.series_memory import SeriesStateRecord
+
+        self.initialize()
+        with self.connect() as conn:
+            self._require_registered_member(conn, access)
+            rows = conn.execute(
+                "SELECT payload_json FROM series_state_records "
+                "WHERE scope_type = ? AND scope_id = ? AND state_kind = ? "
+                "ORDER BY record_type, record_id",
+                (ScopeType.SERIES.value, self.context.series_id, state_kind.value),
+            ).fetchall()
+        return tuple(
+            SeriesStateRecord(**json.loads(str(row["payload_json"])))
+            for row in rows
+        )
+
+    def list_series_canon(self, access: SeriesAccessContext) -> tuple[Any, ...]:
+        from app.p20_core.series_memory import SeriesStateKind
+
+        return self._list_series_state(access, SeriesStateKind.CANON)
+
+    def list_series_memory(self, access: SeriesAccessContext) -> tuple[Any, ...]:
+        from app.p20_core.series_memory import SeriesStateKind
+
+        return self._list_series_state(access, SeriesStateKind.MEMORY)
+
+    def close_volume(
+        self,
+        access: SeriesAccessContext,
+        snapshot: Any,
+        *,
+        mutation_source: MutationSource | str = MutationSource.AUTOMATION,
+        actor_id: str | None = None,
+        mutation_policy: MutationPolicy = DEFAULT_MUTATION_POLICY,
+    ) -> Any:
+        from app.p20_core.series_memory import (
+            VolumeClosingSnapshot,
+            VolumeTransferTarget,
+            series_state_from_snapshot_item,
+        )
+
+        self._require_access_context(access)
+        if not isinstance(snapshot, VolumeClosingSnapshot):
+            raise SeriesStorageError("close_volume requires a VolumeClosingSnapshot")
+        snapshot.require_access(access)
+        _require_matching_scope(self.scope, snapshot.scope, SeriesStorageError)
+        self.initialize()
+        with self.connect() as conn:
+            membership = self._require_registered_member(conn, access)
+            if str(membership.book_id) != str(snapshot.book_id):
+                raise SeriesAccessError("snapshot book is not bound to the project membership")
+            replay = self._read_operation(
+                conn,
+                operation_id=snapshot.operation_id,
+                semantic_hash=snapshot.semantic_identity,
+                result_type="VOLUME_CLOSING_SNAPSHOT",
+            )
+            if replay is not None:
+                return VolumeClosingSnapshot(**json.loads(replay))
+
+            duplicate = conn.execute(
+                "SELECT payload_json FROM volume_closing_snapshots "
+                "WHERE scope_type = ? AND scope_id = ? AND project_id = ? "
+                "AND book_id = ? AND semantic_hash = ?",
+                (
+                    ScopeType.SERIES.value,
+                    self.context.series_id,
+                    access.project_id,
+                    str(snapshot.book_id),
+                    snapshot.semantic_identity,
+                ),
+            ).fetchone()
+            if duplicate is not None:
+                existing = VolumeClosingSnapshot(**json.loads(str(duplicate["payload_json"])))
+                self._record_operation(
+                    conn,
+                    operation_id=snapshot.operation_id,
+                    semantic_hash=snapshot.semantic_identity,
+                    result_type="VOLUME_CLOSING_SNAPSHOT",
+                    result_id=existing.snapshot_id,
+                    result_payload_json=existing.to_json(),
+                )
+                return existing
+
+            conflicting = conn.execute(
+                "SELECT semantic_hash FROM volume_closing_snapshots WHERE snapshot_id = ?",
+                (snapshot.snapshot_id,),
+            ).fetchone()
+            if conflicting is not None:
+                raise SeriesStorageError("snapshot_id was already used for different input")
+
+            conn.execute(
+                "INSERT INTO volume_closing_snapshots (snapshot_id, scope_type, scope_id, "
+                "project_id, book_id, source_state_version, semantic_hash, payload_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    snapshot.snapshot_id,
+                    ScopeType.SERIES.value,
+                    self.context.series_id,
+                    access.project_id,
+                    str(snapshot.book_id),
+                    snapshot.source_state_version,
+                    snapshot.semantic_identity,
+                    snapshot.to_json(),
+                ),
+            )
+            for item in snapshot.items:
+                if item.transfer_target == VolumeTransferTarget.SNAPSHOT_ONLY:
+                    continue
+                self._upsert_series_state_record(
+                    conn,
+                    access=access,
+                    record=series_state_from_snapshot_item(snapshot, item),
+                    mutation_source=mutation_source,
+                    actor_id=actor_id,
+                    mutation_policy=mutation_policy,
+                )
+            self._record_operation(
+                conn,
+                operation_id=snapshot.operation_id,
+                semantic_hash=snapshot.semantic_identity,
+                result_type="VOLUME_CLOSING_SNAPSHOT",
+                result_id=snapshot.snapshot_id,
+                result_payload_json=snapshot.to_json(),
+            )
+        return snapshot
+
+    def get_latest_volume_snapshot(
+        self,
+        access: SeriesAccessContext,
+        *,
+        book_id: str | None = None,
+    ) -> Any | None:
+        from app.p20_core.series_memory import VolumeClosingSnapshot
+
+        self.initialize()
+        with self.connect() as conn:
+            self._require_registered_member(conn, access)
+            params: list[Any] = [ScopeType.SERIES.value, self.context.series_id]
+            where = "scope_type = ? AND scope_id = ?"
+            if book_id is not None:
+                where += " AND book_id = ?"
+                params.append(str(book_id))
+            row = conn.execute(
+                f"SELECT payload_json FROM volume_closing_snapshots WHERE {where} "
+                "ORDER BY source_state_version DESC, snapshot_id DESC LIMIT 1",
+                tuple(params),
+            ).fetchone()
+        if row is None:
+            return None
+        return VolumeClosingSnapshot(**json.loads(str(row["payload_json"])))
+
+    def list_volume_snapshots(self, access: SeriesAccessContext) -> tuple[Any, ...]:
+        from app.p20_core.series_memory import VolumeClosingSnapshot
+
+        self.initialize()
+        with self.connect() as conn:
+            self._require_registered_member(conn, access)
+            rows = conn.execute(
+                "SELECT payload_json FROM volume_closing_snapshots "
+                "WHERE scope_type = ? AND scope_id = ? "
+                "ORDER BY source_state_version, snapshot_id",
+                (ScopeType.SERIES.value, self.context.series_id),
+            ).fetchall()
+        return tuple(
+            VolumeClosingSnapshot(**json.loads(str(row["payload_json"])))
+            for row in rows
+        )
+
+    def get_opening_state(self, access: SeriesAccessContext) -> Any:
+        from app.p20_core.series_memory import SeriesOpeningState
+
+        return SeriesOpeningState(
+            series_id=self.context.series_id,
+            project_id=access.project_id,
+            series_canon=self.list_series_canon(access),
+            series_memory=self.list_series_memory(access),
+            latest_snapshot=self.get_latest_volume_snapshot(access),
+        )
+
     def get_pragma(self, name: str) -> str | int:
         with self.connect() as conn:
             row = conn.execute(f"PRAGMA {name}").fetchone()
@@ -1345,7 +1863,7 @@ class SeriesRepository:
 
     def migrate_schema(
         self,
-        migrations: Iterable[SchemaMigration],
+        migrations: Iterable[SchemaMigration] = SERIES_DB_MIGRATIONS,
         *,
         target_version: int | None = None,
     ) -> SchemaStatus:
@@ -1551,6 +2069,7 @@ __all__ = [
     "PROJECT_DB_MIGRATIONS",
     "PROJECT_DB_SCHEMA_VERSION",
     "SERIES_DB_FILENAME",
+    "SERIES_DB_MIGRATIONS",
     "SERIES_DB_SCHEMA_VERSION",
     "SYSTEM_DB_FILENAME",
     "SYSTEM_DB_SCHEMA_VERSION",

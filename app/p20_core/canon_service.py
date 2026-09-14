@@ -482,6 +482,9 @@ def write_audit(
     canon_snapshot_path: Path,
     master_canon: Optional[Dict[str, Any]] = None,
     project_truth: Optional[Dict[str, Any]] = None,
+    project_id: Optional[str] = None,
+    series_id: Optional[str] = None,
+    context_packages: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     book_dir = ensure_book_dirs(book_id)
     audit_doc = {
@@ -495,8 +498,16 @@ def write_audit(
         "canon_snapshot_path": _public_path(canon_snapshot_path),
         "master_canon": master_canon,
         "project_truth": project_truth,
+        "project_id": project_id,
+        "series_id": series_id,
+        "context_packages": list(context_packages or []),
         "engine": APP_VERSION,
     }
+    if context_packages:
+        audit_doc["context_package_id"] = context_packages[-1].get(
+            "context_package_id"
+        )
+        audit_doc["context_hash"] = context_packages[-1].get("context_hash")
 
     append_jsonl(
         book_dir / "audit" / "audit_log.jsonl",

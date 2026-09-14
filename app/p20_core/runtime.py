@@ -8,6 +8,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
+from uuid import uuid4
 
 from fastapi import HTTPException
 
@@ -35,6 +36,7 @@ from app.p20_core.canon_service import (
     write_audit,
 )
 from app.p20_core.contracts import AgentStepRequest
+from app.p20_core.context_runtime import ProjectExecutionContext
 from app.p20_core.book_bible_contract import load_book_bible_or_raise
 from app.p20_core.master_canon import resolve_master_canon
 from app.p20_core.project_truth import build_project_truth_binding, assert_resume_project_truth_consistency
@@ -152,8 +154,16 @@ def build_request_payload(req: AgentStepRequest) -> Dict[str, Any]:
 
     if req.book_id and not payload.get("book_id"):
         payload["book_id"] = req.book_id
+    if req.project_id and not payload.get("project_id"):
+        payload["project_id"] = req.project_id
+    if req.series_id and not payload.get("series_id"):
+        payload["series_id"] = req.series_id
     if req.run_id and not payload.get("run_id"):
         payload["run_id"] = req.run_id
+    if req.step_id and not payload.get("step_id"):
+        payload["step_id"] = req.step_id
+    if req.technical_retry is not None and "technical_retry" not in payload:
+        payload["technical_retry"] = req.technical_retry
     if req.text and not payload.get("text"):
         payload["text"] = req.text
     if req.content and not payload.get("content"):
@@ -293,6 +303,42 @@ def normalize_public_artifact_paths(paths: List[str]) -> List[str]:
     return out
 
 
+def _context_traces(artifact_paths: List[str]) -> List[Dict[str, Any]]:
+    traces: List[Dict[str, Any]] = []
+    for artifact_path in artifact_paths:
+        doc = _json_load(_path_for_read(Path(artifact_path)), {})
+        context_package_id = str(doc.get("context_package_id") or "").strip()
+        context_hash = str(doc.get("context_hash") or "").strip()
+        if not context_package_id or not context_hash:
+            continue
+        traces.append({
+            "artifact_path": artifact_path,
+            "step_id": doc.get("step_id"),
+            "mode": doc.get("mode"),
+            "role": doc.get("role"),
+            "context_package_id": context_package_id,
+            "context_hash": context_hash,
+            "requested_model": doc.get("requested_model"),
+            "effective_model": doc.get("effective_model"),
+        })
+    return traces
+
+
+def _attach_execution_trace(
+    doc: Dict[str, Any],
+    execution_context: ProjectExecutionContext,
+    traces: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    doc["project_id"] = execution_context.project_id
+    doc["domain_book_id"] = execution_context.book_id
+    doc["series_id"] = execution_context.series_id
+    doc["context_packages"] = list(traces)
+    if traces:
+        doc["context_package_id"] = traces[-1]["context_package_id"]
+        doc["context_hash"] = traces[-1]["context_hash"]
+    return doc
+
+
 async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
     payload = build_request_payload(req)
 
@@ -300,6 +346,21 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
     resume = bool(payload.get("resume"))
     run_id = resolve_resume_run_id(book_id, payload.get("run_id"), resume)
     payload["run_id"] = run_id
+    technical_retry = bool(payload.get("technical_retry"))
+    requested_step_id = str(payload.get("step_id") or "").strip()
+    if technical_retry and not requested_step_id:
+        raise ValueError("technical_retry requires step_id")
+    execution_context = ProjectExecutionContext.create(
+        project_id=payload.get("project_id"),
+        book_id=book_id,
+        series_id=payload.get("series_id"),
+        run_id=run_id,
+        step_id=requested_step_id or f"step-{uuid4().hex}",
+        technical_retry=technical_retry,
+    )
+    payload["project_id"] = execution_context.project_id
+    payload["series_id"] = execution_context.series_id
+    payload["step_id"] = execution_context.step_id
 
     modes = resolve_modes(req, payload)
     preset_id = str(payload.get("preset") or req.preset or "").upper().strip()
@@ -307,6 +368,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
     preset_only_execution = bool(preset_id) and not _request_has_explicit_modes(req, payload)
     scene_ref = str(payload.get("scene_ref") or payload.get("scene") or "").strip() or None
     is_write = "WRITE" in modes
+    book_bible: Dict[str, Any] = {}
     book_bible_binding: Dict[str, Any] = {}
 
     if is_write:
@@ -319,7 +381,11 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
         }
         payload["_book_bible"] = dict(book_bible_binding)
 
-    ensure_book_dirs(book_id)
+    book_dir = ensure_book_dirs(book_id)
+    if not is_write:
+        loaded_book_bible = _json_load(book_dir / "book_bible.json", {})
+        if isinstance(loaded_book_bible, dict):
+            book_bible = loaded_book_bible
 
     book_lock_acquired = False
     run_lock_acquired = False
@@ -366,6 +432,20 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             )
 
         canon_snapshot, canon_snapshot_path = load_canon_snapshot(book_id)
+        context_sources: Dict[str, Any] = {
+            "canon": canon_snapshot,
+            "canon_snapshot_path": _public_path(canon_snapshot_path),
+            "book_bible": book_bible,
+            "book_bible_path": (
+                book_bible_binding.get("path")
+                or _public_path(book_dir / "book_bible.json")
+            ),
+            "book_bible_version": (
+                book_bible_binding.get("contract_version") or "unvalidated"
+            ),
+            "style_version": payload.get("style_version"),
+            "memory_snapshot_id": payload.get("memory_snapshot_id"),
+        }
 
         _mc = resolve_master_canon()
         project_truth_ref = build_project_truth_binding()
@@ -409,6 +489,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             state["decision"] = "REJECT"
             state["master_canon"] = dict(master_canon_ref)
             state["project_truth"] = dict(project_truth_ref)
+            _attach_execution_trace(state, execution_context, [])
             json_write(ensure_run_dirs(run_id) / "run_state.json", state)
             update_latest_run_marker(book_id, run_id)
             write_audit(
@@ -421,12 +502,17 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                 canon_snapshot_path=canon_snapshot_path,
                 master_canon=master_canon_ref,
                 project_truth=project_truth_ref,
+                project_id=execution_context.project_id,
+                series_id=execution_context.series_id,
+                context_packages=[],
             )
             return {
                 "ok": False,
                 "status": "error",
                 "run_id": run_id,
                 "book_id": book_id,
+                "project_id": execution_context.project_id,
+                "series_id": execution_context.series_id,
                 "mode_ids": modes,
                 "artifact_paths": [],
                 "artifacts": [],
@@ -440,6 +526,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                 "master_canon": master_canon_ref,
                 "project_truth": project_truth_ref,
                 "run_state": state,
+                "context_packages": [],
             }
 
         stub_modes = None if preset_only_execution else modes
@@ -449,11 +536,14 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             modes=stub_modes,
             payload=payload,
             steps=payload.get("steps"),
+            execution_context=execution_context,
+            context_sources=context_sources,
         )
         if inspect.isawaitable(stub_out):
             stub_out = await stub_out
 
         artifact_paths = normalize_public_artifact_paths(normalize_artifact_paths(stub_out))
+        context_traces = _context_traces(artifact_paths)
 
         if is_write:
             for _artifact_path in artifact_paths:
@@ -550,6 +640,19 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                             "sha256": book_bible_binding["sha256"],
                             "contract_version": book_bible_binding["contract_version"],
                         }
+                    write_trace = next(
+                        (
+                            trace
+                            for trace in reversed(context_traces)
+                            if trace.get("mode") == "WRITE"
+                        ),
+                        context_traces[-1] if context_traces else None,
+                    )
+                    if write_trace is not None:
+                        chapter_doc["project_id"] = execution_context.project_id
+                        chapter_doc["series_id"] = execution_context.series_id
+                        chapter_doc["context_package_id"] = write_trace["context_package_id"]
+                        chapter_doc["context_hash"] = write_trace["context_hash"]
                     chapter_full.write_text(
                         __import__("json").dumps(chapter_doc, ensure_ascii=False, indent=2),
                         encoding="utf-8",
@@ -568,6 +671,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
         state["project_truth"] = dict(project_truth_ref)
         if is_write:
             state["book_bible"] = dict(book_bible_binding)
+        _attach_execution_trace(state, execution_context, context_traces)
         json_write(ensure_run_dirs(run_id) / "run_state.json", state)
         update_latest_run_marker(book_id, run_id)
 
@@ -581,6 +685,9 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             canon_snapshot_path=canon_snapshot_path,
             master_canon=master_canon_ref,
             project_truth=project_truth_ref,
+            project_id=execution_context.project_id,
+            series_id=execution_context.series_id,
+            context_packages=context_traces,
         )
 
         execution_ok = decision == "ACCEPT" or bool(quality_decision)
@@ -611,6 +718,8 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             "status": "ok" if execution_ok else "error",
             "run_id": run_id,
             "book_id": book_id,
+            "project_id": execution_context.project_id,
+            "series_id": execution_context.series_id,
             "mode_ids": modes,
             "artifact_paths": artifact_paths,
             "artifacts": list(artifact_paths),
@@ -628,6 +737,11 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             "book_bible": dict(book_bible_binding) if is_write else {},
             "run_state": state,
             "canon_memory": canon_memory,
+            "context_packages": context_traces,
+            "context_package_id": (
+                context_traces[-1]["context_package_id"] if context_traces else None
+            ),
+            "context_hash": context_traces[-1]["context_hash"] if context_traces else None,
         }
         response.update(stop_fields)
         return response

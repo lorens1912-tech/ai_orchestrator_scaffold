@@ -14,7 +14,11 @@ class AgentStepRequest(BaseModel):
     payload: Dict[str, Any] = Field(default_factory=dict)
 
     book_id: Optional[str] = None
+    project_id: Optional[str] = None
+    series_id: Optional[str] = None
     run_id: Optional[str] = None
+    step_id: Optional[str] = None
+    technical_retry: Optional[bool] = None
     text: Optional[str] = None
     topic: Optional[str] = None
     content: Optional[str] = None

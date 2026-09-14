@@ -9,6 +9,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from app.config_registry import load_modes, load_presets
 from app.model_policy import resolve_model
+from app.p20_core.context_runtime import (
+    ProjectExecutionContext,
+    build_runtime_context_package,
+)
 from app.p20_core.storage_paths import get_books_root, get_runs_root, get_storage_root
 from app.team_resolver import resolve_team
 from app.tools import TOOLS, _p15_hardfail_quality_payload
@@ -436,13 +440,13 @@ def _resolve_step_team(mode_id: str, team_override: Any, preset_id: Optional[str
         raise
 
 
-def _requested_model_for_step(
+def _models_for_step(
     *,
     step_overrides: Dict[str, Any],
     runtime_overrides: Dict[str, Any],
     tool_input: Dict[str, Any],
     team: Dict[str, Any],
-) -> str:
+) -> Tuple[Optional[str], str]:
     requested = (
         step_overrides.get("model")
         or runtime_overrides.get("model")
@@ -453,11 +457,20 @@ def _requested_model_for_step(
         str(requested) if requested else None,
         preset_model=str(team.get("model") or "") or None,
     )
-    return decision.effective_model
+    requested_identity = str(requested or team.get("model") or "").strip() or None
+    return requested_identity, decision.effective_model
 
 
 def execute_p20(*args, **kwargs) -> List[str]:
     run_id, book_id, modes, payload, steps, explicit_modes_arg = _normalize_execute_call(*args, **kwargs)
+    execution_context = kwargs.get("execution_context")
+    context_sources = kwargs.get("context_sources")
+    if execution_context is not None and not isinstance(execution_context, ProjectExecutionContext):
+        raise TypeError("execution_context must be ProjectExecutionContext")
+    if context_sources is None:
+        context_sources = {}
+    if not isinstance(context_sources, dict):
+        raise TypeError("context_sources must be a mapping")
 
     if not modes:
         modes, _preset_id, payload = resolve_modes(payload)
@@ -552,7 +565,7 @@ def execute_p20(*args, **kwargs) -> List[str]:
             or tool_input.get("requested_policy")
             or team.get("policy_id")
         )
-        requested_model = _requested_model_for_step(
+        requested_model, effective_model = _models_for_step(
             step_overrides=step_overrides,
             runtime_overrides=runtime_overrides,
             tool_input=tool_input,
@@ -568,10 +581,11 @@ def execute_p20(*args, **kwargs) -> List[str]:
             tool_input["_team_id"] = team_id
         if team_policy_id:
             tool_input["_team_policy_id"] = team_policy_id
-        if requested_model:
-            tool_input["_team_model"] = requested_model
-            tool_input["_requested_model"] = requested_model
-            tool_input["requested_model"] = requested_model
+        if effective_model:
+            tool_input["_team_model"] = effective_model
+            tool_input["_requested_model"] = effective_model
+            tool_input["_effective_model"] = effective_model
+            tool_input["requested_model"] = effective_model
         if isinstance(team_prompts, dict):
             tool_input["_team_prompts"] = team_prompts
         if requested_policy:
@@ -580,6 +594,23 @@ def execute_p20(*args, **kwargs) -> List[str]:
 
         if mode_id in TEXT_MODES:
             tool_input["text"] = latest_text if latest_text else str(tool_input.get("text") or "")
+
+        step_execution_context = None
+        context_package = None
+        if execution_context is not None:
+            step_execution_context = execution_context.for_step(step_index, mode_id)
+            context_package = build_runtime_context_package(
+                execution_context=step_execution_context,
+                mode=mode_id,
+                role=team_id,
+                requested_model=requested_model,
+                effective_model=effective_model,
+                tool_input=tool_input,
+                context_sources=context_sources,
+            )
+            tool_input["context_package_id"] = context_package.context_package_id
+            tool_input["context_hash"] = context_package.context_hash
+            tool_input["_context_package"] = context_package.to_dict()
 
         if mode_id not in TOOLS:
             result: Dict[str, Any] = {"ok": False, "error": f"UNKNOWN_MODE_TOOL: {mode_id}", "tool": mode_id}
@@ -604,8 +635,11 @@ def execute_p20(*args, **kwargs) -> List[str]:
             "run_id": run_id,
             "index": step_index,
             "mode": mode_id,
+            "role": team_id,
             "team": team,
-            "effective_model_id": requested_model,
+            "requested_model": requested_model,
+            "effective_model": effective_model,
+            "effective_model_id": effective_model,
             "effective_policy_id": requested_policy,
             "preset_id": preset_id or None,
             "preset_step": step_overrides if step_overrides else None,
@@ -614,6 +648,16 @@ def execute_p20(*args, **kwargs) -> List[str]:
             "result": result,
             "created_at": _iso(),
         }
+        if step_execution_context is not None and context_package is not None:
+            step_doc.update({
+                "project_id": step_execution_context.project_id,
+                "book_id": step_execution_context.book_id,
+                "series_id": step_execution_context.series_id,
+                "step_id": step_execution_context.step_id,
+                "context_package_id": context_package.context_package_id,
+                "context_hash": context_package.context_hash,
+                "context_role": context_package.role.value,
+            })
 
         step_path = steps_dir / f"{step_index:03d}_{mode_id}.json"
         if step_path.exists():

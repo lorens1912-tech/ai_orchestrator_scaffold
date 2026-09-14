@@ -34,7 +34,7 @@ from app.p20_core.storage_paths import (
 )
 
 
-PROJECT_DB_SCHEMA_VERSION = 3
+PROJECT_DB_SCHEMA_VERSION = 4
 PROJECT_DB_FILENAME = "project.db"
 SERIES_DB_SCHEMA_VERSION = 2
 SERIES_DB_FILENAME = "series.db"
@@ -499,6 +499,42 @@ def _validate_project_schema_v3(conn: sqlite3.Connection) -> None:
     )
 
 
+def _create_context_packages_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS context_packages (
+            scope_type TEXT NOT NULL CHECK (scope_type = 'PROJECT'),
+            scope_id TEXT NOT NULL,
+            context_package_id TEXT NOT NULL,
+            operation_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            step_id TEXT NOT NULL,
+            context_hash TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (scope_type, scope_id, context_package_id),
+            UNIQUE (scope_type, scope_id, operation_id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS context_packages_run_step "
+        "ON context_packages(scope_type, scope_id, run_id, step_id)"
+    )
+
+
+def _apply_project_schema_v3_to_v4(conn: sqlite3.Connection) -> None:
+    _create_context_packages_table(conn)
+    if _table_exists(conn, "project_identity"):
+        conn.execute("UPDATE project_identity SET schema_version = 4 WHERE id = 1")
+
+
+def _validate_project_schema_v4(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "SELECT scope_type, scope_id, context_package_id, operation_id, run_id, "
+        "step_id, context_hash, payload_json FROM context_packages LIMIT 0"
+    )
+
+
 PROJECT_DB_MIGRATIONS = (
     SchemaMigration(
         source_version=1,
@@ -511,6 +547,12 @@ PROJECT_DB_MIGRATIONS = (
         target_version=3,
         apply=_apply_project_schema_v2_to_v3,
         validate=_validate_project_schema_v3,
+    ),
+    SchemaMigration(
+        source_version=3,
+        target_version=4,
+        apply=_apply_project_schema_v3_to_v4,
+        validate=_validate_project_schema_v4,
     ),
 )
 
@@ -958,6 +1000,7 @@ class ProjectRepository:
             )
             _create_project_structured_memory_table(conn)
             _create_project_edges_table(conn)
+            _create_context_packages_table(conn)
             self._ensure_identity(conn)
 
     def _ensure_identity(self, conn: sqlite3.Connection) -> None:
@@ -1296,6 +1339,101 @@ class ProjectRepository:
                 }
                 for row in rows
             }
+
+    @staticmethod
+    def _decode_context_package(payload_json: str) -> Any:
+        from app.p20_core.context_builder import ContextPackage
+
+        try:
+            return ContextPackage.from_dict(json.loads(payload_json))
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ProjectStorageError("malformed persisted context package") from exc
+
+    def save_context_package(self, package: Any, *, operation_id: str) -> Any:
+        from app.p20_core.context_builder import ContextPackage
+
+        if not isinstance(package, ContextPackage):
+            raise ProjectStorageError("context package write requires ContextPackage")
+        if package.project_id != self.context.project_id:
+            raise ProjectStorageError("context package project scope does not match repository")
+        if package.book_id != self.context.book_id:
+            raise ProjectStorageError("context package book scope does not match repository")
+        operation_id = _normalize_domain_id(operation_id, "operation_id")
+        self.initialize()
+        payload_json = package.to_json()
+        with self.connect() as conn:
+            existing = conn.execute(
+                "SELECT payload_json FROM context_packages "
+                "WHERE scope_type = ? AND scope_id = ? AND operation_id = ?",
+                (ScopeType.PROJECT.value, self.context.project_id, operation_id),
+            ).fetchone()
+            if existing is not None:
+                if str(existing["payload_json"]) != payload_json:
+                    raise ProjectStorageError(
+                        "context operation identity was already used for a different package"
+                    )
+                return self._decode_context_package(str(existing["payload_json"]))
+            conn.execute(
+                """
+                INSERT INTO context_packages (
+                    scope_type, scope_id, context_package_id, operation_id,
+                    run_id, step_id, context_hash, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ScopeType.PROJECT.value,
+                    self.context.project_id,
+                    package.context_package_id,
+                    operation_id,
+                    package.run_id,
+                    package.step_id,
+                    package.context_hash,
+                    payload_json,
+                ),
+            )
+        return package
+
+    def get_context_package(self, context_package_id: str) -> Any | None:
+        self.initialize()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM context_packages "
+                "WHERE scope_type = ? AND scope_id = ? AND context_package_id = ?",
+                (
+                    ScopeType.PROJECT.value,
+                    self.context.project_id,
+                    _normalize_domain_id(context_package_id, "context_package_id"),
+                ),
+            ).fetchone()
+        return None if row is None else self._decode_context_package(str(row["payload_json"]))
+
+    def get_context_package_for_operation(self, operation_id: str) -> Any | None:
+        self.initialize()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM context_packages "
+                "WHERE scope_type = ? AND scope_id = ? AND operation_id = ?",
+                (
+                    ScopeType.PROJECT.value,
+                    self.context.project_id,
+                    _normalize_domain_id(operation_id, "operation_id"),
+                ),
+            ).fetchone()
+        return None if row is None else self._decode_context_package(str(row["payload_json"]))
+
+    def list_context_packages(self) -> tuple[Any, ...]:
+        self.initialize()
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT payload_json FROM context_packages "
+                "WHERE scope_type = ? AND scope_id = ? "
+                "ORDER BY run_id, step_id, context_package_id",
+                (ScopeType.PROJECT.value, self.context.project_id),
+            ).fetchall()
+        return tuple(
+            self._decode_context_package(str(row["payload_json"]))
+            for row in rows
+        )
 
 
 class SeriesRepository:

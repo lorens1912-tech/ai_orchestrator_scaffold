@@ -239,7 +239,7 @@ def old_schema(repo):
         conn.execute("UPDATE project_identity SET schema_version = 2")
 
 
-def test_controlled_v2_v3_migration_preserves_data_and_read_never_migrates(repo):
+def test_controlled_v2_to_current_migration_preserves_data_and_read_never_migrates(repo):
     repo.set_metadata("preserved", "yes")
     old_schema(repo)
     before = repo.db_path.read_bytes()
@@ -248,8 +248,8 @@ def test_controlled_v2_v3_migration_preserves_data_and_read_never_migrates(repo)
     with pytest.raises(ProjectStorageError, match="controlled migration"):
         repo.list_edges()
     assert repo.db_path.read_bytes() == before
-    assert repo.migrate_schema().current_version == PROJECT_DB_SCHEMA_VERSION == 3
-    assert repo.get_project_identity()["schema_version"] == 3
+    assert repo.migrate_schema().current_version == PROJECT_DB_SCHEMA_VERSION == 4
+    assert repo.get_project_identity()["schema_version"] == 4
     assert repo.get_metadata("preserved") == "yes"
     write(repo, edge())
     assert repo.get_edge("dependency-1") == edge()
@@ -269,7 +269,7 @@ def test_migration_rollback_and_existing_backup_hook(repo):
         assert conn.execute("SELECT name FROM sqlite_master WHERE name='edges'").fetchone()
         raise RuntimeError("migration rejected")
 
-    migration = PROJECT_DB_MIGRATIONS[-1]
+    migration = next(item for item in PROJECT_DB_MIGRATIONS if item.source_version == 2)
     try:
         with pytest.raises(RuntimeError, match="migration rejected"):
             repo.migrate_schema((SchemaMigration(2, 3, migration.apply, fail_validation, backup_before_change),))

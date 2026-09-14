@@ -12,8 +12,8 @@ from app.p20_core.impact_analysis import (
 )
 from app.p20_core.project_graph import DependencyTraversalPolicy, GraphTraversalLimitError, TraversalDirection
 from app.p20_core.project_repository import (
-    ProjectRepository, ProjectStorageError, SeriesAccessContext, SeriesAccessError,
-    SeriesRepository, StorageResolver,
+    PROJECT_DB_SCHEMA_VERSION, ProjectRepository, ProjectStorageError,
+    SeriesAccessContext, SeriesAccessError, SeriesRepository, StorageResolver,
 )
 
 
@@ -188,7 +188,9 @@ def test_old_schema_and_wrong_identity_rejected_without_migration(repo):
         analyze_impact(repo, request())
     assert repo.db_path.read_bytes() == before
     with repo.connect() as conn:
-        conn.execute("UPDATE schema_version SET version=3")
+        conn.execute(
+            "UPDATE schema_version SET version=?", (PROJECT_DB_SCHEMA_VERSION,)
+        )
         conn.execute("UPDATE project_identity SET project_id='PROJ-other'")
     with pytest.raises(ProjectStorageError, match="identity"):
         analyze_impact(repo, request())

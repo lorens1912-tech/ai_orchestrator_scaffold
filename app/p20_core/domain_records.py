@@ -296,6 +296,7 @@ class SerializableRecord:
         return {
             item.name: _serialize_value(getattr(self, item.name))
             for item in fields(self)
+            if item.name not in {"frozen", "author_locked"} or getattr(self, item.name) is not None
         }
 
     def to_json(self) -> str:
@@ -303,6 +304,14 @@ class SerializableRecord:
 
     def with_updates(self, **changes: Any):
         return replace(self, **changes)
+
+
+def validate_optional_protection(record: Any) -> None:
+    """None preserves legacy absence; it never authorizes canonical mutation."""
+    for name in ("frozen", "author_locked"):
+        value = getattr(record, name)
+        if value is not None:
+            _bool(value, name)
 
 
 class ProjectScopedRecord(SerializableRecord):
@@ -761,8 +770,11 @@ class CharacterState(ProjectScopedRecord):
     version: int
     created_at: str
     updated_at: str
+    frozen: bool | None = None
+    author_locked: bool | None = None
 
     def __post_init__(self) -> None:
+        validate_optional_protection(self)
         object.__setattr__(self, "state_id", require_domain_id(self.state_id, DomainNamespace.CONTEXT, "state_id"))
         object.__setattr__(self, "project_id", require_domain_id(self.project_id, DomainNamespace.PROJECT, "project_id"))
         object.__setattr__(self, "character_id", require_domain_id(self.character_id, DomainNamespace.CHARACTER, "character_id"))
@@ -806,8 +818,11 @@ class EventRecord(ProjectScopedRecord):
     version: int
     created_at: str
     updated_at: str
+    frozen: bool | None = None
+    author_locked: bool | None = None
 
     def __post_init__(self) -> None:
+        validate_optional_protection(self)
         object.__setattr__(self, "event_id", require_domain_id(self.event_id, DomainNamespace.EVENT, "event_id"))
         object.__setattr__(self, "project_id", require_domain_id(self.project_id, DomainNamespace.PROJECT, "project_id"))
         for name in ("event_type", "time_start", "time_end", "description", "canon_status", "created_at", "updated_at"):
@@ -851,8 +866,11 @@ class KnowledgeEvent(ProjectScopedRecord):
     version: int
     created_at: str
     updated_at: str
+    frozen: bool | None = None
+    author_locked: bool | None = None
 
     def __post_init__(self) -> None:
+        validate_optional_protection(self)
         object.__setattr__(self, "knowledge_event_id", require_domain_id(self.knowledge_event_id, DomainNamespace.KNOWLEDGE, "knowledge_event_id"))
         object.__setattr__(self, "project_id", require_domain_id(self.project_id, DomainNamespace.PROJECT, "project_id"))
         object.__setattr__(self, "character_id", require_domain_id(self.character_id, DomainNamespace.CHARACTER, "character_id"))
@@ -900,8 +918,11 @@ class ThreadRecord(ProjectScopedRecord):
     version: int
     created_at: str
     updated_at: str
+    frozen: bool | None = None
+    author_locked: bool | None = None
 
     def __post_init__(self) -> None:
+        validate_optional_protection(self)
         object.__setattr__(self, "thread_id", require_domain_id(self.thread_id, DomainNamespace.THREAD, "thread_id"))
         object.__setattr__(self, "project_id", require_domain_id(self.project_id, DomainNamespace.PROJECT, "project_id"))
         for name in ("name", "description", "status", "created_at", "updated_at"):
@@ -940,8 +961,11 @@ class SetupRecord(ProjectScopedRecord):
     version: int
     created_at: str
     updated_at: str
+    frozen: bool | None = None
+    author_locked: bool | None = None
 
     def __post_init__(self) -> None:
+        validate_optional_protection(self)
         object.__setattr__(self, "setup_id", require_domain_id(self.setup_id, DomainNamespace.SETUP, "setup_id"))
         object.__setattr__(self, "project_id", require_domain_id(self.project_id, DomainNamespace.PROJECT, "project_id"))
         object.__setattr__(self, "created_scene_id", require_domain_id(self.created_scene_id, DomainNamespace.SCENE, "created_scene_id"))
@@ -972,8 +996,11 @@ class PayoffRecord(ProjectScopedRecord):
     version: int
     created_at: str
     updated_at: str
+    frozen: bool | None = None
+    author_locked: bool | None = None
 
     def __post_init__(self) -> None:
+        validate_optional_protection(self)
         object.__setattr__(self, "payoff_id", require_domain_id(self.payoff_id, DomainNamespace.PAYOFF, "payoff_id"))
         object.__setattr__(self, "project_id", require_domain_id(self.project_id, DomainNamespace.PROJECT, "project_id"))
         object.__setattr__(self, "setup_id", require_domain_id(self.setup_id, DomainNamespace.SETUP, "setup_id"))

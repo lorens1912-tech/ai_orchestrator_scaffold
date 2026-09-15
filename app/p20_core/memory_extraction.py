@@ -31,13 +31,18 @@ SUPPORTED_MEMORY_RECORD_TYPES = frozenset(
 )
 
 
-def decode_memory_entities(records: list[dict]) -> tuple[Any, ...]:
-    """Decode provider records with the existing typed domain contracts."""
+def memory_record_types() -> dict[str, type]:
+    """Existing GAP-007/GAP-008 types shared by decoding and provider schema."""
     from app.p20_core import domain_records as domain
-    types = {"FACT": domain.FactRecord, "CHARACTER_STATE": domain.CharacterState,
+    return {"FACT": domain.FactRecord, "CHARACTER_STATE": domain.CharacterState,
              "EVENT": domain.EventRecord, "KNOWLEDGE_EVENT": domain.KnowledgeEvent,
              "THREAD": domain.ThreadRecord, "SETUP": domain.SetupRecord, "PAYOFF": domain.PayoffRecord,
              "RELATIONSHIP_CHANGE": RelationshipChangeRecord}
+
+
+def decode_memory_entities(records: list[dict]) -> tuple[Any, ...]:
+    """Decode provider records with the existing typed domain contracts."""
+    types = memory_record_types()
     if not isinstance(records, list) or not records:
         raise MemoryExtractionError("extractor must return a nonempty records list")
     result = []
@@ -112,6 +117,7 @@ class SerializableExtractionRecord:
         return {
             item.name: _serialize(getattr(self, item.name))
             for item in fields(self)
+            if item.name not in {"frozen", "author_locked"} or getattr(self, item.name) is not None
         }
 
     def to_json(self) -> str:
@@ -329,8 +335,12 @@ class RelationshipChangeRecord(SerializableExtractionRecord):
     version: int
     created_at: str
     updated_at: str
+    frozen: bool | None = None
+    author_locked: bool | None = None
 
     def __post_init__(self) -> None:
+        from app.p20_core.domain_records import validate_optional_protection
+        validate_optional_protection(self)
         object.__setattr__(
             self,
             "relationship_change_id",

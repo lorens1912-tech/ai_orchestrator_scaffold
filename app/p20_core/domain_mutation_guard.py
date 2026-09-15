@@ -294,6 +294,8 @@ class DomainMutationGuard:
             if proposed.get("project_id") != proposal["project_id"]:
                 return result("DENY", "RECORD_SCOPE_MISMATCH")
             if current:
+                if any(type(current.get(flag)) is not bool for flag in ("frozen", "author_locked")):
+                    return result("DENY", "CURRENT_PROTECTION_UNKNOWN")
                 protected |= bool(current.get("frozen") or current.get("author_locked"))
                 # This pipeline does not silently lower protection even with approval.
                 if any(current.get(flag) and not proposed.get(flag) for flag in ("frozen", "author_locked")):

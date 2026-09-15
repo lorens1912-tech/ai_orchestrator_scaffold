@@ -374,7 +374,7 @@ def test_unconfigured_provider_fails_explicitly(pipeline, monkeypatch):
     assert repo.list_structured_memory_records() == {}
 
 
-def test_unsupported_protection_schema_rejects_whole_candidate_set(pipeline):
+def test_missing_explicit_protection_rejects_whole_candidate_set(pipeline):
     from app.p20_core.domain_records import CharacterState
     client, repo, controls, _, _, _ = pipeline
     def mixed_set(records, payload):
@@ -386,7 +386,7 @@ def test_unsupported_protection_schema_rejects_whole_candidate_set(pipeline):
         return records + [{"record_type": "CHARACTER_STATE", "payload": character.to_dict()}]
     controls["records"] = mixed_set
     result = step(client)["canonical_change"]
-    assert result["reason"] == "CANONICAL_RECORD_PROTECTION_SCHEMA_UNSUPPORTED", result
+    assert result["reason"] == "CANONICAL_RECORD_PROTECTION_REQUIRED", result
     assert repo.list_structured_memory_records() == {}
 
 

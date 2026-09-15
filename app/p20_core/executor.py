@@ -43,13 +43,15 @@ def invoke_memory_model(*, execution_context: ProjectExecutionContext, role: str
     """
     from app.p20_core.memory_extraction import ModelInvocation
     from dataclasses import fields
-    from app.p20_core.domain_records import FactRecord
+    from app.p20_core.memory_extraction import memory_record_types
     payload = {"project_id": execution_context.project_id, "book_id": execution_context.book_id,
                "series_id": execution_context.series_id, "run_id": execution_context.run_id,
                "step_id": execution_context.step_id, "source": source, "candidate": candidate,
                "role": role, "_requested_model": model,
-               "record_schema": {field.name: str(field.type) for field in fields(FactRecord)},
-               "instruction": ("Return records as [{record_type: FACT, payload: full FactRecord}]. Preserve IDs and protection from context; "
+               "record_schema": {kind: {field.name: str(field.type) for field in fields(record_type)}
+                                 for kind, record_type in memory_record_types().items()},
+               "instruction": ("Return the complete records list as [{record_type: schema name, payload: full record}]. "
+                               "Explicit boolean frozen and author_locked are required for every record. Preserve IDs and protection from context; "
                                "use current version + 1 for updates and 1 for creates. Bind provenance to the supplied source. "
                                "Do not discard unsupported entities: fail explicitly if the complete set cannot be represented."
                                if role == "EXTRACTOR" else

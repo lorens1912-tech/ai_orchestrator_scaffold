@@ -78,7 +78,10 @@ def _validate_review_proposal(repository, proposal: dict) -> None:
         if not isinstance(mutation, dict) or set(mutation) != keys:
             raise OperatorError("INVALID_PROPOSAL_MUTATION", 422)
         identity = DomainId.parse(mutation["target_entity_id"])
-        if mutation["target_entity_type"] not in (identity.namespace.name, identity.namespace.value):
+        from app.p20_core.memory_extraction import SUPPORTED_MEMORY_RECORD_TYPES
+        namespace = {"CHARACTER_STATE": "CONTEXT", "KNOWLEDGE_EVENT": "KNOWLEDGE",
+                     "RELATIONSHIP_CHANGE": "RELATIONSHIP"}.get(mutation["target_entity_type"], mutation["target_entity_type"])
+        if mutation["target_entity_type"] not in SUPPORTED_MEMORY_RECORD_TYPES or namespace != identity.namespace.name:
             raise OperatorError("INVALID_TARGET_TYPE", 422)
         operation = mutation["operation_type"]
         if operation not in {"CREATE", "UPDATE", "REPLACE"}:
@@ -280,25 +283,42 @@ def _pipeline_evidence(record: dict) -> None:
         raise OperatorError("VERIFIER_INPUT_MISMATCH", 409)
 
 
-def _validate_canonical_fact_set(proposal: dict, snapshot: dict) -> None:
-    """Validate existing FactRecord temporal rules and whole-set references."""
-    from app.p20_core.domain_records import FactRecord
+def _validate_canonical_record_set(proposal: dict, snapshot: dict) -> None:
+    """Existing typed validation plus references resolved against the whole target set."""
+    from app.p20_core.memory_extraction import decode_memory_entities
     from app.p20_core.local_operator import OperatorError
     states = {r["record_id"]: json.loads(r["payload_json"]) for r in snapshot["records"]}
     states.update({m["target_entity_id"]: m["proposed_state"] for m in proposal["proposed_mutations"]})
     known = set(states) | {proposal["source_scene_id"], proposal["project_id"], proposal["book_id"]}
-    for mutation in proposal["proposed_mutations"]:
-        fact = FactRecord(**mutation["proposed_state"])
-        if str(fact.project_id) != proposal["project_id"] or str(fact.fact_id) != mutation["target_entity_id"]:
+    # A persisted CharacterState binds its stable character identity to this project.
+    character_states = {r["record_id"] for r in snapshot["records"] if r["record_type"] == "CHARACTER_STATE"}
+    character_states.update(m["target_entity_id"] for m in proposal["proposed_mutations"] if m["target_entity_type"] == "CHARACTER_STATE")
+    known.update(states[identity]["character_id"] for identity in character_states)
+    reference_fields = {
+        "FACT": ("subject_id", "object_id", "established_event_id", "established_scene_id"),
+        "CHARACTER_STATE": ("character_id", "source_scene_id", "source_event_id"),
+        "EVENT": ("location_id", "participant_ids", "cause_refs", "effect_refs", "source_scene_id"),
+        "KNOWLEDGE_EVENT": ("character_id", "fact_id", "event_id", "learned_at_scene_id", "learned_at_event_id", "learned_from_character_id"),
+        "THREAD": ("opened_scene_id", "closed_scene_id", "actual_payoff_ref"),
+        "SETUP": ("created_scene_id", "actual_payoff_scene_id"),
+        "PAYOFF": ("setup_id", "completed_scene_id"),
+        "RELATIONSHIP_CHANGE": ("subject_character_id", "object_character_id", "source_scene_id"),
+    }
+    entities = decode_memory_entities([{"record_type": m["target_entity_type"], "payload": m["proposed_state"]}
+                                      for m in proposal["proposed_mutations"]])
+    for mutation, entity in zip(proposal["proposed_mutations"], entities):
+        if str(entity.project_id) != proposal["project_id"] or str(entity.record_id) != mutation["target_entity_id"]:
             raise OperatorError("CANONICAL_RECORD_SCOPE_MISMATCH", 409)
-        for name in ("subject_id", "object_id", "established_event_id", "established_scene_id"):
-            value = getattr(fact, name)
-            if value is not None and str(value) not in known:
+        for name in reference_fields[entity.memory_record_type]:
+            value = getattr(entity, name)
+            values = value if isinstance(value, (tuple, list)) else (value,)
+            if any(v is not None and str(v) not in known for v in values):
                 raise OperatorError("CANONICAL_REFERENCE_UNRESOLVED", 409)
 
 
 def _canonical_impact(repository, proposal: dict, snapshot: dict) -> dict:
     from app.p20_core.impact_analysis import analyze_impact, ImpactRequest
+    from app.p20_core.domain_records import DomainId
     # N edges bound every simple path. Above this budget analysis must fail closed.
     depth = max(1, len(snapshot["edges"]) + 1)
     from app.p20_core.local_operator import OperatorError
@@ -306,7 +326,7 @@ def _canonical_impact(repository, proposal: dict, snapshot: dict) -> dict:
         raise OperatorError("IMPACT_COVERAGE_INSUFFICIENT", 409)
     results = [analyze_impact(repository, ImpactRequest(
         proposal["project_id"], proposal["scope_type"], proposal["scope_id"],
-        m["target_entity_type"], m["target_entity_id"], m["operation_type"]),
+        DomainId.parse(m["target_entity_id"]).namespace.name, m["target_entity_id"], m["operation_type"]),
         max_depth=depth, max_edges=10000).to_dict() for m in proposal["proposed_mutations"]]
     if any(item["impact_class"] == "DERIVED" for result in results for item in result["impacts"]):
         raise OperatorError("DERIVED_REBUILD_UNSUPPORTED", 409)
@@ -339,7 +359,7 @@ def commit_canonical_proposal(repository, proposal_id: str, *, expected_hash: st
         source_row = conn.execute("SELECT value FROM project_metadata WHERE key=?", (source_key,)).fetchone()
         if source_row is None or json.loads(source_row["value"])["source"] != record["pipeline"]["source"]:
             raise OperatorError("SOURCE_VERSION_UNAVAILABLE", 409)
-        _validate_canonical_fact_set(proposal, snapshot)
+        _validate_canonical_record_set(proposal, snapshot)
         try:
             _validate_review_basis(proposal, snapshot)
             if record["basis_hash"] != _evidence_hash(snapshot):
@@ -451,10 +471,9 @@ def process_accepted_artifact(*, execution_context, text: str, source_trace: dic
                 with repository.canonical_pipeline_operation(operation) as state:
                     state["result"] = result
                 return result
-        # Existing non-FACT schemas do not expose both independent protection flags.
-        # Do not invent canonical protection defaults or promote only part of a set.
-        if any(entity.memory_record_type != "FACT" for entity in candidate.memory_entities):
-            raise OperatorError("CANONICAL_RECORD_PROTECTION_SCHEMA_UNSUPPORTED", 409)
+        if any(type(getattr(entity, flag, None)) is not bool for entity in candidate.memory_entities
+               for flag in ("frozen", "author_locked")):
+            raise OperatorError("CANONICAL_RECORD_PROTECTION_REQUIRED", 409)
         with repository.canonical_proposal_transaction(proposal_id) as (document, snapshot):
             current = {(r["record_type"], r["record_id"]): json.loads(r["payload_json"]) for r in snapshot["records"]}
             mutations = []
@@ -477,7 +496,7 @@ def process_accepted_artifact(*, execution_context, text: str, source_trace: dic
                 policy_ref="CANONICAL_CHANGE_V1", proposal_version=1, proposal_hash="", status="READY_FOR_ANALYSIS", created_at=utc_now_iso())
             proposal["proposal_hash"] = canonical_proposal_hash(proposal)
             _validate_review_proposal(repository, proposal)
-            _validate_canonical_fact_set(proposal, snapshot)
+            _validate_canonical_record_set(proposal, snapshot)
             document.update(current_version="1", versions={"1": {"proposal": proposal, "pipeline": evidence,
                 "basis_hash": _evidence_hash(snapshot), "challenges": {}, "decision": None}})
         # Frozen proposal exists before analysis. A new snapshot must match its basis.

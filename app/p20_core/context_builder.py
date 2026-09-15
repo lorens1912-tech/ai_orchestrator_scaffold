@@ -879,6 +879,15 @@ class ContextBuilder:
             if str(payload.get("project_id")) != request.project_id:
                 raise ContextBuilderError("structured memory record escaped project scope")
             record_type = str(memory_scopes[record_id]["record_type"])
+            importance = payload.get("importance")
+            reason = "project structured memory"
+            # Domain importance has no declared unit scale (GAP-007 permits 7,
+            # for example). Preserve it in the record; do not invent a ranking
+            # conversion. The absent score uses the existing missing-score policy.
+            if importance is not None and not (isinstance(importance, (int, float))
+                    and not isinstance(importance, bool) and 0 <= importance <= 1):
+                importance = None
+                reason += "; raw importance retained; unit-scale ranking unavailable"
             representations = {RepresentationType.STRUCTURED: _canonical_json(payload)}
             summary = payload.get("summary")
             if isinstance(summary, str) and summary.strip():
@@ -890,12 +899,12 @@ class ContextBuilder:
                     entity_type=record_type,
                     entity_id=record_id,
                     layer=_memory_layer(record_type),
-                    reason="project structured memory",
+                    reason=reason,
                     representations=representations,
                     source_version=payload.get("version", 1),
                     source_ref=self._memory_source_ref(payload),
                     confidence=payload.get("confidence"),
-                    story_importance=payload.get("importance"),
+                    story_importance=importance,
                     narrative_order=payload.get("narrative_order"),
                 ),
                 request.project_id,

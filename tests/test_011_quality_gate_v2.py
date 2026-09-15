@@ -3,22 +3,20 @@ from app.quality_rules import evaluate_quality
 
 
 GOOD_TEXT = """
-Deszcz dzwonił o parapet jak cierpliwy telegrafista. Adam stał przy oknie, liczył oddechy miasta i próbował udawać,
-że neon po drugiej stronie ulicy nie mruga dokładnie w rytmie jego tętna. W kieszeni miał telefon. Milczał.
-To milczenie było podejrzane.
+TEST_CHARACTER_A wszedł do TEST_PLACE_A kilka minut przed rozpoczęciem próby. Pomieszczenie było jasne, uporządkowane
+i przygotowane do spokojnej pracy. Na środku stał stół, a obok niego dwa krzesła. Każdy przedmiot miał oznaczone
+miejsce, dlatego łatwo było zauważyć nawet drobną zmianę układu.
 
-Na blacie kuchennym leżał wydruk — kilka cyfr, kilka dat, jeden podpis. Wystarczyło, żeby komuś odebrać spokojny sen.
-Adam przesunął palcem po papierze, jakby mógł wygładzić fakty. Nie mógł. Fakty miały krawędzie.
+Na stole leżał formularz oznaczony FACT_TEST_001. Dokument należał do TEST_PROJECT_A i opisywał dane robocze
+TEST_BOOK_A. TEST_CHARACTER_A przeczytał wszystkie pola, porównał numery wersji i zapisał wynik kontroli w pustej
+rubryce. Nie znalazł braków, sprzeczności ani śladów przypadkowej korekty. Następnie odłożył formularz dokładnie tam,
+gdzie znajdował się na początku.
 
-Drzwi skrzypnęły. Ktoś wszedł bez pukania. Adam nie odwrócił się od razu. Najpierw usłyszał zapach mokrego płaszcza,
-potem krok, pewny i lekki, jakby właściciel nóg znał już układ mieszkania.
-
-— Masz to? — padło pytanie.
-— Mam — odpowiedział Adam. — I mam też problem.
-Cisza między nimi nie była pusta. Była pełna decyzji.
-
-Gdy w końcu się odwrócił, zobaczył twarz, której nie powinno tu być. A jednak była. I to oznaczało, że gra właśnie
-zmieniła zasady, tylko nikt nie raczył go o tym poinformować.
+Po chwili do pomieszczenia wszedł TEST_CHARACTER_B. Druga osoba powtórzyła kontrolę według tej samej kolejności,
+sprawdziła podpisy i porównała wynik z danymi wejściowymi. Oboje omówili różnice między obserwacją a wnioskiem,
+po czym zgodnie potwierdzili, że rekord pozostał niezmieniony. Na końcu zamknęli sesję, uporządkowali materiały
+i zapisali krótką informację o zakończeniu próby. Raport zawierał godzinę, identyfikator miejsca oraz jednoznaczny
+wynik, dzięki czemu kolejna osoba mogła odtworzyć cały przebieg bez dodatkowych wyjaśnień.
 """.strip()
 
 

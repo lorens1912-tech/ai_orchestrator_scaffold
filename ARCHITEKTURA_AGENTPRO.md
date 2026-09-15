@@ -1452,13 +1452,13 @@ Prawda projektu i wiedza postaci są oddzielne.
 
 Przykład:
 
-FACT:
-John żyje.
+FACT_TEST_001:
+TEST_CHARACTER_A żyje.
 
 KnowledgeEvent:
-Lena BELIEVES John nie żyje.
+TEST_CHARACTER_B BELIEVES TEST_CHARACTER_A nie żyje.
 
-Pisarz piszący scenę z perspektywy Leny musi dostać:
+Pisarz piszący scenę z perspektywy TEST_CHARACTER_B musi dostać:
 
 jej stan wiedzy,
 

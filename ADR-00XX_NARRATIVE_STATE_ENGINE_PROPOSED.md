@@ -722,12 +722,12 @@ MISREMEMBERS.
 Przykład:
 
 PROJECT CANON:
-John żyje.
+FACT_TEST_001: TEST_CHARACTER_A żyje.
 
 CHARACTER KNOWLEDGE:
-Lena BELIEVES John nie żyje.
+TEST_CHARACTER_B BELIEVES TEST_CHARACTER_A nie żyje.
 
-Context Builder dla sceny Leny musi znać różnicę.
+Context Builder dla sceny TEST_CHARACTER_B musi znać różnicę.
 
 ---
 

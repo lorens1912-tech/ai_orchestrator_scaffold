@@ -521,7 +521,7 @@ Dowody obowiązkowe:
 11. Technical retry, również współbieżny i po niepewnej odpowiedzi, nie duplikuje ekstrakcji/proposal/approval/commitu.
 12. Projekt B pozostaje niewidoczny; cudze approval i scope są odrzucane; nieobsługiwany SERIES jest FAIL CLOSED.
 13. Unieważnienie danych pochodnych jest jawne, a stan rebuild nie jest przedstawiony jako ukończony bez dowodu.
-14. Fingerprint PRE/POST realnego storage, w tym books/KodKruka, books/default, books/test_book_110 i audit/, pozostaje identyczny; zastane zmiany są zachowane.
+14. Fingerprint PRE/POST neutralnego, izolowanego storage testowego dla TEST_PROJECT_A / TEST_BOOK_A pozostaje identyczny; żaden rzeczywisty projekt książkowy ani zewnętrzny storage nie jest odczytywany, indeksowany ani hashowany, a zastane zmiany są zachowane.
 
 Wymagane są testy celowane, odpowiednie contract/integration tests, functional
 API/P20 proof oraz pełna regresja. Same zielone unit tests nie zamykają findings.

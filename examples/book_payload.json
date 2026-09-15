@@ -1,8 +1,8 @@
 {
   "beats": [
-    "Adam wraca do mieszkania w deszczu; neon miga.",
-    "Znajduje notatkę z jednym słowem: 'Sterling'.",
-    "Telefon dzwoni – numer zastrzeżony; cisza po drugiej stronie.",
-    "Adam decyduje się śledzić przelew z rana."
+    "TEST_CHARACTER_A wchodzi do TEST_PLACE_A w ramach TEST_PROJECT_A i TEST_BOOK_A.",
+    "Odczytuje neutralny rekord oznaczony FACT_TEST_001.",
+    "TEST_CHARACTER_B potwierdza zgodność rekordu z danymi wejściowymi.",
+    "Obie postacie kończą próbę bez zmiany danych źródłowych."
   ]
 }

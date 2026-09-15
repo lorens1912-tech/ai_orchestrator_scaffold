@@ -9,6 +9,9 @@ from app.p20_core.storage_paths import get_storage_root
 
 client = TestClient(app, raise_server_exceptions=False)
 
+TEST_PROJECT_ID = "TEST_PROJECT_A"
+TEST_BOOK_ID = "TEST_BOOK_A"
+
 def http_get(path: str):
     response = client.get(path)
     return response.status_code, response.json()
@@ -34,18 +37,32 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(data.get("presets_count"), 6)
 
     def test_unknown_mode(self):
-        code, data = http_post("/agent/step", {"book_id":"demo","mode":"NOPE","payload":{}})
+        code, data = http_post(
+            "/agent/step",
+            {"project_id": TEST_PROJECT_ID, "book_id": TEST_BOOK_ID, "mode": "NOPE", "payload": {}},
+        )
         self.assertEqual(code, 400)
         self.assertIn("Unknown mode", data.get("detail",""))
 
     def test_unknown_preset(self):
-        code, data = http_post("/agent/step", {"book_id":"demo","preset":"NOPE","payload":{}})
+        code, data = http_post(
+            "/agent/step",
+            {"project_id": TEST_PROJECT_ID, "book_id": TEST_BOOK_ID, "preset": "NOPE", "payload": {}},
+        )
         self.assertEqual(code, 400)
         self.assertIn("Unknown preset", data.get("detail",""))
 
     def test_pipeline_draft_tool_write_and_state(self):
-        ensure_test_book_bible("demo")
-        code, data = http_post("/agent/step", {"book_id":"demo","preset":"PIPELINE_DRAFT","payload":{"title":"Kod Kruka"}})
+        ensure_test_book_bible(TEST_BOOK_ID)
+        code, data = http_post(
+            "/agent/step",
+            {
+                "project_id": TEST_PROJECT_ID,
+                "book_id": TEST_BOOK_ID,
+                "preset": "PIPELINE_DRAFT",
+                "payload": {"title": TEST_BOOK_ID},
+            },
+        )
         self.assertEqual(code, 200)
         self.assertTrue(data.get("ok") is True)
         run_id = data["run_id"]

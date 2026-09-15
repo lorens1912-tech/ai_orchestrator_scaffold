@@ -346,6 +346,16 @@ TOOLS = {
   "CANON_CHECK": tool_canon_check,
 }
 
+
+def memory_integrity_provider(payload):
+    """Internal structured-output boundary; no direct canonical write capability.
+
+    The existing completion adapter must be configured. An unavailable provider
+    fails explicitly; offline prose is never treated as verified memory.
+    """
+    from app.llm_client import run_completion
+    return run_completion(payload=payload)
+
 # === AUTOFIX_V1_BEGIN ===
 # AUTOFIX_V2: domyka test_031 (meta.applied_issue_types) + test_033 (UNKNOWN_ENTITIES=[]) + OUTLINE tool.
 

@@ -177,7 +177,8 @@ def test_parallel_agent_step_calls_use_configured_storage_without_global_scope(t
         thread.join(timeout=10)
 
     assert all(not thread.is_alive() for thread in threads)
-    assert errors == []
+    if errors:
+        raise errors[0]  # Preserve the worker traceback when a concurrency regression occurs.
     assert len(results) == len(cases)
     assert Path.cwd() == original_cwd
     assert orchestrator_stub.ROOT == original_stub_root

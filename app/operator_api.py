@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.p20_core.local_operator import OperatorError, authenticate, project_for_operator
 from app.p20_core.project_repository import ensure_system_repository, SeriesAccessError
-from app.p20_core.canon_service import operator_proposal_review, record_operator_decision
+from app.p20_core.canon_service import operator_proposal_review, record_operator_decision, commit_canonical_proposal
 
 router = APIRouter(prefix="/operator", tags=["local operator"])
 bearer = HTTPBearer(auto_error=False)
@@ -100,3 +100,16 @@ def decide(project_id: str, proposal_id: str, body: DecisionRequest,
            principal=Depends(authenticated_operator)):
     return _with_operator(principal, lambda operator, registry:
         record_operator_decision(_project(registry, project_id), proposal_id, operator, body.model_dump()))
+
+
+class CommitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    proposal_hash: str
+
+
+@router.post("/projects/{project_id}/proposals/{proposal_id}/commit")
+def commit(project_id: str, proposal_id: str, body: CommitRequest,
+           principal=Depends(authenticated_operator)):
+    return _with_operator(principal, lambda operator, registry:
+        commit_canonical_proposal(_project(registry, project_id), proposal_id,
+                                  expected_hash=body.proposal_hash, identity=operator))

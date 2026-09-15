@@ -1065,7 +1065,7 @@ class ProjectRepository:
         self.set_metadata(key, value)
 
     @contextmanager
-    def canonical_proposal_transaction(self, proposal_id: str):
+    def canonical_proposal_transaction(self, proposal_id: str, *, include_writer: bool = False):
         """Serialize proposal/decision writes with the current project state.
 
         Process records live in existing project metadata, never system storage.
@@ -1087,13 +1087,61 @@ class ProjectRepository:
                 "SELECT * FROM edges WHERE scope_type = ? AND scope_id = ? ORDER BY edge_id",
                 (self.scope.scope_type.value, self.scope.scope_id),
             )]
-            yield document, {"records": records, "edges": edges}
+            snapshot = {"records": records, "edges": edges}
+            if include_writer:
+                yield document, snapshot, conn
+            else:
+                yield document, snapshot
             if document:
                 conn.execute(
                     "INSERT INTO project_metadata (key, value) VALUES (?, ?) "
                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     (key, json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False)),
                 )
+
+    @contextmanager
+    def canonical_pipeline_operation(self, operation_id: str):
+        """Serialize one accepted-artifact operation, including its durable result."""
+        self.initialize()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            key = "canonical_pipeline.v1:" + operation_id
+            row = conn.execute("SELECT value FROM project_metadata WHERE key = ?", (key,)).fetchone()
+            state = {} if row is None else json.loads(row["value"])
+            yield state
+            conn.execute("INSERT INTO project_metadata (key, value) VALUES (?, ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (key, json.dumps(state, sort_keys=True, allow_nan=False)))
+
+    def apply_canonical_record_set(self, connection, proposal: dict, snapshot: dict,
+                                   *, impact: dict, approval: dict | None) -> dict:
+        """Called only under the proposal transaction after final guard validation.
+
+        Version history, current records, invalidation and commit receipt share
+        this connection. No filesystem or Series writes participate.
+        """
+        self.require_scope(StorageScope(proposal["scope_type"], proposal["scope_id"]))
+        decision = DomainMutationGuard().evaluate_canonical(
+            proposal=proposal, snapshot=snapshot, impact=impact, approval=approval)
+        if decision["outcome"] != "ALLOW":
+            raise ProjectStorageError("canonical mutation denied: " + decision["reason"])
+        current = {(r["record_type"], r["record_id"]): r["payload_json"] for r in snapshot["records"]}
+        for mutation in proposal["proposed_mutations"]:
+            kind, identity = mutation["target_entity_type"], mutation["target_entity_id"]
+            payload = json.dumps(mutation["proposed_state"], sort_keys=True, separators=(",", ":"), allow_nan=False)
+            history_key = "canonical_versions.v1:" + kind + ":" + identity
+            previous = connection.execute("SELECT value FROM project_metadata WHERE key=?", (history_key,)).fetchone()
+            history = [] if previous is None else json.loads(previous["value"])
+            if not history and (kind, identity) in current:
+                history.append(json.loads(current[(kind, identity)]))
+            history.append(mutation["proposed_state"])
+            connection.execute("INSERT INTO project_metadata(key,value) VALUES (?,?) "
+                               "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (history_key, json.dumps(history)))
+            connection.execute("INSERT INTO project_structured_memory_records "
+                "(scope_type,scope_id,record_type,record_id,payload_json) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(scope_type,scope_id,record_type,record_id) DO UPDATE SET payload_json=excluded.payload_json",
+                ("PROJECT", self.scope.scope_id, kind, identity, payload))
+        return decision
 
     def get_metadata(self, key: str) -> str | None:
         self.initialize()
@@ -2081,8 +2129,20 @@ class SystemRepository:
         conn.row_factory = sqlite3.Row
         conn.execute(f"PRAGMA busy_timeout = {_SYSTEM_DB_BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
         try:
+            # Concurrent first opens can race when changing journal mode, which
+            # may return SQLITE_BUSY immediately despite busy_timeout. No domain
+            # transaction has begun: retry only this idempotent initialization.
+            import time
+            deadline = time.monotonic() + _SYSTEM_DB_BUSY_TIMEOUT_MS / 1000
+            while True:
+                try:
+                    conn.execute("PRAGMA journal_mode = WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if getattr(exc, "sqlite_errorcode", None) != sqlite3.SQLITE_BUSY or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.01)
             yield conn
             conn.commit()
         except Exception:

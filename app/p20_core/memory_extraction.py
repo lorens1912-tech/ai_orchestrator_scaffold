@@ -31,6 +31,26 @@ SUPPORTED_MEMORY_RECORD_TYPES = frozenset(
 )
 
 
+def decode_memory_entities(records: list[dict]) -> tuple[Any, ...]:
+    """Decode provider records with the existing typed domain contracts."""
+    from app.p20_core import domain_records as domain
+    types = {"FACT": domain.FactRecord, "CHARACTER_STATE": domain.CharacterState,
+             "EVENT": domain.EventRecord, "KNOWLEDGE_EVENT": domain.KnowledgeEvent,
+             "THREAD": domain.ThreadRecord, "SETUP": domain.SetupRecord, "PAYOFF": domain.PayoffRecord,
+             "RELATIONSHIP_CHANGE": RelationshipChangeRecord}
+    if not isinstance(records, list) or not records:
+        raise MemoryExtractionError("extractor must return a nonempty records list")
+    result = []
+    for record in records:
+        if not isinstance(record, dict) or set(record) != {"record_type", "payload"}:
+            raise MemoryExtractionError("invalid extracted record envelope")
+        constructor = types.get(record["record_type"])
+        if constructor is None:
+            raise MemoryExtractionError("unsupported extracted record type")
+        result.append(constructor(**record["payload"]))
+    return tuple(result)
+
+
 class MemoryExtractionError(ValueError):
     pass
 

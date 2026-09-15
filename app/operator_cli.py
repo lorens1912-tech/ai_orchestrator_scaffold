@@ -36,7 +36,7 @@ def request_json(base_url: str, path: str, token: str, body: dict | None = None)
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Local AgentPRO operator; never prints a credential")
-    parser.add_argument("command", choices=["init", "rotate", "revoke", "review", "decide"])
+    parser.add_argument("command", choices=["init", "rotate", "revoke", "review", "decide", "commit"])
     parser.add_argument("--secret-path", type=Path, default=default_secret_path())
     parser.add_argument("--url", default="http://127.0.0.1:8000")
     parser.add_argument("--project")
@@ -55,6 +55,9 @@ def main() -> int:
         review = request_json(args.url, path + ("/review" if args.command == "decide" else ""), token,
                               {} if args.command == "decide" else None)
         print(json.dumps(review, ensure_ascii=False, indent=2))
+        if args.command == "commit":
+            print(json.dumps(request_json(args.url, path + "/commit", token,
+                {"proposal_hash": review["proposal"]["proposal_hash"]}), indent=2))
         if args.command == "decide" and review["challenge"] is not None:
             decision = input("Wpisz APPROVE lub REJECT dla pokazanej propozycji (inne: anuluj): ").strip()
             if decision not in {"APPROVE", "REJECT"}:

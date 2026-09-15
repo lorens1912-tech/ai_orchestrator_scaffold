@@ -41,6 +41,8 @@ _ROLE_BY_TEAM = {
     "QA": ContextRole.CRITIC,
     "CONTINUITY": ContextRole.CONTINUITY,
     "FACTCHECK": ContextRole.CANON,
+    "EXTRACTOR": ContextRole.CANON,
+    "VERIFIER": ContextRole.CANON,
 }
 
 

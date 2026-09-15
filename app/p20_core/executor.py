@@ -34,6 +34,44 @@ TEXT_MODES = {
 StepItem = Union[str, Dict[str, Any]]
 
 
+def invoke_memory_model(*, execution_context: ProjectExecutionContext, role: str,
+                        model: str, source: dict, candidate: dict | None,
+                        context_sources: dict) -> dict:
+    """Internal integrity call through the same ContextBuilder/provider boundary.
+
+    These are internal roles, not additional user-selectable execution modes.
+    """
+    from app.p20_core.memory_extraction import ModelInvocation
+    from dataclasses import fields
+    from app.p20_core.domain_records import FactRecord
+    payload = {"project_id": execution_context.project_id, "book_id": execution_context.book_id,
+               "series_id": execution_context.series_id, "run_id": execution_context.run_id,
+               "step_id": execution_context.step_id, "source": source, "candidate": candidate,
+               "role": role, "_requested_model": model,
+               "record_schema": {field.name: str(field.type) for field in fields(FactRecord)},
+               "instruction": ("Return records as [{record_type: FACT, payload: full FactRecord}]. Preserve IDs and protection from context; "
+                               "use current version + 1 for updates and 1 for creates. Bind provenance to the supplied source. "
+                               "Do not discard unsupported entities: fail explicitly if the complete set cannot be represented."
+                               if role == "EXTRACTOR" else
+                               "Independently verify every record against source. Return precision_status and completeness_status: ACCEPT, REVISE or REJECT, with reasons.")}
+    package = build_runtime_context_package(execution_context=execution_context, mode="MEMORY_" + role,
+        role=role, requested_model=model, effective_model=model, tool_input=payload, context_sources=context_sources)
+    payload.update(context_package_id=package.context_package_id, context_hash=package.context_hash,
+                   _context_package=package.to_dict())
+    invocation = ModelInvocation(role=role, provider="P20_PROVIDER_BOUNDARY", model=model,
+        call_id=execution_context.operation_id,
+        metadata={"context_package_id": package.context_package_id, "context_hash": package.context_hash})
+    from app.tools import memory_integrity_provider
+    result = memory_integrity_provider(payload)
+    if not isinstance(result, dict):
+        raise ValueError("memory provider response must be a JSON object")
+    allowed = {"records"} if role == "EXTRACTOR" else {
+        "precision_status", "completeness_status", "precision_reasons", "completeness_reasons", "must_fix"}
+    if set(result) - allowed:
+        raise ValueError("unsupported memory provider response fields")
+    return {"invocation": invocation.to_dict(), "input": payload, "result": result}
+
+
 def _iso() -> str:
     return datetime.utcnow().isoformat()
 

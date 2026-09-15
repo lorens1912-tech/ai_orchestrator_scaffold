@@ -257,6 +257,70 @@ class DomainMutationGuard:
             raise DomainMutationError("policy must be a MutationPolicy")
         self.policy = policy
 
+    def evaluate_canonical(self, *, proposal: dict, snapshot: dict, impact: dict,
+                           approval: dict | None = None) -> dict:
+        """The same guard evaluates a bound proposal before and at commit.
+
+        Approval must be loaded by CanonService from its trusted repository;
+        a model/client supplied flag is never passed here as evidence.
+        """
+        binding = {k: proposal[k] for k in ("proposal_id", "proposal_hash", "project_id", "scope_type", "scope_id")}
+        def result(outcome, reason):
+            return dict(binding, outcome=outcome, reason=reason, guard_version=DOMAIN_MUTATION_GUARD_VERSION)
+        if proposal["scope_type"] != "PROJECT":
+            return result("DENY", "SERIES_CANONICAL_COMMIT_UNSUPPORTED")
+        if any(impact.get(k) != v for k, v in binding.items()) or not impact.get("impact_id") or not impact.get("result"):
+            return result("DENY", "IMPACT_REQUIRED")
+        if proposal.get("authority_ref") != "P20_VERIFIED_EXTRACTION_V1":
+            return result("DENY", "AUTHORITY_UNRESOLVED")
+        if proposal.get("policy_ref") != "CANONICAL_CHANGE_V1":
+            return result("DENY", "POLICY_UNRESOLVED")
+        current_records = {(r["record_type"], r["record_id"]): json.loads(r["payload_json"])
+                           for r in snapshot["records"]}
+        protected = False
+        for mutation in proposal["proposed_mutations"]:
+            current = current_records.get((mutation["target_entity_type"], mutation["target_entity_id"]))
+            proposed = mutation["proposed_state"]
+            import hashlib
+            if mutation["operation_type"] == "CREATE":
+                if current is not None or mutation["expected_current_version"] is not None or mutation["expected_current_hash"] is not None:
+                    return result("DENY", "CREATE_TARGET_EXISTS_OR_INVALID_BASE")
+            elif mutation["operation_type"] in {"UPDATE", "REPLACE"}:
+                if (current is None or current.get("version") != mutation["expected_current_version"]
+                        or hashlib.sha256(_canonical_json(current).encode()).hexdigest() != mutation["expected_current_hash"]):
+                    return result("DENY", "STALE_TARGET_BASE")
+            else:
+                return result("DENY", "UNSUPPORTED_OPERATION")
+            if proposed.get("project_id") != proposal["project_id"]:
+                return result("DENY", "RECORD_SCOPE_MISMATCH")
+            if current:
+                protected |= bool(current.get("frozen") or current.get("author_locked"))
+                # This pipeline does not silently lower protection even with approval.
+                if any(current.get(flag) and not proposed.get(flag) for flag in ("frozen", "author_locked")):
+                    return result("DENY", "PROTECTION_DOWNGRADE")
+            context = MutationContext(project_id=proposal["project_id"],
+                record_type=mutation["target_entity_type"], record_id=mutation["target_entity_id"],
+                mutation_type=mutation["operation_type"], source=MutationSource.AUTOMATION)
+            check = self.evaluate(current_payload=current, proposed_payload=proposed, context=context)
+            if check.denied and check.reason_code not in {
+                MutationReasonCode.FROZEN_RECORD, MutationReasonCode.AUTHOR_LOCKED_RECORD,
+                MutationReasonCode.FROZEN_AND_AUTHOR_LOCKED_RECORD,
+            }:
+                return result("DENY", check.reason_code.value)
+            if current and proposed.get("version", 0) <= current.get("version", 0):
+                return result("DENY", "VERSION_NOT_INCREMENTED")
+        if protected:
+            if approval is None:
+                return result("REQUIRE_USER_APPROVAL", "PROTECTED_MUTATION")
+            if (any(approval.get(k) != v for k, v in binding.items())
+                    or approval.get("decision") != "APPROVE" or approval.get("approved_by") != "USER"
+                    or approval.get("authentication_method") != "LOCAL_OPERATOR_BEARER_V1"
+                    or not approval.get("authorization_ref") or not approval.get("operator_id")
+                    or approval.get("impact_id") != impact["impact_id"]
+                    or approval.get("impact_result_hash") != hashlib.sha256(_canonical_json(impact).encode()).hexdigest()):
+                return result("DENY", "INVALID_BOUND_APPROVAL")
+        return result("ALLOW", "CANONICAL_GATES_SATISFIED")
+
     def evaluate(
         self,
         *,

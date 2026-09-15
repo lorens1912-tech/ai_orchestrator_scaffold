@@ -684,6 +684,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
 
         chapter_path = None
         canon_memory = None
+        canonical_change = None
 
         if decision == "ACCEPT" and "WRITE" in modes:
             chapter_path = save_chapter(
@@ -754,6 +755,14 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                         __import__("json").dumps(chapter_doc, ensure_ascii=False, indent=2),
                         encoding="utf-8",
                     )
+                    if write_trace is not None:
+                        from app.p20_core.canon_service import process_accepted_artifact
+                        from app.model_policy import resolve_model
+                        canonical_change = process_accepted_artifact(
+                            execution_context=execution_context, text=output_text,
+                            source_trace=write_trace, context_sources=context_sources,
+                            model=resolve_model(payload.get("model")).effective_model,
+                            scope_type=payload.get("scope_type", "PROJECT"))
 
         state = save_run_state(
             run_id,
@@ -768,6 +777,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             step_id=execution_context.step_id,
         )
         state["decision"] = decision
+        state["canonical_change"] = canonical_change
         state["master_canon"] = dict(master_canon_ref)
         state["project_truth"] = dict(project_truth_ref)
         if is_write:
@@ -847,6 +857,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             "book_bible": dict(book_bible_binding) if is_write else {},
             "run_state": state,
             "canon_memory": canon_memory,
+            "canonical_change": canonical_change,
             "context_packages": context_traces,
             "context_package_id": (
                 context_traces[-1]["context_package_id"] if context_traces else None

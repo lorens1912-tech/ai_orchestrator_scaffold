@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -46,7 +47,7 @@ def _validate_review_proposal(repository, proposal: dict) -> None:
             raise OperatorError("INVALID_PROPOSAL_HASH", 422)
     if type(proposal["source_artifact_version"]) is not int or proposal["source_artifact_version"] < 1:
         raise OperatorError("INVALID_ARTIFACT_VERSION", 422)
-    if proposal["status"] != "AWAITING_USER_APPROVAL":
+    if proposal["status"] not in {"AWAITING_USER_APPROVAL", "APPROVED_FOR_COMMIT", "READY_FOR_ANALYSIS", "COMMITTED", "STALE", "REJECTED", "FAILED"}:
         raise OperatorError("PROPOSAL_NOT_READY_FOR_REVIEW", 409)
     for name in ("verification_ref", "actor_ref", "authority_ref", "policy_ref"):
         if not proposal[name]:
@@ -168,6 +169,10 @@ def operator_proposal_review(repository, proposal_id: str, identity, *, ttl_seco
         record = document["versions"][document["current_version"]]
         proposal = record["proposal"]
         _validate_review_proposal(repository, proposal)
+        if record.get("receipt"):
+            return {"proposal": proposal, "impact": record["impact"], "initial_guard": record["initial_guard"],
+                    "challenge": None, "decision": record["decision"], "canonical_commit": True,
+                    "receipt": record["receipt"]}
         _validate_review_basis(proposal, snapshot)
         if record["basis_hash"] != _evidence_hash(snapshot):
             raise OperatorError("STALE_PROPOSAL_ANALYSIS", 409)
@@ -223,8 +228,284 @@ def record_operator_decision(repository, proposal_id: str, identity, request: di
                     "canonical_commit": False}
         record["decision"] = evidence
         challenge["used"] = True
+        if "pipeline" in record:
+            proposal["status"] = "APPROVED_FOR_COMMIT" if request["decision"] == "APPROVE" else "REJECTED"
         # Decision evidence only. No transition to COMMITTED or bypass of the domain guard.
         return evidence
+
+def _pipeline_evidence(record: dict) -> None:
+    """Reconstruct typed upstream evidence; a seeded review alone grants no authority."""
+    from app.p20_core.memory_extraction import (
+        SceneMemorySource, StructuredMemoryExtractionCandidate, ModelInvocation,
+        decode_memory_entities, verify_memory_extraction_candidate,
+    )
+    from app.p20_core.local_operator import OperatorError
+    proposal = record["proposal"]
+    evidence = record.get("pipeline")
+    if not evidence:
+        raise OperatorError("PIPELINE_EVIDENCE_REQUIRED", 409)
+    source = evidence["source"]
+    if (sha256_text(source["text"]) != proposal["source_artifact_hash"]
+            or source["artifact_ref"] != proposal["source_artifact_ref"]):
+        raise OperatorError("SOURCE_EVIDENCE_MISMATCH", 409)
+    candidate = StructuredMemoryExtractionCandidate.from_source(
+        candidate_id=proposal["extraction_candidate_set_id"],
+        source=SceneMemorySource.from_text(project_id=proposal["project_id"],
+            source_scene_id=proposal["source_scene_id"], source_artifact_ref=source["artifact_ref"],
+            source_text=source["text"]), extraction_attempt=evidence["attempt"],
+        candidate_records=decode_memory_entities(evidence["extractor"]["result"]["records"]),
+        extractor_call=ModelInvocation(**evidence["extractor"]["invocation"]),
+        created_at=evidence["candidate_created_at"], scene_quality_status="ACCEPT")
+    verification = verify_memory_extraction_candidate(candidate,
+        source=SceneMemorySource(proposal["project_id"], proposal["source_scene_id"],
+                                 source["artifact_ref"], proposal["source_artifact_hash"]),
+        verifier_call=ModelInvocation(**evidence["verifier"]["invocation"]),
+        **evidence["verifier"]["result"])
+    if (candidate.candidate_hash != proposal["extraction_candidate_hash"]
+            or verification.to_dict() != evidence["verification"]
+            or _evidence_hash(verification.to_dict()) != proposal["verification_ref"]["hash"]
+            or verification.decision.value != "ACCEPT" or verification.escalation_required):
+        raise OperatorError("VERIFICATION_EVIDENCE_MISMATCH", 409)
+    states = {str(entity.record_id): entity.to_dict() for entity in candidate.memory_entities}
+    if states != {m["target_entity_id"]: m["proposed_state"] for m in proposal["proposed_mutations"]}:
+        raise OperatorError("CANDIDATE_MUTATION_MISMATCH", 409)
+    for call, role in ((evidence["extractor"], "EXTRACTOR"), (evidence["verifier"], "VERIFIER")):
+        if (call["input"]["project_id"] != proposal["project_id"]
+                or call["input"]["book_id"] != proposal["book_id"]
+                or call["input"]["series_id"] != proposal["series_id"]
+                or call["invocation"]["role"] != role or call["input"]["source"] != source
+                or call["invocation"]["metadata"]["context_hash"] != call["input"]["context_hash"]):
+            raise OperatorError("MODEL_EVIDENCE_BINDING_MISMATCH", 409)
+    if evidence["verifier"]["input"]["candidate"] != candidate.to_dict():
+        raise OperatorError("VERIFIER_INPUT_MISMATCH", 409)
+
+
+def _validate_canonical_fact_set(proposal: dict, snapshot: dict) -> None:
+    """Validate existing FactRecord temporal rules and whole-set references."""
+    from app.p20_core.domain_records import FactRecord
+    from app.p20_core.local_operator import OperatorError
+    states = {r["record_id"]: json.loads(r["payload_json"]) for r in snapshot["records"]}
+    states.update({m["target_entity_id"]: m["proposed_state"] for m in proposal["proposed_mutations"]})
+    known = set(states) | {proposal["source_scene_id"], proposal["project_id"], proposal["book_id"]}
+    for mutation in proposal["proposed_mutations"]:
+        fact = FactRecord(**mutation["proposed_state"])
+        if str(fact.project_id) != proposal["project_id"] or str(fact.fact_id) != mutation["target_entity_id"]:
+            raise OperatorError("CANONICAL_RECORD_SCOPE_MISMATCH", 409)
+        for name in ("subject_id", "object_id", "established_event_id", "established_scene_id"):
+            value = getattr(fact, name)
+            if value is not None and str(value) not in known:
+                raise OperatorError("CANONICAL_REFERENCE_UNRESOLVED", 409)
+
+
+def _canonical_impact(repository, proposal: dict, snapshot: dict) -> dict:
+    from app.p20_core.impact_analysis import analyze_impact, ImpactRequest
+    # N edges bound every simple path. Above this budget analysis must fail closed.
+    depth = max(1, len(snapshot["edges"]) + 1)
+    from app.p20_core.local_operator import OperatorError
+    if depth > 10000:
+        raise OperatorError("IMPACT_COVERAGE_INSUFFICIENT", 409)
+    results = [analyze_impact(repository, ImpactRequest(
+        proposal["project_id"], proposal["scope_type"], proposal["scope_id"],
+        m["target_entity_type"], m["target_entity_id"], m["operation_type"]),
+        max_depth=depth, max_edges=10000).to_dict() for m in proposal["proposed_mutations"]]
+    if any(item["impact_class"] == "DERIVED" for result in results for item in result["impacts"]):
+        raise OperatorError("DERIVED_REBUILD_UNSUPPORTED", 409)
+    binding = {k: proposal[k] for k in ("proposal_id", "proposal_hash", "project_id", "scope_type", "scope_id", "proposal_version")}
+    return dict(binding, impact_id="impact-" + proposal["proposal_hash"], result=results,
+                basis_hash=_evidence_hash(snapshot), policy_version=1,
+                coverage="BOUNDED_PROJECT_GRAPH", result_hash=_evidence_hash({"results": results}),
+                created_at=utc_now_iso())
+
+
+def commit_canonical_proposal(repository, proposal_id: str, *, expected_hash: str,
+                              identity=None) -> dict:
+    """Final validation and the full canonical write share one PROJECT transaction."""
+    from app.p20_core.local_operator import OperatorError
+    from app.p20_core.domain_mutation_guard import DomainMutationGuard
+    with repository.canonical_proposal_transaction(proposal_id, include_writer=True) as (document, snapshot, conn):
+        if not document:
+            raise OperatorError("PROPOSAL_NOT_FOUND", 404)
+        record = document["versions"][document["current_version"]]
+        proposal = record["proposal"]
+        if proposal["proposal_hash"] != expected_hash:
+            raise OperatorError("PROPOSAL_HASH_MISMATCH", 409)
+        if record.get("receipt"):
+            return record["receipt"]
+        if proposal["status"] in {"STALE", "REJECTED", "FAILED"}:
+            return {"status": proposal["status"], "canonical_commit": False, "proposal_id": proposal_id}
+        _validate_review_proposal(repository, proposal)
+        _pipeline_evidence(record)
+        source_key = proposal["source_artifact_ref"].removeprefix("project_metadata:").removesuffix("#source")
+        source_row = conn.execute("SELECT value FROM project_metadata WHERE key=?", (source_key,)).fetchone()
+        if source_row is None or json.loads(source_row["value"])["source"] != record["pipeline"]["source"]:
+            raise OperatorError("SOURCE_VERSION_UNAVAILABLE", 409)
+        _validate_canonical_fact_set(proposal, snapshot)
+        try:
+            _validate_review_basis(proposal, snapshot)
+            if record["basis_hash"] != _evidence_hash(snapshot):
+                raise OperatorError("STALE_PROPOSAL_ANALYSIS", 409)
+        except OperatorError as exc:
+            proposal["status"] = "STALE"
+            record["failure"] = exc.code
+            return {"status": "STALE", "reason": exc.code, "canonical_commit": False, "proposal_id": proposal_id}
+        approval = record["decision"]
+        if approval is not None:
+            if (identity is None or any(approval.get(k) != v for k, v in identity.to_dict().items())
+                    or approval["impact_result_hash"] != _evidence_hash(record["impact"])):
+                raise OperatorError("COMMIT_OPERATOR_BINDING_MISMATCH", 403)
+        guard = DomainMutationGuard().evaluate_canonical(
+            proposal=proposal, snapshot=snapshot, impact=record["impact"], approval=approval)
+        record["final_guard"] = guard
+        if guard["outcome"] != "ALLOW":
+            proposal["status"] = "AWAITING_USER_APPROVAL" if guard["outcome"] == "REQUIRE_USER_APPROVAL" else "REJECTED"
+            return {"status": proposal["status"], "canonical_commit": False, "proposal_id": proposal_id,
+                    "proposal_hash": expected_hash, "guard": guard}
+        # Repository repeats the same guard at the physical write boundary.
+        repository.apply_canonical_record_set(conn, proposal, snapshot, impact=record["impact"], approval=approval)
+        affected = sorted({item["entity_id"] for result in record["impact"]["result"] for item in result["impacts"]})
+        receipt = {"status": "COMMITTED", "canonical_commit": True,
+            **{k: proposal[k] for k in ("proposal_id", "proposal_hash", "project_id", "scope_type", "scope_id", "run_id", "step_id")},
+            "operation_id": _evidence_hash({k: proposal[k] for k in ("project_id", "scope_type", "scope_id", "proposal_id", "proposal_hash")}),
+            "resulting_versions": {m["target_entity_id"]: m["proposed_state"]["version"] for m in proposal["proposed_mutations"]},
+            "authorization_ref": None if approval is None else approval["authorization_ref"],
+            "impact_id": record["impact"]["impact_id"], "guard": guard,
+            "invalidation": {"affected_ids": affected, "context_packages": "HISTORICAL_ONLY", "rebuild": "NEXT_CONTEXT_BUILD"},
+            "created_at": utc_now_iso()}
+        proposal["status"] = "COMMITTED"
+        record["receipt"] = receipt
+        # This metadata is the durable commit audit, atomic with versions and state.
+        conn.execute("INSERT INTO project_metadata(key,value) VALUES (?,?)",
+                     ("canonical_commit.v1:" + receipt["operation_id"], json.dumps(receipt, sort_keys=True)))
+        return receipt
+
+
+def process_accepted_artifact(*, execution_context, text: str, source_trace: dict,
+                              context_sources: dict, model: str, scope_type: str = "PROJECT") -> dict:
+    """Active P20 producer. Persist source/calls, then freeze, analyze and guard."""
+    from dataclasses import replace
+    from app.p20_core.project_repository import ProjectRepository, StorageResolver
+    from app.p20_core.executor import invoke_memory_model
+    from app.p20_core.memory_extraction import (
+        SceneMemorySource, StructuredMemoryExtractionCandidate, ModelInvocation,
+        decode_memory_entities, verify_memory_extraction_candidate, DEFAULT_MEMORY_EXTRACTION_POLICY,
+    )
+    from app.p20_core.local_operator import OperatorError
+    from app.p20_core.domain_mutation_guard import DomainMutationGuard
+    repository = ProjectRepository(StorageResolver().resolve_project(
+        execution_context.project_id, book_id=execution_context.book_id))
+    operation = _evidence_hash({"project": execution_context.project_id, "book": execution_context.book_id,
+        "run": execution_context.run_id, "step": execution_context.step_id, "source_hash": sha256_text(text),
+        "source_version": 1, "scope_type": scope_type, "operation": "CANONICAL_PROMOTION"})
+    proposal_id = "proposal-" + operation
+    cached = repository.get_metadata("canonical_proposal.v1:" + proposal_id)
+    if cached:
+        record = json.loads(cached)["versions"]["1"]
+        if record.get("receipt"):
+            return record["receipt"]
+        return {"status": record["proposal"]["status"], "proposal_id": proposal_id,
+                "proposal_hash": record["proposal"]["proposal_hash"], "canonical_commit": False}
+    with repository.canonical_pipeline_operation(operation) as state:
+        if state.get("result"):
+            return state["result"]
+        if state.get("started"):
+            return {"status": "FAILED", "reason": "PIPELINE_OUTCOME_REQUIRES_REVIEW", "canonical_commit": False}
+        source_ref = "project_metadata:canonical_pipeline.v1:" + operation + "#source"
+        source = {"text": text, "artifact_ref": source_ref, "artifact_id": "artifact-" + operation,
+                  "version": 1, "hash": sha256_text(text), "scene_id": "SCENE-" + operation,
+                  "accepted_step_artifact": source_trace["artifact_path"],
+                  "context_package_id": source_trace["context_package_id"], "context_hash": source_trace["context_hash"]}
+        state.update(started=True, source=source, attempts=[])
+    try:
+        if scope_type != "PROJECT":
+            raise OperatorError("SERIES_CANONICAL_COMMIT_UNSUPPORTED" if scope_type == "SERIES" else "INVALID_CANONICAL_SCOPE", 409)
+        for attempt in range(1, DEFAULT_MEMORY_EXTRACTION_POLICY.max_attempts + 1):
+            source_contract = SceneMemorySource.from_text(project_id=execution_context.project_id,
+                source_scene_id=source["scene_id"], source_artifact_ref=source_ref, source_text=text)
+            extractor = invoke_memory_model(execution_context=replace(execution_context,
+                step_id=execution_context.step_id + f":canonical:{operation}:extract:{attempt}", technical_retry=False),
+                role="EXTRACTOR", model=model, source=source, candidate=None, context_sources=context_sources)
+            with repository.canonical_pipeline_operation(operation) as state:
+                state["last_extractor"] = extractor
+            candidate_time = utc_now_iso()
+            candidate = StructuredMemoryExtractionCandidate.from_source(candidate_id="candidate-" + operation + f"-{attempt}",
+                source=source_contract, extraction_attempt=attempt,
+                candidate_records=decode_memory_entities(extractor["result"]["records"]),
+                extractor_call=ModelInvocation(**extractor["invocation"]), created_at=candidate_time,
+                scene_quality_status="ACCEPT")
+            verifier = invoke_memory_model(execution_context=replace(execution_context,
+                step_id=execution_context.step_id + f":canonical:{operation}:verify:{attempt}", technical_retry=False),
+                role="VERIFIER", model=model, source=source, candidate=candidate.to_dict(), context_sources=context_sources)
+            with repository.canonical_pipeline_operation(operation) as state:
+                state["last_verifier"] = verifier
+            verification = verify_memory_extraction_candidate(candidate, source=source_contract,
+                verifier_call=ModelInvocation(**verifier["invocation"]), **verifier["result"])
+            evidence = {"source": source, "extractor": extractor, "verifier": verifier,
+                "candidate_created_at": candidate_time, "attempt": attempt, "verification": verification.to_dict()}
+            with repository.canonical_pipeline_operation(operation) as state:
+                state["attempts"].append(evidence)
+            if verification.decision.value == "ACCEPT":
+                break
+            if verification.decision.value == "REJECT" or verification.escalation_required:
+                result = {"status": verification.memory_extraction_status.value,
+                          "canonical_commit": False, "verification": verification.to_dict()}
+                with repository.canonical_pipeline_operation(operation) as state:
+                    state["result"] = result
+                return result
+        # Existing non-FACT schemas do not expose both independent protection flags.
+        # Do not invent canonical protection defaults or promote only part of a set.
+        if any(entity.memory_record_type != "FACT" for entity in candidate.memory_entities):
+            raise OperatorError("CANONICAL_RECORD_PROTECTION_SCHEMA_UNSUPPORTED", 409)
+        with repository.canonical_proposal_transaction(proposal_id) as (document, snapshot):
+            current = {(r["record_type"], r["record_id"]): json.loads(r["payload_json"]) for r in snapshot["records"]}
+            mutations = []
+            for entity in candidate.memory_entities:
+                old = current.get((entity.memory_record_type, str(entity.record_id)))
+                mutations.append(dict(target_entity_type=entity.memory_record_type, target_entity_id=str(entity.record_id),
+                    operation_type="CREATE" if old is None else "UPDATE", expected_current_version=None if old is None else old["version"],
+                    expected_current_hash=None if old is None else _evidence_hash(old), proposed_state=entity.to_dict(),
+                    provenance={"candidate_id": candidate.candidate_id, "candidate_hash": candidate.candidate_hash,
+                        "source_hash": source["hash"], "source_version": 1, "source_scene_id": source["scene_id"]}))
+            proposal = dict(contract_version="1.0", proposal_id=proposal_id, project_id=execution_context.project_id,
+                book_id=execution_context.book_id, series_id=execution_context.series_id, scope_type="PROJECT",
+                scope_id=execution_context.project_id, run_id=execution_context.run_id, step_id=execution_context.step_id,
+                source_artifact_id=source["artifact_id"], source_artifact_ref=source_ref, source_artifact_hash=source["hash"],
+                source_artifact_version=1, source_scene_id=source["scene_id"], context_package_id=source["context_package_id"],
+                context_hash=source["context_hash"], extraction_candidate_set_id=candidate.candidate_id,
+                extraction_candidate_hash=candidate.candidate_hash, verification_ref={"id": "verification-" + operation,
+                "hash": _evidence_hash(verification.to_dict())}, proposed_mutations=sorted(mutations, key=lambda m: (m["target_entity_type"], m["target_entity_id"], m["operation_type"])),
+                source="AUTOMATION", actor_ref=execution_context.operation_id, authority_ref="P20_VERIFIED_EXTRACTION_V1",
+                policy_ref="CANONICAL_CHANGE_V1", proposal_version=1, proposal_hash="", status="READY_FOR_ANALYSIS", created_at=utc_now_iso())
+            proposal["proposal_hash"] = canonical_proposal_hash(proposal)
+            _validate_review_proposal(repository, proposal)
+            _validate_canonical_fact_set(proposal, snapshot)
+            document.update(current_version="1", versions={"1": {"proposal": proposal, "pipeline": evidence,
+                "basis_hash": _evidence_hash(snapshot), "challenges": {}, "decision": None}})
+        # Frozen proposal exists before analysis. A new snapshot must match its basis.
+        with repository.canonical_proposal_transaction(proposal_id) as (document, snapshot):
+            record = document["versions"]["1"]
+            if record["basis_hash"] != _evidence_hash(snapshot):
+                raise OperatorError("STALE_PROPOSAL_ANALYSIS", 409)
+            proposal = record["proposal"]
+            impact = _canonical_impact(repository, proposal, snapshot)
+            guard = DomainMutationGuard().evaluate_canonical(proposal=proposal, snapshot=snapshot, impact=impact)
+            record.update(impact=impact, initial_guard=guard)
+            proposal["status"] = {"ALLOW": "APPROVED_FOR_COMMIT", "REQUIRE_USER_APPROVAL": "AWAITING_USER_APPROVAL", "DENY": "REJECTED"}[guard["outcome"]]
+        return commit_canonical_proposal(repository, proposal_id, expected_hash=proposal["proposal_hash"])
+    except (ValueError, TypeError, KeyError, RuntimeError, sqlite3.Error) as exc:
+        # No model exception text (which may echo inputs/secrets) enters the audit.
+        result = {"status": "FAILED", "canonical_commit": False,
+                  "reason": exc.code if isinstance(exc, OperatorError) else type(exc).__name__}
+        with repository.canonical_proposal_transaction(proposal_id) as (document, snapshot):
+            if document:
+                record = document["versions"]["1"]
+                if record.get("receipt"):
+                    return record["receipt"]
+                record["proposal"]["status"] = "FAILED"
+                record["failure"] = result["reason"]
+        with repository.canonical_pipeline_operation(operation) as state:
+            state["result"] = result
+        return result
+
 
 APP_VERSION = "P20.0-novel-core"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -258,7 +539,17 @@ def json_write(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    # Windows can briefly deny replacement of a just-written file. Retry only
+    # this idempotent rename, keeping the completed temp file and a strict bound.
+    import time
+    for attempt in range(5):
+        try:
+            tmp.replace(path)
+            break
+        except PermissionError as exc:
+            if getattr(exc, "winerror", None) not in {5, 32} or attempt == 4:
+                raise
+            time.sleep(0.01 * (2 ** attempt))
 
 
 def append_jsonl(path: Path, obj: Dict[str, Any]) -> None:
@@ -586,6 +877,11 @@ def commit_chapter_to_canon(
     project_id: str | None = None,
     domain_book_id: str | None = None,
 ) -> Dict[str, Any]:
+    """Register accepted chapter metadata only; never promote extracted domain state.
+
+    Canonical structured records are owned by commit_canonical_proposal. Fields
+    such as facts/proposed_mutations in a chapter are deliberately not imported.
+    """
     book_dir = ensure_book_dirs(
         book_id,
         project_id=project_id,

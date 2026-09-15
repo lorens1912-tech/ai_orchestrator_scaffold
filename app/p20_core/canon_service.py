@@ -354,6 +354,21 @@ def commit_canonical_proposal(repository, proposal_id: str, *, expected_hash: st
         if proposal["status"] in {"STALE", "REJECTED", "FAILED"}:
             return {"status": proposal["status"], "canonical_commit": False, "proposal_id": proposal_id}
         _validate_review_proposal(repository, proposal)
+        binding = {
+            key: proposal[key]
+            for key in ("proposal_id", "proposal_hash", "project_id", "scope_type", "scope_id")
+        }
+        impact = record.get("impact")
+        initial_guard = record.get("initial_guard")
+        if (
+            not isinstance(impact, dict)
+            or not isinstance(initial_guard, dict)
+            or any(evidence.get(key) != value for evidence in (impact, initial_guard)
+                   for key, value in binding.items())
+            or not impact.get("impact_id")
+            or not impact.get("result")
+        ):
+            raise OperatorError("REVIEW_EVIDENCE_MISSING", 409)
         _pipeline_evidence(record)
         source_key = proposal["source_artifact_ref"].removeprefix("project_metadata:").removesuffix("#source")
         source_row = conn.execute("SELECT value FROM project_metadata WHERE key=?", (source_key,)).fetchone()
@@ -371,24 +386,24 @@ def commit_canonical_proposal(repository, proposal_id: str, *, expected_hash: st
         approval = record["decision"]
         if approval is not None:
             if (identity is None or any(approval.get(k) != v for k, v in identity.to_dict().items())
-                    or approval["impact_result_hash"] != _evidence_hash(record["impact"])):
+                    or approval["impact_result_hash"] != _evidence_hash(impact)):
                 raise OperatorError("COMMIT_OPERATOR_BINDING_MISMATCH", 403)
         guard = DomainMutationGuard().evaluate_canonical(
-            proposal=proposal, snapshot=snapshot, impact=record["impact"], approval=approval)
+            proposal=proposal, snapshot=snapshot, impact=impact, approval=approval)
         record["final_guard"] = guard
         if guard["outcome"] != "ALLOW":
             proposal["status"] = "AWAITING_USER_APPROVAL" if guard["outcome"] == "REQUIRE_USER_APPROVAL" else "REJECTED"
             return {"status": proposal["status"], "canonical_commit": False, "proposal_id": proposal_id,
                     "proposal_hash": expected_hash, "guard": guard}
         # Repository repeats the same guard at the physical write boundary.
-        repository.apply_canonical_record_set(conn, proposal, snapshot, impact=record["impact"], approval=approval)
-        affected = sorted({item["entity_id"] for result in record["impact"]["result"] for item in result["impacts"]})
+        repository.apply_canonical_record_set(conn, proposal, snapshot, impact=impact, approval=approval)
+        affected = sorted({item["entity_id"] for result in impact["result"] for item in result["impacts"]})
         receipt = {"status": "COMMITTED", "canonical_commit": True,
             **{k: proposal[k] for k in ("proposal_id", "proposal_hash", "project_id", "scope_type", "scope_id", "run_id", "step_id")},
             "operation_id": _evidence_hash({k: proposal[k] for k in ("project_id", "scope_type", "scope_id", "proposal_id", "proposal_hash")}),
             "resulting_versions": {m["target_entity_id"]: m["proposed_state"]["version"] for m in proposal["proposed_mutations"]},
             "authorization_ref": None if approval is None else approval["authorization_ref"],
-            "impact_id": record["impact"]["impact_id"], "guard": guard,
+            "impact_id": impact["impact_id"], "guard": guard,
             "invalidation": {"affected_ids": affected, "context_packages": "HISTORICAL_ONLY", "rebuild": "NEXT_CONTEXT_BUILD"},
             "created_at": utc_now_iso()}
         proposal["status"] = "COMMITTED"

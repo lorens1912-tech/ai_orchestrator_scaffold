@@ -16,7 +16,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEST_STORAGE_ROOT = REPO_ROOT / ".test_storage"
 TEST_SESSION_STORAGE_ROOT = TEST_STORAGE_ROOT / "sessions" / uuid.uuid4().hex
-REAL_STORAGE_ROOTS = tuple((REPO_ROOT / name).resolve() for name in ("books", "runs", "novel_runs"))
+REAL_STORAGE_ROOTS = tuple(
+    (REPO_ROOT / name).resolve() for name in ("books", "runs", "novel_runs", "audit")
+)
 
 os.environ["AGENTPRO_STORAGE_ROOT"] = str(TEST_SESSION_STORAGE_ROOT)
 

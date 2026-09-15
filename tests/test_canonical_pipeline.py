@@ -287,6 +287,22 @@ def test_real_analysis_error_and_audit_rollback(pipeline):
     assert not any(k.startswith("canonical_commit") for k in repo.list_metadata())
 
 
+def test_missing_impact_evidence_is_a_controlled_denial_without_mutation(pipeline):
+    client, repo, _, headers, _, _ = pipeline
+    change = protected_change(pipeline)
+    approve(client, change, headers)
+    with repo.canonical_proposal_transaction(change["proposal_id"]) as (document, _snapshot):
+        del document["versions"]["1"]["impact"]
+
+    response = commit(client, change, headers)
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "REVIEW_EVIDENCE_MISSING"
+    assert json.loads(repo.list_structured_memory_records()[FACT])["version"] == 1
+    assert repo.get_metadata("canonical_versions.v1:FACT:" + FACT) is None
+    assert not any(key.startswith("canonical_commit.v1:") for key in repo.list_metadata())
+
+
 def test_unsupported_series_fails_closed_without_project_fallback(pipeline):
     client, repo, controls, _, _, _ = pipeline
     result = step(client, scope="SERIES")["canonical_change"]

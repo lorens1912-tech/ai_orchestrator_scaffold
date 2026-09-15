@@ -11,10 +11,14 @@ from openai.resources.responses.responses import Responses
 import app.llm_provider_openai as openai_transport
 import app.tools as tools
 from app.main import app
+from app.operator_dpapi import read_secret
 from app.p20_core.book_bible_test_helper import ensure_test_book_bible
+from app.p20_core.local_operator import initialize_operator
+from app.p20_core.memory_extraction import SUPPORTED_MEMORY_RECORD_TYPES
 from app.p20_core.project_repository import ProjectRepository, StorageResolver, ensure_system_repository
 from app.p20_core.storage_paths import get_runs_root
 from tests.test_canonical_pipeline import BOOK, FACT, PROJECT, fact, proposal_record
+from tests.test_canonical_project_records import mixed_records
 from tests.test_p20_runtime_context_integration import _register_series_member
 
 
@@ -37,11 +41,12 @@ def production_pipeline(isolated_agentpro_storage):
 
 
 def _step(client, *, run: str, step_id: str, technical_retry: bool = False,
-          series_id: str | None = None) -> dict:
+          series_id: str | None = None, project_id: str = PROJECT,
+          book_id: str = BOOK) -> dict:
     request = {
         "mode": "WRITE",
-        "project_id": PROJECT,
-        "book_id": BOOK,
+        "project_id": project_id,
+        "book_id": book_id,
         "run_id": run,
         "step_id": step_id,
         "payload": {
@@ -120,7 +125,7 @@ def _assert_failed_invocation(repo, evidence: dict, *, role: str, reason: str,
     return metadata
 
 
-def _install_sdk_boundary(monkeypatch, behavior: str = "accept") -> list[dict]:
+def _install_sdk_boundary(monkeypatch, behavior: str = "accept", records_factory=None) -> list[dict]:
     calls: list[dict] = []
     verifier_calls = 0
 
@@ -151,6 +156,8 @@ def _install_sdk_boundary(monkeypatch, behavior: str = "accept") -> list[dict]:
                 text = '{"records":[],"records":[]}'
             elif behavior == "non_finite":
                 text = '{"records":NaN}'
+            elif records_factory is not None:
+                text = json.dumps({"records": records_factory(payload)})
             else:
                 source = payload["source"]
                 record = fact(project=payload["project_id"], source=source, version=1,
@@ -180,6 +187,136 @@ def _install_sdk_boundary(monkeypatch, behavior: str = "accept") -> list[dict]:
 
     monkeypatch.setattr(Responses, "create", create)
     return calls
+
+
+def test_full_mixed_project_e2e_uses_only_sdk_boundary_and_survives_reopen(
+        production_pipeline, isolated_agentpro_storage, monkeypatch, tmp_path):
+    client, repo = production_pipeline
+    _use_production_provider(monkeypatch)
+    controls = {"version": 1}
+    calls = _install_sdk_boundary(
+        monkeypatch,
+        records_factory=lambda payload: mixed_records(
+            payload, controls["version"], protected=True),
+    )
+    _register_series_member(PROJECT, BOOK, SERIES)
+
+    write_inputs = []
+    write_adapter = tools.TOOLS["WRITE"]
+
+    def capture_write(payload):
+        write_inputs.append(payload)
+        return write_adapter(payload)
+
+    monkeypatch.setitem(tools.TOOLS, "WRITE", capture_write)
+    system = ensure_system_repository()
+    secret_path = tmp_path / "operator" / "operator.dpapi"
+    initialize_operator(system, secret_path)
+    headers = {"Authorization": "Bearer " + read_secret(secret_path)}
+
+    created = _step(
+        client,
+        run="run-sdk-mixed-create",
+        step_id="step-sdk-mixed-create",
+        series_id=SERIES,
+    )
+    create_receipt = created["canonical_change"]
+    assert create_receipt["canonical_commit"] is True, create_receipt
+    created_mutations = proposal_record(repo, create_receipt)["proposal"]["proposed_mutations"]
+    assert len(created_mutations) == 9
+    assert {mutation["target_entity_type"] for mutation in created_mutations} == SUPPORTED_MEMORY_RECORD_TYPES
+
+    controls["version"] = 2
+    pending = _step(
+        client,
+        run="run-sdk-mixed-update",
+        step_id="step-sdk-mixed-update",
+        series_id=SERIES,
+    )["canonical_change"]
+    assert pending["status"] == "AWAITING_USER_APPROVAL", pending
+    assert [call["payload"]["role"] for call in calls] == [
+        "EXTRACTOR", "VERIFIER", "EXTRACTOR", "VERIFIER"]
+    assert {json.loads(value)["version"] for value in repo.list_structured_memory_records().values()} == {1}
+
+    operator_base = f"/operator/projects/{PROJECT}/proposals/{pending['proposal_id']}"
+    review_response = client.post(operator_base + "/review", headers=headers)
+    assert review_response.status_code == 200, review_response.text
+    review = review_response.json()
+    decision_request = {
+        key: review["proposal"][key]
+        for key in ("proposal_hash", "scope_type", "scope_id")
+    }
+    decision_request.update(
+        challenge_id=review["challenge"]["challenge_id"],
+        decision="APPROVE",
+    )
+    decision_response = client.post(
+        operator_base + "/decision", headers=headers, json=decision_request)
+    assert decision_response.status_code == 200, decision_response.text
+    decision = decision_response.json()
+    commit_response = client.post(
+        operator_base + "/commit",
+        headers=headers,
+        json={"proposal_hash": pending["proposal_hash"]},
+    )
+    assert commit_response.status_code == 200, commit_response.text
+    receipt = commit_response.json()
+    assert receipt["canonical_commit"] is True, receipt
+    assert receipt["authorization_ref"] == decision["authorization_ref"]
+    assert set(receipt["resulting_versions"].values()) == {2}
+
+    reopened = ProjectRepository(StorageResolver().resolve_project(PROJECT, book_id=BOOK))
+    reopened_record = proposal_record(reopened, pending)
+    assert reopened.list_structured_memory_records() == repo.list_structured_memory_records()
+    assert all(reopened_record.get(key) for key in (
+        "pipeline", "impact", "initial_guard", "decision", "final_guard", "receipt"))
+    assert json.loads(reopened.get_metadata(
+        "canonical_commit.v1:" + receipt["operation_id"])) == receipt
+    assert (get_runs_root() / "run-sdk-mixed-update" / "audit.json").is_file()
+
+    calls_before_retry = len(calls)
+    contexts_before_retry = tuple(
+        package.to_dict() for package in reopened.list_context_packages())
+    replay = _step(
+        client,
+        run="run-sdk-mixed-update",
+        step_id="step-sdk-mixed-update",
+        technical_retry=True,
+        series_id=SERIES,
+    )["canonical_change"]
+    assert replay == receipt
+    assert len(calls) == calls_before_retry
+    assert tuple(package.to_dict() for package in reopened.list_context_packages()) == contexts_before_retry
+    for mutation in reopened_record["proposal"]["proposed_mutations"]:
+        history = json.loads(reopened.get_metadata(
+            "canonical_versions.v1:" + mutation["target_entity_type"] + ":" + mutation["target_entity_id"]))
+        assert [item["version"] for item in history] == [1, 2]
+
+    controls["version"] = 3
+    _step(
+        client,
+        run="run-sdk-mixed-next",
+        step_id="step-sdk-mixed-next",
+        series_id=SERIES,
+    )
+    assert "neutral mixed state version 2" in json.dumps(write_inputs[-1])
+    assert "neutral mixed state version 2" in json.dumps(calls[-2]["prompt"]["context_package"])
+
+    foreign_project = "PROJ-sdk-mixed-foreign"
+    foreign_book = "BOOK-sdk-mixed-foreign"
+    ensure_test_book_bible(foreign_book)
+    ensure_system_repository().bind_project(foreign_project, foreign_book)
+    controls["version"] = 1
+    foreign = _step(
+        client,
+        project_id=foreign_project,
+        book_id=foreign_book,
+        run="run-sdk-mixed-foreign",
+        step_id="step-sdk-mixed-foreign",
+    )
+    assert foreign["canonical_change"]["canonical_commit"] is True, foreign
+    assert "neutral mixed state version 2" not in json.dumps(write_inputs[-1])
+    assert "neutral mixed state version 2" not in json.dumps(calls[-2]["prompt"]["context_package"])
 
 
 def test_api_p20_reaches_existing_transport_with_distinct_calls_context_audit_and_retry(

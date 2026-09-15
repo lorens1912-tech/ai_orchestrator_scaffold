@@ -1064,6 +1064,37 @@ class ProjectRepository:
         self.require_scope(scope)
         self.set_metadata(key, value)
 
+    @contextmanager
+    def canonical_proposal_transaction(self, proposal_id: str):
+        """Serialize proposal/decision writes with the current project state.
+
+        Process records live in existing project metadata, never system storage.
+        The snapshot includes edges so changed dependencies invalidate a review.
+        """
+        proposal_id = _normalize_identifier(proposal_id, "proposal_id")
+        self.initialize()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            key = "canonical_proposal.v1:" + proposal_id
+            row = conn.execute("SELECT value FROM project_metadata WHERE key = ?", (key,)).fetchone()
+            document = {} if row is None else json.loads(row["value"])
+            records = [dict(r) for r in conn.execute(
+                "SELECT record_type, record_id, payload_json FROM project_structured_memory_records "
+                "WHERE scope_type = ? AND scope_id = ? ORDER BY record_type, record_id",
+                (self.scope.scope_type.value, self.scope.scope_id),
+            )]
+            edges = [dict(r) for r in conn.execute(
+                "SELECT * FROM edges WHERE scope_type = ? AND scope_id = ? ORDER BY edge_id",
+                (self.scope.scope_type.value, self.scope.scope_id),
+            )]
+            yield document, {"records": records, "edges": edges}
+            if document:
+                conn.execute(
+                    "INSERT INTO project_metadata (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False)),
+                )
+
     def get_metadata(self, key: str) -> str | None:
         self.initialize()
         with self.connect() as conn:
@@ -2097,6 +2128,29 @@ class SystemRepository:
         with self.connect() as conn:
             row = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()
             return int(row["version"])
+
+    @contextmanager
+    def local_operator_transaction(self):
+        """Hold credential/registry stable through an operator decision.
+
+        A decision only reads system state and writes its project DB. This is
+        not a cross-store write transaction or recovery protocol.
+        """
+        self.initialize()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            key = "local_operator.v1"
+            row = conn.execute("SELECT value FROM system_metadata WHERE key = ?", (key,)).fetchone()
+            state = {} if row is None else json.loads(row["value"])
+            original = json.dumps(state, sort_keys=True)
+            registry = self._read_project_registry(conn)
+            yield state, registry
+            if json.dumps(state, sort_keys=True) != original:
+                conn.execute(
+                    "INSERT INTO system_metadata (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, json.dumps(state, sort_keys=True, separators=(",", ":"))),
+                )
 
     def set_metadata(self, key: str, value: str) -> None:
         self.initialize()

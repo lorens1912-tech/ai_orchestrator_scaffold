@@ -9,6 +9,223 @@ from app.canon_check import canon_check
 from app.p20_core.project_repository import ensure_project_repository_for_book
 from app.p20_core.storage_paths import get_books_root, get_runs_root, get_storage_root
 
+
+def canonical_proposal_hash(proposal: dict) -> str:
+    """Contract v1 hash; lifecycle status is not part of the frozen content."""
+    import hashlib
+    content = {k: v for k, v in proposal.items() if k not in {"status", "proposal_hash"}}
+    return hashlib.sha256(json.dumps(content, sort_keys=True, ensure_ascii=True,
+                                    separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
+
+
+def _evidence_hash(value: dict) -> str:
+    import hashlib
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True,
+                                    separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def _validate_review_proposal(repository, proposal: dict) -> None:
+    from app.p20_core.local_operator import OperatorError
+    required = {
+        "contract_version", "proposal_id", "project_id", "book_id", "series_id", "scope_type",
+        "scope_id", "run_id", "step_id", "source_artifact_id", "source_artifact_ref",
+        "source_artifact_hash", "source_artifact_version", "source_scene_id", "context_package_id",
+        "context_hash", "extraction_candidate_set_id", "extraction_candidate_hash", "verification_ref",
+        "proposed_mutations", "source", "actor_ref", "authority_ref", "policy_ref",
+        "proposal_version", "proposal_hash", "status", "created_at",
+    }
+    if set(proposal) != required or proposal["contract_version"] != "1.0":
+        raise OperatorError("INVALID_PROPOSAL_SCHEMA", 422)
+    import re
+    for name in ("proposal_id", "run_id", "step_id", "source_artifact_id", "source_artifact_ref",
+                 "source_scene_id", "context_package_id", "extraction_candidate_set_id", "source", "created_at"):
+        if not isinstance(proposal[name], str) or not proposal[name].strip():
+            raise OperatorError("INVALID_PROPOSAL_SCHEMA", 422)
+    for name in ("proposal_hash", "source_artifact_hash", "context_hash", "extraction_candidate_hash"):
+        if not isinstance(proposal[name], str) or not re.fullmatch("[0-9a-f]{64}", proposal[name]):
+            raise OperatorError("INVALID_PROPOSAL_HASH", 422)
+    if type(proposal["source_artifact_version"]) is not int or proposal["source_artifact_version"] < 1:
+        raise OperatorError("INVALID_ARTIFACT_VERSION", 422)
+    if proposal["status"] != "AWAITING_USER_APPROVAL":
+        raise OperatorError("PROPOSAL_NOT_READY_FOR_REVIEW", 409)
+    for name in ("verification_ref", "actor_ref", "authority_ref", "policy_ref"):
+        if not proposal[name]:
+            raise OperatorError("MISSING_PROPOSAL_EVIDENCE", 422)
+    if (proposal["project_id"] != repository.scope.scope_id
+            or proposal["book_id"] != repository.context.book_id
+            or proposal["scope_type"] != "PROJECT" or proposal["scope_id"] != repository.scope.scope_id):
+        raise OperatorError("PROPOSAL_SCOPE_MISMATCH")
+    if proposal["series_id"] is not None:
+        from app.p20_core.project_repository import SeriesRepository, SeriesAccessContext, StorageResolver
+        series = SeriesRepository(StorageResolver().resolve_series(proposal["series_id"]))
+        if not series.db_path.exists():
+            raise OperatorError("SERIES_ACCESS_DENIED")
+        series.require_registered_member(
+            SeriesAccessContext.bind(proposal["project_id"], proposal["series_id"]),
+            book_id=proposal["book_id"],
+        )
+    if type(proposal["proposal_version"]) is not int or proposal["proposal_version"] < 1:
+        raise OperatorError("INVALID_PROPOSAL_VERSION", 422)
+    mutations = proposal["proposed_mutations"]
+    keys = {"target_entity_type", "target_entity_id", "operation_type", "expected_current_version",
+            "expected_current_hash", "proposed_state", "provenance"}
+    if not isinstance(mutations, list) or not mutations:
+        raise OperatorError("INVALID_PROPOSAL_MUTATIONS", 422)
+    identities = []
+    from app.p20_core.domain_records import DomainId
+    for mutation in mutations:
+        if not isinstance(mutation, dict) or set(mutation) != keys:
+            raise OperatorError("INVALID_PROPOSAL_MUTATION", 422)
+        identity = DomainId.parse(mutation["target_entity_id"])
+        if mutation["target_entity_type"] not in (identity.namespace.name, identity.namespace.value):
+            raise OperatorError("INVALID_TARGET_TYPE", 422)
+        operation = mutation["operation_type"]
+        if operation not in {"CREATE", "UPDATE", "REPLACE"}:
+            raise OperatorError("INVALID_OPERATION_TYPE", 422)
+        if not isinstance(mutation["proposed_state"], dict) or not mutation["provenance"]:
+            raise OperatorError("INVALID_PROPOSED_STATE", 422)
+        if operation == "CREATE":
+            if mutation["expected_current_version"] is not None or mutation["expected_current_hash"] is not None:
+                raise OperatorError("INVALID_CREATE_BASE", 422)
+        elif type(mutation["expected_current_version"]) is not int or mutation["expected_current_version"] < 1:
+            raise OperatorError("INVALID_UPDATE_BASE", 422)
+        elif not isinstance(mutation["expected_current_hash"], str) or not re.fullmatch("[0-9a-f]{64}", mutation["expected_current_hash"]):
+            raise OperatorError("INVALID_UPDATE_BASE_HASH", 422)
+        new_version = mutation["proposed_state"].get("version")
+        if type(new_version) is not int or new_version <= (mutation["expected_current_version"] or 0):
+            raise OperatorError("INVALID_PROPOSED_VERSION", 422)
+        if any(type(mutation["proposed_state"].get(flag)) is not bool for flag in ("frozen", "author_locked")):
+            raise OperatorError("MISSING_PROTECTION_STATE", 422)
+        identities.append((mutation["target_entity_type"], mutation["target_entity_id"], operation))
+    if identities != sorted(identities) or len({i[:2] for i in identities}) != len(identities):
+        raise OperatorError("DUPLICATE_OR_UNSORTED_MUTATIONS", 422)
+    if canonical_proposal_hash(proposal) != proposal["proposal_hash"]:
+        raise OperatorError("PROPOSAL_HASH_MISMATCH", 409)
+
+
+def _validate_review_basis(proposal: dict, snapshot: dict) -> None:
+    from app.p20_core.local_operator import OperatorError
+    current = {(r["record_type"], r["record_id"]): json.loads(r["payload_json"])
+               for r in snapshot["records"]}
+    for mutation in proposal["proposed_mutations"]:
+        record = current.get((mutation["target_entity_type"], mutation["target_entity_id"]))
+        if mutation["operation_type"] == "CREATE":
+            valid = record is None
+        else:
+            valid = (record is not None and record.get("version") == mutation["expected_current_version"]
+                     and _evidence_hash(record) == mutation["expected_current_hash"])
+        if not valid:
+            raise OperatorError("STALE_PROPOSAL_VERSION", 409)
+
+
+def save_canonical_proposal_for_review(repository, proposal: dict, *, impact: dict, initial_guard: dict) -> dict:
+    """Persist the minimal frozen review record for the future pipeline producer.
+
+    No HTTP/model tool publishes proposals. This does not verify extraction,
+    grant domain authority, or perform a canonical commit.
+    """
+    from app.p20_core.local_operator import OperatorError
+    _validate_review_proposal(repository, proposal)
+    if proposal["status"] != "AWAITING_USER_APPROVAL":
+        raise OperatorError("PROPOSAL_NOT_READY_FOR_REVIEW", 409)
+    binding = {k: proposal[k] for k in ("proposal_id", "proposal_hash", "project_id", "scope_type", "scope_id")}
+    for evidence in (impact, initial_guard):
+        if any(evidence.get(k) != v for k, v in binding.items()):
+            raise OperatorError("REVIEW_EVIDENCE_BINDING_MISMATCH", 409)
+    if (not impact.get("impact_id") or not impact.get("result")
+            or initial_guard.get("outcome") != "REQUIRE_USER_APPROVAL"):
+        raise OperatorError("REVIEW_EVIDENCE_MISSING", 409)
+    with repository.canonical_proposal_transaction(proposal["proposal_id"]) as (document, snapshot):
+        _validate_review_basis(proposal, snapshot)
+        version = str(proposal["proposal_version"])
+        record = {"proposal": proposal, "impact": impact, "initial_guard": initial_guard,
+                  "basis_hash": _evidence_hash(snapshot), "challenges": {}, "decision": None}
+        if not document:
+            if version != "1":
+                raise OperatorError("PROPOSAL_VERSION_CONFLICT", 409)
+            document.update(current_version=version, versions={version: record})
+        elif version in document["versions"]:
+            existing = document["versions"][version]
+            if any(existing[k] != record[k] for k in ("proposal", "impact", "initial_guard", "basis_hash")):
+                raise OperatorError("IMMUTABLE_PROPOSAL_CONFLICT", 409)
+        else:
+            if int(version) != int(document["current_version"]) + 1:
+                raise OperatorError("PROPOSAL_VERSION_CONFLICT", 409)
+            document["versions"][document["current_version"]]["superseded"] = True
+            document["versions"][version] = record
+            document["current_version"] = version
+    return proposal
+
+
+def operator_proposal_review(repository, proposal_id: str, identity, *, ttl_seconds: int,
+                             issue_challenge: bool = True) -> dict:
+    import secrets
+    import time
+    from app.p20_core.local_operator import OperatorError
+    with repository.canonical_proposal_transaction(proposal_id) as (document, snapshot):
+        if not document:
+            raise OperatorError("PROPOSAL_NOT_FOUND", 404)
+        record = document["versions"][document["current_version"]]
+        proposal = record["proposal"]
+        _validate_review_proposal(repository, proposal)
+        _validate_review_basis(proposal, snapshot)
+        if record["basis_hash"] != _evidence_hash(snapshot):
+            raise OperatorError("STALE_PROPOSAL_ANALYSIS", 409)
+        challenge = None
+        if record["decision"] is None and issue_challenge:
+            challenge_id = "challenge-" + secrets.token_hex(32)
+            challenge = {"challenge_id": challenge_id, **identity.to_dict(),
+                         "proposal_hash": proposal["proposal_hash"], "expires_at": time.time() + ttl_seconds,
+                         "basis_hash": record["basis_hash"], "used": False}
+            record["challenges"][challenge_id] = challenge
+        return {"proposal": proposal, "impact": record["impact"], "initial_guard": record["initial_guard"],
+                "challenge": challenge, "decision": record["decision"], "canonical_commit": False}
+
+
+def record_operator_decision(repository, proposal_id: str, identity, request: dict) -> dict:
+    import time
+    from uuid import uuid4
+    from app.p20_core.local_operator import OperatorError, now_iso
+    with repository.canonical_proposal_transaction(proposal_id) as (document, snapshot):
+        if not document:
+            raise OperatorError("PROPOSAL_NOT_FOUND", 404)
+        record = document["versions"][document["current_version"]]
+        proposal = record["proposal"]
+        if any(request[k] != proposal[k] for k in ("proposal_hash", "scope_type", "scope_id")):
+            raise OperatorError("DECISION_BINDING_MISMATCH", 409)
+        challenge = record["challenges"].get(request["challenge_id"])
+        if not challenge or any(challenge[k] != v for k, v in identity.to_dict().items()):
+            raise OperatorError("INVALID_DECISION_CHALLENGE", 409)
+        if challenge["proposal_hash"] != proposal["proposal_hash"]:
+            raise OperatorError("STALE_DECISION_CHALLENGE", 409)
+        if challenge["used"]:
+            previous = record["decision"]
+            if previous and previous["challenge_id"] == request["challenge_id"] and previous["decision"] == request["decision"]:
+                return previous  # Read-only replay, not another approval or canonical write.
+            raise OperatorError("CHALLENGE_ALREADY_USED", 409)
+        if record["decision"] is not None:
+            raise OperatorError("DECISION_ALREADY_RECORDED", 409)
+        if challenge["expires_at"] <= time.time():
+            raise OperatorError("DECISION_CHALLENGE_EXPIRED", 409)
+        _validate_review_proposal(repository, proposal)
+        _validate_review_basis(proposal, snapshot)
+        if challenge["basis_hash"] != _evidence_hash(snapshot):
+            raise OperatorError("STALE_PROPOSAL_ANALYSIS", 409)
+        if request["decision"] not in {"APPROVE", "REJECT"}:
+            raise OperatorError("INVALID_OPERATOR_DECISION", 422)
+        reference = "authorization-" + uuid4().hex
+        evidence = {"authorization_ref": reference, "approval_id": "approval-" + uuid4().hex,
+                    **identity.to_dict(), "approved_by": "USER", "actor_ref": identity.operator_id,
+                    **{k: proposal[k] for k in ("project_id", "scope_type", "scope_id", "proposal_id", "proposal_hash")},
+                    "decision": request["decision"], "authentication_method": "LOCAL_OPERATOR_BEARER_V1",
+                    "challenge_id": request["challenge_id"], "created_at": now_iso(),
+                    "impact_id": record["impact"]["impact_id"], "impact_result_hash": _evidence_hash(record["impact"]),
+                    "canonical_commit": False}
+        record["decision"] = evidence
+        challenge["used"] = True
+        # Decision evidence only. No transition to COMMITTED or bypass of the domain guard.
+        return evidence
+
 APP_VERSION = "P20.0-novel-core"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BOOKS_ROOT = REPO_ROOT / "books"

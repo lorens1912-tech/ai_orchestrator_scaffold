@@ -4,7 +4,7 @@
 
 **STATUS: ACCEPTED**
 Data akceptacji: 2026-09-15
-Wersja kontraktu: 1.0
+Wersja dokumentu: 1.1 (uzupełnienie §6; schemat proposal/hash v1.0 bez zmian)
 Data: 2026-09-15
 Baza przeglądu: `f7bf22cde472d37193aeb99ca946e9252d932d09`
 Zakres: kontrakt procesu potrzebny do późniejszej remediacji F-002 / F-006.
@@ -239,6 +239,115 @@ efektywna decyzja; identyczne ponowienie zwraca istniejący wynik, sprzeczna
 decyzja nie nadpisuje historii. Zmiana decyzji po REJECT wymaga nowej wersji
 proposal i ponownego procesu. Nie ma dziedziczenia approval między wersjami,
 scope, projektami ani różnymi zmianami tej samej encji.
+
+### 6.1. ACCEPTED — lokalny operator, uzupełnienie v1.1 z 2026-09-15
+
+Jawna decyzja użytkownika z 2026-09-15 dopuszcza dedykowane poświadczenie
+lokalnego operatora. Uzupełnienie usuwa brak źródła authorization_ref opisany
+w historycznym przeglądzie v1.0. Akceptacja v1.0 z 2026-09-15 i jej historia
+pozostają zachowane; nie wymaga się kolejnego ADR ani rundy akceptacji.
+
+Granica zaufania: prywatna instalacja jednego operatora. Zaufana lokalna
+inicjalizacja tworzy losowy token przez secrets.token_urlsafe(32), czyli co
+najmniej 32 bajty entropii. Poprawna weryfikacja tokenu stanowi dowód tożsamości
+operatora tej instalacji. Nie dowodzi fizycznej obecności człowieka i nie
+chroni przed administratorem Windows ani dowolnym kodem działającym z pełnymi
+uprawnieniami konta operatora. DPAPI CurrentUser nie izoluje od wszystkich
+procesów tego samego użytkownika. Localhost, USER, approved=true, model,
+project_id i SeriesAccessContext nie są poświadczeniami.
+
+Metadane operatora należą do istniejącego agentpro_system.db przez
+SystemRepository: operator_id, credential_id, SHA-256 tokenu, wersja, aktywność,
+czas utworzenia/unieważnienia. Porównanie skrótów używa secrets.compare_digest.
+Treść proposal, książki i dowodu decyzji nie trafia do bazy systemowej.
+
+Sekret klienta jest szyfrowany rzeczywistym Windows DPAPI CurrentUser i domyślnie
+zapisany w `%LOCALAPPDATA%\AgentPRO\Security\operator.dpapi`. Katalog posiada
+chronioną DACL wyłącznie dla bieżącego użytkownika; nowy plik dziedziczy ją.
+Ścieżka sekretu musi znajdować się poza repozytorium i storage książek, bez
+reparse points. Parametr ścieżki umożliwia izolowane testy. Sekret nie jest
+argumentem CLI, zmienną środowiskową, elementem URL, payloadu modelu ani audytu.
+
+Cykl życia jest dostępny wyłącznie jako jawne polecenia lokalne narzędzia
+`python -m app.operator_cli`: init, rotate, revoke. Import i start serwera nie
+inicjalizują operatora. Init odrzuca istniejącego operatora i istniejący plik
+sekretu; nie ma anonimowego endpointu bootstrap/reset. Rotate i revoke wymagają
+odczytu aktualnego DPAPI i ponownej weryfikacji aktywnego tokenu w bazie.
+Unieważnienie jest trwałe; nie umożliwia automatycznej ponownej inicjalizacji.
+
+Rotacja zachowuje nieaktywną wersję poświadczenia w bazie. Nowy zaszyfrowany
+plik `.pending` powstaje przed zmianą aktywnego skrótu, a zastępuje plik klienta
+po zatwierdzeniu DB. Błąd lub przerwanie tej lokalnej procedury jest jawne,
+nie uruchamia resetu ani fallbacku. Osierocony plik lub nierozstrzygnięty wynik
+wymaga zaufanej lokalnej diagnostyki; narzędzie nie deklaruje globalnej transakcji
+DB+plik. Nie jest to protokół F-004 dotyczący pamięci literackiej.
+
+HTTP przyjmuje poświadczenie wyłącznie w Authorization: Bearer. Operacje
+`/operator/*` sprawdzają aktywne poświadczenie, loopback adresu klienta i Host.
+Klient operatorski łączy się wyłącznie z numerycznym adresem loopback HTTP,
+wyłącza proxy i przekierowania. Instalację uruchamia się z `--host 127.0.0.1`.
+Ograniczenie sieciowe jest dodatkowe względem uwierzytelnienia. Brak konfiguracji
+zwraca OPERATOR_NOT_CONFIGURED (503); zły/brak/nieaktywny token zwraca 401 po
+skonfigurowaniu operatora. Nie ma wildcard CORS ani anonimowego odpowiednika.
+
+Operator może zarządzać projektami z istniejącego rejestru project/book tej
+instalacji. Backend wyznacza book_id z rejestru; nie ufa zadeklarowanym prawom
+klienta. Propozycja PROJECT powiązana z serią zachowuje kontrolę członkostwa przez
+SeriesAccessContext. Niniejsza minimalna ścieżka przechowywania/review dotyczy
+PROJECT; nieobsługiwane proposal SERIES są odrzucane, bez fallbacku.
+
+Odczyt zapisanej propozycji jest oddzielony od przygotowania i decyzji:
+
+- GET `/operator/projects/{project_id}/proposals/{proposal_id}` pokazuje pełne
+  mutations, zakres, wersje, impact i zapisany stan decyzji; nie wydaje zgody.
+- POST tej ścieżki z `/review` tworzy krótkotrwałe jednorazowe wyzwanie związane
+  z operatorem, credential_id/version, proposal/hash oraz podstawą stanu projektu.
+- POST z `/decision` przyjmuje wyłącznie proposal_hash, scope_type/id,
+  challenge_id i jawną decyzję APPROVE/REJECT. Pozostałe pola są odrzucane.
+
+Ważność wyzwania: `AGENTPRO_OPERATOR_CHALLENGE_TTL_SECONDS`, domyślnie 300 sekund,
+dozwolony zakres 1–900 sekund. Wadliwa konfiguracja blokuje przygotowanie.
+Stan bazowy obejmuje rekordy i krawędzie projektu; zmiana bazy lub nowa wersja
+proposal wymaga nowego przeglądu. Skrót klienta jest porównywany z zapisanym
+obiektem, a jego zawartość weryfikowana ponownie. Decyzja oraz zużycie wyzwania
+są zapisywane atomowo w project.db przy propozycji. Weryfikowane poświadczenie
+i rejestr systemowy pozostają stabilne do zakończenia tego zapisu; operacja
+wydania decyzji nie mutuje jednocześnie obu baz.
+
+Backend tworzy authorization_ref, approval_id, operator_id, credential_id/version,
+project/scope, proposal_id/hash, decision, authentication_method,
+challenge_id, created_at i powiązanie z impact. Jest to trwały, audytowalny dowód,
+nie token uprawniający do innych działań. Identyczny retry zwraca wcześniejszy
+dowód; sprzeczna decyzja albo użycie wyzwania do innej propozycji jest odrzucane.
+Rotacja uniemożliwia użycie starych wyzwań; unieważnienie blokuje nowe decyzje.
+Historyczne dowody pozostają dostępne w repository.
+
+Minimalny zapis propozycji w CanonService przyjmuje niezmienny obiekt zgodny
+ze schematem v1.0 i powiązane dowody impact/wstępnej oceny od przyszłego producenta
+pipeline. Nie jest endpointem HTTP ani narzędziem modelu. Ta implementacja nie
+wykonuje ekstrakcji, nie tworzy drugiego modelu proposal ani guarda i nie
+poświadcza jeszcze kompletności upstream F-002/F-006. Wynik przyjęcia decyzji
+ma canonical_commit=false. Zgoda nie zastępuje DomainMutationGuard, authority,
+aktualnej Impact Analysis ani końcowej walidacji opisanej w §7.
+
+Narzędzie operatorskie review pokazuje pełną propozycję; decide przygotowuje
+przegląd i pyta w konsoli o APPROVE albo REJECT. Nie wymaga kopiowania tokenu.
+Token i plik DPAPI nie są udostępnione w rejestrze TOOLS P20. API nie przekazuje
+nagłówka Authorization do runtime, ContextPackage ani providera. Nie oznacza
+to, że wszystkie wcześniejsze ścieżki zapisu kanonu zostały zabezpieczone.
+
+Pomoc i cykl życia, uruchamiane jawnie w PowerShell przez operatora:
+
+```powershell
+python -m app.operator_cli --help
+python -m app.operator_cli init
+python -m app.operator_cli rotate
+python -m app.operator_cli revoke
+```
+
+Podkomendy review/decide wymagają `--project` i `--proposal` z istniejących danych.
+W tym zadaniu init/rotate/revoke są wykonywane wyłącznie na danych syntetycznych
+w izolowanej bazie i ścieżce; rzeczywisty operator nie jest inicjalizowany.
 
 ## 7. Final guard validation i TOCTOU
 

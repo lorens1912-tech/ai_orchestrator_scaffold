@@ -41,6 +41,7 @@ SERIES_DB_FILENAME = "series.db"
 SYSTEM_DB_SCHEMA_VERSION = 1
 SYSTEM_DB_FILENAME = "agentpro_system.db"
 PROJECT_REGISTRY_METADATA_KEY = "project_registry.v1"
+_DOMAIN_DB_BUSY_TIMEOUT_MS = 30_000
 _SYSTEM_DB_BUSY_TIMEOUT_MS = 30_000
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
@@ -940,8 +941,12 @@ class ProjectRepository:
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         self.context.project_root.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self.context.project_db_path))
+        conn = sqlite3.connect(
+            str(self.context.project_db_path),
+            timeout=_DOMAIN_DB_BUSY_TIMEOUT_MS / 1000,
+        )
         conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout = {_DOMAIN_DB_BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
         try:
@@ -1112,6 +1117,49 @@ class ProjectRepository:
             conn.execute("INSERT INTO project_metadata (key, value) VALUES (?, ?) "
                          "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                          (key, json.dumps(state, sort_keys=True, allow_nan=False)))
+
+    @contextmanager
+    def cross_store_operation_transaction(self, operation_id: str):
+        """Serialize one durable cross-store operation owned by project.db."""
+        operation_id = _normalize_identifier(operation_id, "operation_id")
+        self.initialize()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            key = "cross_store_operation.v1:" + operation_id
+            row = conn.execute(
+                "SELECT value FROM project_metadata WHERE key = ?",
+                (key,),
+            ).fetchone()
+            state = {} if row is None else json.loads(str(row["value"]))
+            yield state, conn
+            if state:
+                conn.execute(
+                    "INSERT INTO project_metadata (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (
+                        key,
+                        json.dumps(
+                            state,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            allow_nan=False,
+                        ),
+                    ),
+                )
+
+    def get_cross_store_operation(self, operation_id: str) -> dict[str, Any] | None:
+        operation_id = _normalize_identifier(operation_id, "operation_id")
+        value = self.get_metadata("cross_store_operation.v1:" + operation_id)
+        return None if value is None else dict(json.loads(value))
+
+    def list_cross_store_operations(self) -> tuple[dict[str, Any], ...]:
+        self.initialize()
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT value FROM project_metadata "
+                "WHERE key LIKE 'cross_store_operation.v1:%' ORDER BY key"
+            ).fetchall()
+        return tuple(dict(json.loads(str(row["value"]))) for row in rows)
 
     def apply_canonical_record_set(self, connection, proposal: dict, snapshot: dict,
                                    *, impact: dict, approval: dict | None) -> dict:
@@ -1535,8 +1583,12 @@ class SeriesRepository:
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         self.context.series_root.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self.context.database_path))
+        conn = sqlite3.connect(
+            str(self.context.database_path),
+            timeout=_DOMAIN_DB_BUSY_TIMEOUT_MS / 1000,
+        )
         conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout = {_DOMAIN_DB_BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
         try:

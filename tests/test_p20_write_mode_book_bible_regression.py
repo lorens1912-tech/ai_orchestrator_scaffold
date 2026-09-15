@@ -78,7 +78,14 @@ def test_supported_write_shapes_require_same_book_bible_guard(
 ) -> None:
     loader_calls: list[str] = []
 
-    def fake_resolve_resume_run_id(book_id: str, payload_run_id, resume: bool) -> str:
+    def fake_resolve_resume_run_id(
+        book_id: str,
+        payload_run_id,
+        resume: bool,
+        *,
+        project_id: str | None = None,
+        domain_book_id: str | None = None,
+    ) -> str:
         return f"run_{case_name.lower()}"
 
     def fake_load_book_bible_or_raise(book_id: str):

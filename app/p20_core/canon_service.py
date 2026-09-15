@@ -70,8 +70,16 @@ def _public_path(path: Path) -> str:
     return str(resolved).replace("\\", "/")
 
 
-def ensure_book_dirs(book_id: str) -> Path:
-    ensure_project_repository_for_book(str(book_id))
+def ensure_book_dirs(
+    book_id: str,
+    *,
+    project_id: str | None = None,
+    domain_book_id: str | None = None,
+) -> Path:
+    ensure_project_repository_for_book(
+        str(domain_book_id or book_id),
+        project_id=project_id,
+    )
     book_dir = get_books_root() / str(book_id)
     (book_dir / "memory").mkdir(parents=True, exist_ok=True)
     (book_dir / "artifacts" / "canon").mkdir(parents=True, exist_ok=True)
@@ -107,6 +115,10 @@ def save_run_state(
     last_modes: List[str],
     last_artifact_paths: List[str],
     chapter_path: Optional[str],
+    project_id: Optional[str] = None,
+    domain_book_id: Optional[str] = None,
+    series_id: Optional[str] = None,
+    step_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     run_dir = ensure_run_dirs(run_id)
     state = {
@@ -119,16 +131,35 @@ def save_run_state(
         "updated_at": utc_now_iso(),
         "engine": APP_VERSION,
     }
+    if project_id is not None:
+        state["project_id"] = project_id
+    if domain_book_id is not None:
+        state["domain_book_id"] = domain_book_id
+    if series_id is not None:
+        state["series_id"] = series_id
+    if step_id is not None:
+        state["step_id"] = step_id
     json_write(run_dir / "run_state.json", state)
     return state
 
 
-def resolve_resume_run_id(book_id: str, payload_run_id: Optional[str], resume: bool) -> str:
+def resolve_resume_run_id(
+    book_id: str,
+    payload_run_id: Optional[str],
+    resume: bool,
+    *,
+    project_id: str | None = None,
+    domain_book_id: str | None = None,
+) -> str:
     explicit = str(payload_run_id or "").strip()
     if explicit:
         return explicit
 
-    book_dir = ensure_book_dirs(book_id)
+    book_dir = ensure_book_dirs(
+        book_id,
+        project_id=project_id,
+        domain_book_id=domain_book_id,
+    )
     runs_dir = get_runs_root()
 
     def _new_run_id_local() -> str:
@@ -151,7 +182,13 @@ def resolve_resume_run_id(book_id: str, payload_run_id: Optional[str], resume: b
         if not run_dir.exists():
             return None
         state = _state_for(run_dir)
-        if str(state.get("book_id") or "") != str(book_id):
+        stored_book_id = str(
+            state.get("domain_book_id") or state.get("book_id") or ""
+        )
+        if stored_book_id not in {str(book_id), str(domain_book_id or book_id)}:
+            return None
+        stored_project_id = str(state.get("project_id") or "")
+        if project_id is not None and stored_project_id and stored_project_id != project_id:
             return None
         return rid
 
@@ -171,7 +208,13 @@ def resolve_resume_run_id(book_id: str, payload_run_id: Optional[str], resume: b
             if not run_dir.is_dir():
                 continue
             state = _state_for(run_dir)
-            if str(state.get("book_id") or "") != str(book_id):
+            stored_book_id = str(
+                state.get("domain_book_id") or state.get("book_id") or ""
+            )
+            if stored_book_id not in {str(book_id), str(domain_book_id or book_id)}:
+                continue
+            stored_project_id = str(state.get("project_id") or "")
+            if project_id is not None and stored_project_id and stored_project_id != project_id:
                 continue
             rid = str(state.get("run_id") or run_dir.name)
             updated = str(state.get("updated_at") or state.get("created_at") or "")
@@ -183,8 +226,18 @@ def resolve_resume_run_id(book_id: str, payload_run_id: Optional[str], resume: b
 
     return _new_run_id_local()
 
-def update_latest_run_marker(book_id: str, run_id: str) -> None:
-    book_dir = ensure_book_dirs(book_id)
+def update_latest_run_marker(
+    book_id: str,
+    run_id: str,
+    *,
+    project_id: str | None = None,
+    domain_book_id: str | None = None,
+) -> None:
+    book_dir = ensure_book_dirs(
+        book_id,
+        project_id=project_id,
+        domain_book_id=domain_book_id,
+    )
     marker = book_dir / "audit" / "latest_run_id.txt"
     marker.write_text(str(run_id), encoding="utf-8")
 
@@ -212,8 +265,17 @@ def _chapter_sort_key(path: Path) -> Tuple[int, str]:
     return idx, path.name
 
 
-def rebuild_canon_from_chapters(book_id: str) -> Dict[str, Any]:
-    book_dir = ensure_book_dirs(book_id)
+def rebuild_canon_from_chapters(
+    book_id: str,
+    *,
+    project_id: str | None = None,
+    domain_book_id: str | None = None,
+) -> Dict[str, Any]:
+    book_dir = ensure_book_dirs(
+        book_id,
+        project_id=project_id,
+        domain_book_id=domain_book_id,
+    )
     canon_path = book_dir / "memory" / "canon.json"
     canon = json_load(canon_path, {"timeline": [], "decisions": {}, "facts": {}, "approved_chapters": []})
     if not isinstance(canon, dict):
@@ -267,10 +329,23 @@ def rebuild_canon_from_chapters(book_id: str) -> Dict[str, Any]:
     return canon
 
 
-def load_canon_snapshot(book_id: str) -> Tuple[Dict[str, Any], Path]:
-    book_dir = ensure_book_dirs(book_id)
+def load_canon_snapshot(
+    book_id: str,
+    *,
+    project_id: str | None = None,
+    domain_book_id: str | None = None,
+) -> Tuple[Dict[str, Any], Path]:
+    book_dir = ensure_book_dirs(
+        book_id,
+        project_id=project_id,
+        domain_book_id=domain_book_id,
+    )
     book_bible = json_load(book_dir / "book_bible.json", {})
-    canon_memory = rebuild_canon_from_chapters(book_id)
+    canon_memory = rebuild_canon_from_chapters(
+        book_id,
+        project_id=project_id,
+        domain_book_id=domain_book_id,
+    )
 
     snapshot = merge_dicts(book_bible, canon_memory)
     snapshot["_meta"] = {
@@ -291,8 +366,14 @@ def commit_chapter_to_canon(
     chapter_path: str,
     chapter_id: str,
     chapter_sha256: str,
+    project_id: str | None = None,
+    domain_book_id: str | None = None,
 ) -> Dict[str, Any]:
-    book_dir = ensure_book_dirs(book_id)
+    book_dir = ensure_book_dirs(
+        book_id,
+        project_id=project_id,
+        domain_book_id=domain_book_id,
+    )
     canon_path = book_dir / "memory" / "canon.json"
     canon = json_load(canon_path, {"timeline": [], "decisions": {}, "facts": {}, "approved_chapters": []})
     if not isinstance(canon, dict):
@@ -331,7 +412,11 @@ def commit_chapter_to_canon(
     canon["engine"] = APP_VERSION
 
     json_write(canon_path, canon)
-    return rebuild_canon_from_chapters(book_id)
+    return rebuild_canon_from_chapters(
+        book_id,
+        project_id=project_id,
+        domain_book_id=domain_book_id,
+    )
 
 
 def coerce_text(value: Any) -> str:
@@ -446,11 +531,17 @@ def save_chapter(
     canon_snapshot_path: Path,
     pre_report: Dict[str, Any],
     post_report: Dict[str, Any],
+    project_id: str | None = None,
+    domain_book_id: str | None = None,
 ) -> Optional[str]:
     if not str(text or "").strip():
         return None
 
-    book_dir = ensure_book_dirs(book_id)
+    book_dir = ensure_book_dirs(
+        book_id,
+        project_id=project_id,
+        domain_book_id=domain_book_id,
+    )
     chapter_path = next_chapter_path(book_dir)
     chapter_id = chapter_path.stem
 
@@ -483,10 +574,16 @@ def write_audit(
     master_canon: Optional[Dict[str, Any]] = None,
     project_truth: Optional[Dict[str, Any]] = None,
     project_id: Optional[str] = None,
+    domain_book_id: Optional[str] = None,
     series_id: Optional[str] = None,
+    step_id: Optional[str] = None,
     context_packages: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
-    book_dir = ensure_book_dirs(book_id)
+    book_dir = ensure_book_dirs(
+        book_id,
+        project_id=project_id,
+        domain_book_id=domain_book_id,
+    )
     audit_doc = {
         "ts": utc_now_iso(),
         "book_id": book_id,
@@ -499,7 +596,9 @@ def write_audit(
         "master_canon": master_canon,
         "project_truth": project_truth,
         "project_id": project_id,
+        "domain_book_id": domain_book_id,
         "series_id": series_id,
+        "step_id": step_id,
         "context_packages": list(context_packages or []),
         "engine": APP_VERSION,
     }

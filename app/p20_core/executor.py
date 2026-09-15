@@ -361,7 +361,16 @@ def _write_sequence_artifact(
     preset_id: Optional[str],
     queue_initial: List[StepItem],
     modes: List[str],
+    execution_context: ProjectExecutionContext | None = None,
 ) -> None:
+    identity = {}
+    if execution_context is not None:
+        identity = {
+            "project_id": execution_context.project_id,
+            "domain_book_id": execution_context.book_id,
+            "series_id": execution_context.series_id,
+            "step_id": execution_context.step_id,
+        }
     steps_by_mode: Dict[str, Dict[str, Any]] = {}
     for item in queue_initial:
         mode_id, overrides = _step_to_mode_and_overrides(item)
@@ -412,6 +421,7 @@ def _write_sequence_artifact(
                     },
                 },
             },
+            **identity,
         },
     )
 
@@ -467,6 +477,8 @@ def execute_p20(*args, **kwargs) -> List[str]:
     context_sources = kwargs.get("context_sources")
     if execution_context is not None and not isinstance(execution_context, ProjectExecutionContext):
         raise TypeError("execution_context must be ProjectExecutionContext")
+    if execution_context is not None and execution_context.run_id != run_id:
+        raise ValueError("execution_context run_id does not match executor run_id")
     if context_sources is None:
         context_sources = {}
     if not isinstance(context_sources, dict):
@@ -476,6 +488,11 @@ def execute_p20(*args, **kwargs) -> List[str]:
         modes, _preset_id, payload = resolve_modes(payload)
 
     payload_exec = dict(payload)
+    if execution_context is not None:
+        payload_exec["project_id"] = execution_context.project_id
+        payload_exec["domain_book_id"] = execution_context.book_id
+        payload_exec["series_id"] = execution_context.series_id
+        payload_exec["step_id"] = execution_context.step_id
     modes_exec = list(modes)
     preset_id = str(
         payload_exec.get("_preset_id")
@@ -506,7 +523,19 @@ def execute_p20(*args, **kwargs) -> List[str]:
     steps_dir.mkdir(parents=True, exist_ok=True)
 
     state_path = run_dir / "state.json"
-    state: Dict[str, Any] = {"run_id": run_id, "latest_text": "", "last_step": 0, "created_at": _iso()}
+    state: Dict[str, Any] = {
+        "run_id": run_id,
+        "latest_text": "",
+        "last_step": 0,
+        "created_at": _iso(),
+    }
+    if execution_context is not None:
+        state.update({
+            "project_id": execution_context.project_id,
+            "book_id": execution_context.book_id,
+            "series_id": execution_context.series_id,
+            "step_id": execution_context.step_id,
+        })
     latest_text = ""
     artifact_paths: List[str] = []
 
@@ -526,6 +555,7 @@ def execute_p20(*args, **kwargs) -> List[str]:
         preset_id=preset_id or None,
         queue_initial=initial_queue,
         modes=initial_modes,
+        execution_context=execution_context,
     )
 
     quality_retry_attempts = 0
@@ -558,6 +588,10 @@ def execute_p20(*args, **kwargs) -> List[str]:
             tool_input.update(step_overrides["payload"])
 
         tool_input.setdefault("book_id", book_id)
+        if execution_context is not None:
+            tool_input["project_id"] = execution_context.project_id
+            tool_input["domain_book_id"] = execution_context.book_id
+            tool_input["series_id"] = execution_context.series_id
 
         requested_policy = (
             step_overrides.get("policy")
@@ -599,6 +633,7 @@ def execute_p20(*args, **kwargs) -> List[str]:
         context_package = None
         if execution_context is not None:
             step_execution_context = execution_context.for_step(step_index, mode_id)
+            tool_input["step_id"] = step_execution_context.step_id
             context_package = build_runtime_context_package(
                 execution_context=step_execution_context,
                 mode=mode_id,

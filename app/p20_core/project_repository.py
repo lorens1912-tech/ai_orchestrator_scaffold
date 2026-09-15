@@ -40,6 +40,8 @@ SERIES_DB_SCHEMA_VERSION = 2
 SERIES_DB_FILENAME = "series.db"
 SYSTEM_DB_SCHEMA_VERSION = 1
 SYSTEM_DB_FILENAME = "agentpro_system.db"
+PROJECT_REGISTRY_METADATA_KEY = "project_registry.v1"
+_SYSTEM_DB_BUSY_TIMEOUT_MS = 30_000
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
@@ -1615,6 +1617,19 @@ class SeriesRepository:
         membership.require_access(access)
         return membership
 
+    def require_registered_member(
+        self,
+        access: SeriesAccessContext,
+        *,
+        book_id: str | None = None,
+    ) -> Any:
+        self.initialize()
+        with self.connect() as conn:
+            membership = self._require_registered_member(conn, access)
+        if book_id is not None and str(membership.book_id) != str(book_id):
+            raise SeriesAccessError("series membership book does not match requested book")
+        return membership
+
     @staticmethod
     def _read_operation(
         conn: sqlite3.Connection,
@@ -2028,8 +2043,12 @@ class SystemRepository:
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         self.context.storage_root.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self.context.database_path))
+        conn = sqlite3.connect(
+            str(self.context.database_path),
+            timeout=_SYSTEM_DB_BUSY_TIMEOUT_MS / 1000,
+        )
         conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout = {_SYSTEM_DB_BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
         try:
@@ -2105,6 +2124,205 @@ class SystemRepository:
         with self.connect() as conn:
             rows = conn.execute("SELECT key, value FROM system_metadata ORDER BY key").fetchall()
             return {str(row["key"]): str(row["value"]) for row in rows}
+
+    @staticmethod
+    def _decode_project_registry(raw: str | None) -> dict[str, str]:
+        if raw is None:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise SystemStorageError("project registry metadata is invalid JSON") from exc
+        if not isinstance(payload, dict):
+            raise SystemStorageError("project registry metadata must be an object")
+
+        registry: dict[str, str] = {}
+        for project_id, book_id in payload.items():
+            normalized_project = _normalize_identifier(
+                project_id,
+                "project_id",
+                SystemStorageError,
+            )
+            normalized_book = _normalize_identifier(
+                book_id,
+                "book_id",
+                SystemStorageError,
+            )
+            registry[normalized_project] = normalized_book
+        if len(set(registry.values())) != len(registry):
+            raise SystemStorageError("project registry contains ambiguous book bindings")
+        return registry
+
+    @staticmethod
+    def _read_project_registry(conn: sqlite3.Connection) -> dict[str, str]:
+        row = conn.execute(
+            "SELECT value FROM system_metadata WHERE key = ?",
+            (PROJECT_REGISTRY_METADATA_KEY,),
+        ).fetchone()
+        raw = None if row is None else str(row["value"])
+        return SystemRepository._decode_project_registry(raw)
+
+    @staticmethod
+    def _write_project_registry(
+        conn: sqlite3.Connection,
+        registry: dict[str, str],
+    ) -> None:
+        payload = json.dumps(registry, sort_keys=True, separators=(",", ":"))
+        conn.execute(
+            """
+            INSERT INTO system_metadata (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (PROJECT_REGISTRY_METADATA_KEY, payload),
+        )
+
+    def list_project_bindings(self) -> dict[str, str]:
+        self.initialize()
+        with self.connect() as conn:
+            return self._read_project_registry(conn)
+
+    def resolve_project_id_for_book(self, book_id: str) -> str | None:
+        normalized_book = _normalize_identifier(book_id, "book_id", SystemStorageError)
+        matches = [
+            project_id
+            for project_id, bound_book_id in self.list_project_bindings().items()
+            if bound_book_id == normalized_book
+        ]
+        if len(matches) > 1:
+            raise SystemStorageError("project registry contains ambiguous book bindings")
+        return matches[0] if matches else None
+
+    def resolve_book_id_for_project(self, project_id: str) -> str | None:
+        normalized_project = _normalize_identifier(
+            project_id,
+            "project_id",
+            SystemStorageError,
+        )
+        return self.list_project_bindings().get(normalized_project)
+
+    def bind_project(self, project_id: str, book_id: str) -> None:
+        normalized_project = _normalize_identifier(
+            project_id,
+            "project_id",
+            SystemStorageError,
+        )
+        normalized_book = _normalize_identifier(book_id, "book_id", SystemStorageError)
+        self.initialize()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            registry = self._read_project_registry(conn)
+            existing_book = registry.get(normalized_project)
+            if existing_book is not None and existing_book != normalized_book:
+                raise SystemStorageError("project_id is already bound to a different book")
+            existing_project = next(
+                (
+                    bound_project
+                    for bound_project, bound_book in registry.items()
+                    if bound_book == normalized_book
+                ),
+                None,
+            )
+            if existing_project is not None and existing_project != normalized_project:
+                raise SystemStorageError("book_id is already bound to a different project")
+            registry[normalized_project] = normalized_book
+            self._write_project_registry(conn, registry)
+
+    def resolve_or_bind_project(self, project_id: str, book_id: str) -> str:
+        normalized_project = _normalize_identifier(
+            project_id,
+            "project_id",
+            SystemStorageError,
+        )
+        normalized_book = _normalize_identifier(book_id, "book_id", SystemStorageError)
+        self.initialize()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            registry = self._read_project_registry(conn)
+            existing_project = next(
+                (
+                    bound_project
+                    for bound_project, bound_book in registry.items()
+                    if bound_book == normalized_book
+                ),
+                None,
+            )
+            if existing_project is not None:
+                return existing_project
+            if normalized_project in registry:
+                raise SystemStorageError("project_id is already bound to a different book")
+            registry[normalized_project] = normalized_book
+            self._write_project_registry(conn, registry)
+            return normalized_project
+
+    def discover_project_bindings(self, book_id: str) -> tuple[str, ...]:
+        normalized_book = _normalize_identifier(book_id, "book_id", SystemStorageError)
+        projects_root = self.context.storage_root / "projects"
+        if not projects_root.exists():
+            return ()
+
+        matches: list[str] = []
+        for database_path in sorted(projects_root.glob(f"*/{PROJECT_DB_FILENAME}")):
+            try:
+                conn = sqlite3.connect(f"{database_path.resolve().as_uri()}?mode=ro", uri=True)
+                conn.row_factory = sqlite3.Row
+                try:
+                    if not _table_exists(conn, "project_identity"):
+                        continue
+                    row = conn.execute(
+                        "SELECT project_id, book_id FROM project_identity WHERE id = 1"
+                    ).fetchone()
+                finally:
+                    conn.close()
+            except sqlite3.Error as exc:
+                raise SystemStorageError(
+                    f"cannot inspect project identity: {database_path}"
+                ) from exc
+            if row is not None and str(row["book_id"]) == normalized_book:
+                matches.append(str(row["project_id"]))
+        return tuple(sorted(set(matches)))
+
+    def discover_series_memberships(
+        self,
+        project_id: str,
+    ) -> tuple[tuple[str, str], ...]:
+        normalized_project = _normalize_identifier(
+            project_id,
+            "project_id",
+            SystemStorageError,
+        )
+        series_root = self.context.storage_root / "series"
+        if not series_root.exists():
+            return ()
+
+        memberships: list[tuple[str, str]] = []
+        for database_path in sorted(series_root.glob(f"*/{SERIES_DB_FILENAME}")):
+            try:
+                conn = sqlite3.connect(f"{database_path.resolve().as_uri()}?mode=ro", uri=True)
+                conn.row_factory = sqlite3.Row
+                try:
+                    if not _table_exists(conn, "series_identity") or not _table_exists(
+                        conn, "series_memberships"
+                    ):
+                        continue
+                    identity = conn.execute(
+                        "SELECT series_id FROM series_identity WHERE id = 1"
+                    ).fetchone()
+                    membership = conn.execute(
+                        "SELECT book_id FROM series_memberships WHERE project_id = ?",
+                        (normalized_project,),
+                    ).fetchone()
+                finally:
+                    conn.close()
+            except sqlite3.Error as exc:
+                raise SystemStorageError(
+                    f"cannot inspect series membership: {database_path}"
+                ) from exc
+            if identity is not None and membership is not None:
+                memberships.append(
+                    (str(identity["series_id"]), str(membership["book_id"]))
+                )
+        return tuple(sorted(set(memberships)))
 
     def get_pragma(self, name: str) -> str | int:
         with self.connect() as conn:

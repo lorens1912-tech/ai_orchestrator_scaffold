@@ -5,6 +5,7 @@ from app.p20_core.runtime import run_agent_step, health_payload, config_validate
 from app.p20_core.contracts import AgentStepRequest
 from app.p20_core.book_bible_contract import BookBibleContractError
 from app.p20_core.canon_rebuild import canon_rebuild_endpoint
+from app.p20_core.context_runtime import ProjectExecutionIdentityError
 from app.config_registry import load_presets
 from app.canon_check import canon_check
 from app.canon_store import load_canon
@@ -85,6 +86,8 @@ async def agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             "decision": "REJECT",
             "error": str(e),
         }
+    except ProjectExecutionIdentityError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     except ValueError as e:
         status_code = _agent_input_error_status(e)
         if status_code is not None:

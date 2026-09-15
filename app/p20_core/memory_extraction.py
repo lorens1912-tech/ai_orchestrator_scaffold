@@ -196,6 +196,29 @@ def _coerce_enum(enum_type: type[Enum], value: Any, field_name: str) -> Enum:
         raise MemoryExtractionError(f"{field_name} is unsupported") from exc
 
 
+def validate_memory_model_result(role: ModelInvocationRole | str, result: Any) -> dict[str, Any]:
+    """Validate the existing extractor/verifier result contract at the provider boundary."""
+    resolved_role = _coerce_enum(ModelInvocationRole, role, "role")
+    if not isinstance(result, dict):
+        raise MemoryExtractionError("memory provider result must be an object")
+    if resolved_role == ModelInvocationRole.EXTRACTOR:
+        if set(result) != {"records"}:
+            raise MemoryExtractionError("extractor result must contain only records")
+        decode_memory_entities(result["records"])
+        return dict(result)
+
+    required = {"precision_status", "completeness_status"}
+    allowed = required | {"precision_reasons", "completeness_reasons", "must_fix"}
+    if not required.issubset(result) or set(result) - allowed:
+        raise MemoryExtractionError("verifier result does not match its contract")
+    _coerce_enum(VerificationAxisStatus, result["precision_status"], "precision_status")
+    _coerce_enum(VerificationAxisStatus, result["completeness_status"], "completeness_status")
+    for field_name in ("precision_reasons", "completeness_reasons", "must_fix"):
+        if field_name in result:
+            _text_tuple(result[field_name], field_name)
+    return dict(result)
+
+
 def _record_sort_key(record: Any) -> tuple[str, str]:
     return (
         str(getattr(record, "memory_record_type", "")),

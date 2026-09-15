@@ -400,11 +400,12 @@ def commit_canonical_proposal(repository, proposal_id: str, *, expected_hash: st
 
 
 def process_accepted_artifact(*, execution_context, text: str, source_trace: dict,
-                              context_sources: dict, model: str, scope_type: str = "PROJECT") -> dict:
+                              context_sources: dict, requested_model: str | None,
+                              effective_model: str, scope_type: str = "PROJECT") -> dict:
     """Active P20 producer. Persist source/calls, then freeze, analyze and guard."""
     from dataclasses import replace
     from app.p20_core.project_repository import ProjectRepository, StorageResolver
-    from app.p20_core.executor import invoke_memory_model
+    from app.p20_core.executor import MemoryModelInvocationError, invoke_memory_model
     from app.p20_core.memory_extraction import (
         SceneMemorySource, StructuredMemoryExtractionCandidate, ModelInvocation,
         decode_memory_entities, verify_memory_extraction_candidate, DEFAULT_MEMORY_EXTRACTION_POLICY,
@@ -443,7 +444,8 @@ def process_accepted_artifact(*, execution_context, text: str, source_trace: dic
                 source_scene_id=source["scene_id"], source_artifact_ref=source_ref, source_text=text)
             extractor = invoke_memory_model(execution_context=replace(execution_context,
                 step_id=execution_context.step_id + f":canonical:{operation}:extract:{attempt}", technical_retry=False),
-                role="EXTRACTOR", model=model, source=source, candidate=None, context_sources=context_sources)
+                role="EXTRACTOR", requested_model=requested_model, effective_model=effective_model,
+                source=source, candidate=None, context_sources=context_sources)
             with repository.canonical_pipeline_operation(operation) as state:
                 state["last_extractor"] = extractor
             candidate_time = utc_now_iso()
@@ -454,7 +456,8 @@ def process_accepted_artifact(*, execution_context, text: str, source_trace: dic
                 scene_quality_status="ACCEPT")
             verifier = invoke_memory_model(execution_context=replace(execution_context,
                 step_id=execution_context.step_id + f":canonical:{operation}:verify:{attempt}", technical_retry=False),
-                role="VERIFIER", model=model, source=source, candidate=candidate.to_dict(), context_sources=context_sources)
+                role="VERIFIER", requested_model=requested_model, effective_model=effective_model,
+                source=source, candidate=candidate.to_dict(), context_sources=context_sources)
             with repository.canonical_pipeline_operation(operation) as state:
                 state["last_verifier"] = verifier
             verification = verify_memory_extraction_candidate(candidate, source=source_contract,
@@ -513,7 +516,9 @@ def process_accepted_artifact(*, execution_context, text: str, source_trace: dic
     except (ValueError, TypeError, KeyError, RuntimeError, sqlite3.Error) as exc:
         # No model exception text (which may echo inputs/secrets) enters the audit.
         result = {"status": "FAILED", "canonical_commit": False,
-                  "reason": exc.code if isinstance(exc, OperatorError) else type(exc).__name__}
+                  "reason": (exc.failure_reason if isinstance(exc, MemoryModelInvocationError)
+                             else exc.code if isinstance(exc, OperatorError)
+                             else type(exc).__name__)}
         with repository.canonical_proposal_transaction(proposal_id) as (document, snapshot):
             if document:
                 record = document["versions"]["1"]
@@ -522,6 +527,9 @@ def process_accepted_artifact(*, execution_context, text: str, source_trace: dic
                 record["proposal"]["status"] = "FAILED"
                 record["failure"] = result["reason"]
         with repository.canonical_pipeline_operation(operation) as state:
+            if isinstance(exc, MemoryModelInvocationError):
+                role = exc.evidence["invocation"]["role"].lower()
+                state["last_" + role] = exc.evidence
             state["result"] = result
         return result
 

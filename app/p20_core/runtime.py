@@ -757,17 +757,23 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                     )
                     if write_trace is not None:
                         from app.p20_core.canon_service import process_accepted_artifact
-                        from app.model_policy import resolve_model
                         canonical_change = process_accepted_artifact(
                             execution_context=execution_context, text=output_text,
                             source_trace=write_trace, context_sources=context_sources,
-                            model=resolve_model(payload.get("model")).effective_model,
+                            requested_model=write_trace.get("requested_model"),
+                            effective_model=write_trace["effective_model"],
                             scope_type=payload.get("scope_type", "PROJECT"))
+
+        canonical_failed = (
+            isinstance(canonical_change, dict)
+            and canonical_change.get("status") == "FAILED"
+        )
+        execution_decision = "FAILED" if canonical_failed else decision
 
         state = save_run_state(
             run_id,
             book_id=book_id,
-            status=decision,
+            status=execution_decision,
             last_modes=modes,
             last_artifact_paths=artifact_paths,
             chapter_path=chapter_path,
@@ -776,7 +782,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             series_id=execution_context.series_id,
             step_id=execution_context.step_id,
         )
-        state["decision"] = decision
+        state["decision"] = execution_decision
         state["canonical_change"] = canonical_change
         state["master_canon"] = dict(master_canon_ref)
         state["project_truth"] = dict(project_truth_ref)
@@ -796,7 +802,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             run_id=run_id,
             modes=modes,
             artifact_paths=artifact_paths,
-            decision=decision,
+            decision=execution_decision,
             chapter_path=chapter_path,
             canon_snapshot_path=canon_snapshot_path,
             master_canon=master_canon_ref,
@@ -808,7 +814,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             context_packages=context_traces,
         )
 
-        execution_ok = decision == "ACCEPT" or bool(quality_decision)
+        execution_ok = (decision == "ACCEPT" or bool(quality_decision)) and not canonical_failed
         if quality_decision and decision != "ACCEPT":
             quality_gate_reasons = quality_reasons
         else:
@@ -834,6 +840,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
         response = {
             "ok": execution_ok,
             "status": "ok" if execution_ok else "error",
+            "decision": execution_decision,
             "run_id": run_id,
             "book_id": book_id,
             "domain_book_id": execution_context.book_id,

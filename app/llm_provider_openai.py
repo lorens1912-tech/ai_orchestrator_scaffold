@@ -66,9 +66,12 @@ def call_text(prompt: str, model: str, temperature: Optional[float] = None) -> D
             else:
                 raise
 
-        text = r.choices[0].message.content or ""
+        message = r.choices[0].message
+        text = message.content or ""
+        refused = getattr(message, "refusal", None) is not None
         return {
             "text": text,
+            "refused": refused,
             "provider_returned_model": getattr(r, "model", None),
             "raw_type": "chat.completions",
             "params": {"temperature_requested": temp_requested, "temperature_sent": temp_sent},
@@ -88,19 +91,23 @@ def call_text(prompt: str, model: str, temperature: Optional[float] = None) -> D
         else:
             raise
 
-    text = getattr(r, "output_text", None)
-    if not text:
-        text = ""
-        try:
-            for item in r.output or []:
-                for ctn in item.content or []:
-                    if hasattr(ctn, "text") and ctn.text:
-                        text += ctn.text
-        except Exception:
-            pass
+    output_text = getattr(r, "output_text", None)
+    text = output_text or ""
+    refused = False
+    try:
+        for item in r.output or []:
+            for ctn in (getattr(item, "content", None) or []):
+                if (getattr(ctn, "type", None) == "refusal"
+                        or getattr(ctn, "refusal", None) is not None):
+                    refused = True
+                if not output_text and hasattr(ctn, "text") and ctn.text:
+                    text += ctn.text
+    except Exception:
+        pass
 
     return {
         "text": text,
+        "refused": refused,
         "provider_returned_model": getattr(r, "model", None),
         "raw_type": "responses",
         "params": {"temperature_requested": temp_requested, "temperature_sent": temp_sent},

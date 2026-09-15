@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import builtins
 import hashlib
+import json
 import os
 import re
 import shutil
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +19,62 @@ TEST_SESSION_STORAGE_ROOT = TEST_STORAGE_ROOT / "sessions" / uuid.uuid4().hex
 REAL_STORAGE_ROOTS = tuple((REPO_ROOT / name).resolve() for name in ("books", "runs", "novel_runs"))
 
 os.environ["AGENTPRO_STORAGE_ROOT"] = str(TEST_SESSION_STORAGE_ROOT)
+
+
+@pytest.fixture(autouse=True)
+def controlled_memory_transport_sdk_boundary(monkeypatch):
+    """Keep test runs at the external SDK boundary when P20 promotes a WRITE."""
+    from openai.resources.responses.responses import Responses
+
+    import app.llm_provider_openai as openai_transport
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-agentpro-controlled-boundary")
+    monkeypatch.setenv("OPENAI_API_MODE", "responses")
+    monkeypatch.setattr(openai_transport, "_client", None)
+
+    def create(_self, **kwargs):
+        prompt = json.loads(kwargs["input"])
+        package = prompt["context_package"]
+        task = next(item for item in package["included_items"] if item["layer"] == "TASK")
+        payload = json.loads(task["content"])["input"]
+        if payload["role"] == "EXTRACTOR":
+            source = payload["source"]
+            record_id = "FACT-sdk-" + hashlib.sha256(
+                source["scene_id"].encode("utf-8")
+            ).hexdigest()[:24]
+            record = {
+                "fact_id": record_id,
+                "project_id": payload["project_id"],
+                "subject_id": record_id,
+                "predicate": "description",
+                "object_type": "TEXT",
+                "object_id": None,
+                "object_value": "controlled SDK boundary record",
+                "reality_status": "TRUE",
+                "verification_status": "VERIFIED",
+                "confidence": 1,
+                "frozen": False,
+                "author_locked": False,
+                "valid_from": "test-start",
+                "valid_to": None,
+                "established_event_id": None,
+                "established_scene_id": source["scene_id"],
+                "source_artifact_ref": source["artifact_ref"],
+                "source_refs": [source["scene_id"]],
+                "canon_version": 1,
+                "version": 1,
+                "created_at": "2026-09-15T00:00:00Z",
+                "updated_at": "2026-09-15T00:00:00Z",
+            }
+            text = json.dumps({"records": [{"record_type": "FACT", "payload": record}]})
+        else:
+            text = json.dumps({
+                "precision_status": "ACCEPT",
+                "completeness_status": "ACCEPT",
+            })
+        return SimpleNamespace(output_text=text, model=kwargs["model"], output=[])
+
+    monkeypatch.setattr(Responses, "create", create)
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:

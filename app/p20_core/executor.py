@@ -34,20 +34,31 @@ TEXT_MODES = {
 StepItem = Union[str, Dict[str, Any]]
 
 
+class MemoryModelInvocationError(RuntimeError):
+    """Safe failure wrapper carrying the durable invocation lineage."""
+
+    def __init__(self, failure_reason: str, evidence: dict) -> None:
+        super().__init__(failure_reason)
+        self.failure_reason = failure_reason
+        self.evidence = evidence
+
+
 def invoke_memory_model(*, execution_context: ProjectExecutionContext, role: str,
-                        model: str, source: dict, candidate: dict | None,
+                        requested_model: str | None, effective_model: str,
+                        source: dict, candidate: dict | None,
                         context_sources: dict) -> dict:
     """Internal integrity call through the same ContextBuilder/provider boundary.
 
     These are internal roles, not additional user-selectable execution modes.
     """
-    from app.p20_core.memory_extraction import ModelInvocation
+    from app.p20_core.memory_extraction import ModelInvocation, validate_memory_model_result
     from dataclasses import fields
     from app.p20_core.memory_extraction import memory_record_types
     payload = {"project_id": execution_context.project_id, "book_id": execution_context.book_id,
                "series_id": execution_context.series_id, "run_id": execution_context.run_id,
                "step_id": execution_context.step_id, "source": source, "candidate": candidate,
-               "role": role, "_requested_model": model,
+               "role": role, "_requested_model": requested_model,
+               "_effective_model": effective_model,
                "record_schema": {kind: {field.name: str(field.type) for field in fields(record_type)}
                                  for kind, record_type in memory_record_types().items()},
                "instruction": ("Return the complete records list as [{record_type: schema name, payload: full record}]. "
@@ -57,20 +68,56 @@ def invoke_memory_model(*, execution_context: ProjectExecutionContext, role: str
                                if role == "EXTRACTOR" else
                                "Independently verify every record against source. Return precision_status and completeness_status: ACCEPT, REVISE or REJECT, with reasons.")}
     package = build_runtime_context_package(execution_context=execution_context, mode="MEMORY_" + role,
-        role=role, requested_model=model, effective_model=model, tool_input=payload, context_sources=context_sources)
+        role=role, requested_model=requested_model, effective_model=effective_model,
+        tool_input=payload, context_sources=context_sources)
     payload.update(context_package_id=package.context_package_id, context_hash=package.context_hash,
                    _context_package=package.to_dict())
-    invocation = ModelInvocation(role=role, provider="P20_PROVIDER_BOUNDARY", model=model,
-        call_id=execution_context.operation_id,
-        metadata={"context_package_id": package.context_package_id, "context_hash": package.context_hash})
-    from app.tools import memory_integrity_provider
-    result = memory_integrity_provider(payload)
-    if not isinstance(result, dict):
-        raise ValueError("memory provider response must be a JSON object")
-    allowed = {"records"} if role == "EXTRACTOR" else {
-        "precision_status", "completeness_status", "precision_reasons", "completeness_reasons", "must_fix"}
-    if set(result) - allowed:
-        raise ValueError("unsupported memory provider response fields")
+    metadata = {"context_package_id": package.context_package_id, "context_hash": package.context_hash,
+                "requested_model": requested_model, "effective_model": effective_model}
+    provider = "P20_PROVIDER_BOUNDARY"
+    try:
+        from app.tools import memory_integrity_provider
+        provider_result = memory_integrity_provider(payload)
+        transport = None
+        if isinstance(provider_result, dict) and set(provider_result) == {"result", "transport"}:
+            result = provider_result["result"]
+            transport = provider_result["transport"]
+        else:
+            result = provider_result
+        result = validate_memory_model_result(role, result)
+        if transport is not None:
+            if (not isinstance(transport, dict)
+                    or transport.get("requested_model") != requested_model
+                    or transport.get("effective_model") != effective_model
+                    or transport.get("provider") != "OPENAI"):
+                raise ValueError("memory transport metadata binding mismatch")
+            metadata.update(transport)
+            provider = transport["provider"]
+    except (ValueError, TypeError, KeyError, RuntimeError) as exc:
+        failure_reason = type(exc).__name__
+        transport_audit = getattr(exc, "audit_metadata", None)
+        if (isinstance(transport_audit, dict)
+                and transport_audit.get("requested_model") == requested_model
+                and transport_audit.get("effective_model") == effective_model):
+            allowed = {
+                "boundary", "provider", "requested_model", "effective_model",
+                "provider_returned_model", "refused", "raw_type", "params", "dropped_params",
+                "retried", "boundary_reached", "failure_phase",
+            }
+            metadata.update({key: value for key, value in transport_audit.items() if key in allowed})
+            if transport_audit.get("provider") == "OPENAI":
+                provider = "OPENAI"
+        metadata.update(status="FAILED", failure_reason=failure_reason)
+        invocation = ModelInvocation(role=role, provider=provider, model=effective_model,
+            call_id=execution_context.operation_id, metadata=metadata)
+        evidence = {
+            "status": "FAILED",
+            "reason": failure_reason,
+            "invocation": invocation.to_dict(),
+        }
+        raise MemoryModelInvocationError(failure_reason, evidence) from exc
+    invocation = ModelInvocation(role=role, provider=provider, model=effective_model,
+        call_id=execution_context.operation_id, metadata=metadata)
     return {"invocation": invocation.to_dict(), "input": payload, "result": result}
 
 

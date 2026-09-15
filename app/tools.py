@@ -347,14 +347,194 @@ TOOLS = {
 }
 
 
-def memory_integrity_provider(payload):
-    """Internal structured-output boundary; no direct canonical write capability.
+class MemoryTransportError(RuntimeError):
+    """Configured model transport could not complete the integrity call."""
 
-    The existing completion adapter must be configured. An unavailable provider
-    fails explicitly; offline prose is never treated as verified memory.
-    """
-    from app.llm_client import run_completion
-    return run_completion(payload=payload)
+    def __init__(self, message: str, *, audit_metadata: dict | None = None) -> None:
+        super().__init__(message)
+        self.audit_metadata = dict(audit_metadata or {})
+
+
+class MemoryTransportConfigurationError(MemoryTransportError):
+    """The existing model transport is not configured for this call."""
+
+
+class MemoryTransportResponseError(ValueError):
+    """The transport completed but did not return the required JSON contract."""
+
+    def __init__(self, message: str, *, audit_metadata: dict | None = None) -> None:
+        super().__init__(message)
+        self.audit_metadata = dict(audit_metadata or {})
+
+
+def _strict_memory_json(text: str) -> dict:
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise MemoryTransportResponseError("duplicate key in memory response")
+            result[key] = value
+        return result
+
+    def reject_constant(value):
+        raise MemoryTransportResponseError("non-finite number in memory response")
+
+    if not isinstance(text, str) or not text.strip():
+        raise MemoryTransportResponseError("empty or refused memory response")
+    try:
+        result = json.loads(text, object_pairs_hook=unique_object, parse_constant=reject_constant)
+    except MemoryTransportResponseError:
+        raise
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise MemoryTransportResponseError("memory response is not one JSON object") from exc
+    if not isinstance(result, dict):
+        raise MemoryTransportResponseError("memory response is not one JSON object")
+    return result
+
+
+def memory_integrity_provider(payload):
+    """Adapt a persisted P20 ContextPackage to the existing OpenAI text transport."""
+    from app.p20_core.context_builder import ContextPackage
+    from app.p20_core.memory_extraction import validate_memory_model_result
+
+    if not isinstance(payload, dict):
+        raise MemoryTransportResponseError("memory provider payload must be an object")
+    role = payload.get("role")
+    if role not in {"EXTRACTOR", "VERIFIER"}:
+        raise MemoryTransportResponseError("memory provider role is invalid")
+    requested_model = payload.get("_requested_model")
+    effective_model = payload.get("_effective_model")
+    package_payload = payload.get("_context_package")
+    if not isinstance(effective_model, str) or not effective_model.strip():
+        raise MemoryTransportResponseError("effective model is required")
+    if requested_model is not None and (not isinstance(requested_model, str) or not requested_model.strip()):
+        raise MemoryTransportResponseError("requested model must be text or null")
+    if not isinstance(package_payload, dict):
+        raise MemoryTransportResponseError("persisted ContextPackage is required")
+    try:
+        package = ContextPackage.from_dict(package_payload)
+    except (TypeError, ValueError, KeyError) as exc:
+        raise MemoryTransportResponseError("invalid ContextPackage") from exc
+    expected_mode = "MEMORY_" + str(role)
+    identity = (
+        package.context_package_id == payload.get("context_package_id")
+        and package.context_hash == payload.get("context_hash")
+        and package.project_id == payload.get("project_id")
+        and package.book_id == payload.get("book_id")
+        and package.series_id == payload.get("series_id")
+        and package.run_id == payload.get("run_id")
+        and package.step_id == payload.get("step_id")
+        and package.mode == expected_mode
+        and package.effective_model == effective_model
+    )
+    if not identity:
+        raise MemoryTransportResponseError("ContextPackage binding mismatch")
+
+    transport_audit = {
+        "boundary": "app.llm_provider_openai.call_text",
+        "provider": "OPENAI",
+        "requested_model": requested_model,
+        "effective_model": effective_model,
+    }
+    if not str(os.getenv("OPENAI_API_KEY") or "").strip():
+        raise MemoryTransportConfigurationError(
+            "memory model transport is not configured",
+            audit_metadata={
+                **transport_audit,
+                "boundary_reached": False,
+                "failure_phase": "CONFIGURATION",
+            },
+        )
+
+    prompt = json.dumps(
+        {
+            "protocol": "AGENTPRO_MEMORY_INTEGRITY_V1",
+            "role": role,
+            "output_requirement": "Return exactly one JSON object matching the TASK contract. No prose or markdown.",
+            "context_package": package_payload,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    try:
+        from app.llm_provider_openai import call_text
+        transport = call_text(prompt=prompt, model=effective_model, temperature=None)
+    except Exception as exc:
+        # SDK/configuration exceptions are normalized so audit never persists
+        # provider messages that may echo input or credentials.
+        raise MemoryTransportError(
+            "memory model transport failed",
+            audit_metadata={
+                **transport_audit,
+                "boundary_reached": True,
+                "failure_phase": "TRANSPORT",
+            },
+        ) from exc
+    if not isinstance(transport, dict):
+        raise MemoryTransportResponseError(
+            "model transport response must be an object",
+            audit_metadata={
+                **transport_audit,
+                "boundary_reached": True,
+                "failure_phase": "RESPONSE_VALIDATION",
+            },
+        )
+    raw_type = transport.get("raw_type")
+    provider_model = transport.get("provider_returned_model")
+    refused = transport.get("refused")
+    params = transport.get("params")
+    dropped_params = transport.get("dropped_params")
+    retried = transport.get("retried")
+    if (not isinstance(raw_type, str) or not raw_type.strip()
+            or (provider_model is not None and not isinstance(provider_model, str))
+            or type(refused) is not bool
+            or not isinstance(params, dict)
+            or not isinstance(dropped_params, list)
+            or any(not isinstance(item, str) for item in dropped_params)
+            or type(retried) is not bool):
+        raise MemoryTransportResponseError(
+            "model transport metadata is invalid",
+            audit_metadata={
+                **transport_audit,
+                "boundary_reached": True,
+                "failure_phase": "RESPONSE_VALIDATION",
+            },
+        )
+    response_audit = {
+        **transport_audit,
+        "provider_returned_model": provider_model,
+        "refused": refused,
+        "raw_type": raw_type,
+        "params": params,
+        "dropped_params": list(dropped_params),
+        "retried": retried,
+    }
+    if refused:
+        raise MemoryTransportResponseError(
+            "memory model refused the structured operation",
+            audit_metadata={
+                **response_audit,
+                "boundary_reached": True,
+                "failure_phase": "RESPONSE_VALIDATION",
+            },
+        )
+    try:
+        result = validate_memory_model_result(role, _strict_memory_json(transport.get("text")))
+    except (TypeError, ValueError, KeyError) as exc:
+        raise MemoryTransportResponseError(
+            "memory response does not match the role contract",
+            audit_metadata={
+                **response_audit,
+                "boundary_reached": True,
+                "failure_phase": "RESPONSE_VALIDATION",
+            },
+        ) from exc
+    return {
+        "result": result,
+        "transport": response_audit,
+    }
 
 # === AUTOFIX_V1_BEGIN ===
 # AUTOFIX_V2: domyka test_031 (meta.applied_issue_types) + test_033 (UNKNOWN_ENTITIES=[]) + OUTLINE tool.

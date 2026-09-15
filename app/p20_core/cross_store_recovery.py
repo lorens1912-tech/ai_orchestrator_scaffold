@@ -61,6 +61,11 @@ class RecoveryStatus(str, Enum):
     NEEDS_INTERVENTION = "NEEDS_INTERVENTION"
 
 
+class ArtifactRoot(str, Enum):
+    PROJECT = "PROJECT"
+    BOOKS = "BOOKS"
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -116,6 +121,7 @@ class CrossStoreOperationPlan:
     artifact_bytes: bytes
     expected_versions: Mapping[str, Any]
     provenance_refs: tuple[str, ...]
+    artifact_root: ArtifactRoot | str = ArtifactRoot.PROJECT
     series_id: str | None = None
     series_snapshot: VolumeClosingSnapshot | None = None
     run_id: str | None = None
@@ -153,6 +159,17 @@ class CrossStoreOperationPlan:
         object.__setattr__(self, "run_id", _optional_text(self.run_id, "run_id"))
         object.__setattr__(self, "step_id", _optional_text(self.step_id, "step_id"))
         object.__setattr__(self, "series_id", _optional_text(self.series_id, "series_id"))
+        try:
+            artifact_root = (
+                self.artifact_root
+                if isinstance(self.artifact_root, ArtifactRoot)
+                else ArtifactRoot(str(self.artifact_root))
+            )
+        except ValueError as exc:
+            raise CrossStoreRecoveryError(
+                "artifact_root must be PROJECT or BOOKS"
+            ) from exc
+        object.__setattr__(self, "artifact_root", artifact_root)
         if (self.series_id is None) != (self.series_snapshot is None):
             raise CrossStoreRecoveryError(
                 "series_id and series_snapshot must either both be present or both be absent"
@@ -178,7 +195,7 @@ class CrossStoreOperationPlan:
         return _sha256_bytes(self.artifact_bytes)
 
     def identity_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "project_id": self.project_id,
             "book_id": self.book_id,
             "series_id": self.series_id,
@@ -196,6 +213,11 @@ class CrossStoreOperationPlan:
                 else self.series_snapshot.semantic_identity
             ),
         }
+        # PROJECT is the v1 default and is intentionally omitted so existing
+        # durable records retain their original input hash.
+        if self.artifact_root != ArtifactRoot.PROJECT:
+            payload["artifact_root"] = self.artifact_root.value
+        return payload
 
     @property
     def input_hash(self) -> str:
@@ -239,6 +261,7 @@ class CrossStoreOperationPlan:
             artifact_bytes=artifact_bytes,
             expected_versions=dict(payload.get("expected_versions") or {}),
             provenance_refs=tuple(payload.get("provenance_refs") or ()),
+            artifact_root=payload.get("artifact_root", ArtifactRoot.PROJECT.value),
             series_snapshot=snapshot,
         )
 
@@ -324,7 +347,7 @@ class CrossStoreRecoveryService:
             raise CrossStoreRecoveryError(
                 "operation identity does not match the owner project repository"
             )
-        self._artifact_path(plan.artifact_relative_path)
+        self._artifact_path(plan.artifact_relative_path, plan.artifact_root)
 
     def _create_or_validate_intent(
         self,
@@ -466,7 +489,7 @@ class CrossStoreRecoveryService:
             self._complete(state, "PROJECT_CHECKPOINT")
 
     def _write_artifact(self, plan: CrossStoreOperationPlan) -> None:
-        final_path = self._artifact_path(plan.artifact_relative_path)
+        final_path = self._artifact_path(plan.artifact_relative_path, plan.artifact_root)
         temporary_path = final_path.with_name(
             final_path.name + "." + plan.operation_id + ".tmp"
         )
@@ -597,7 +620,7 @@ class CrossStoreRecoveryService:
             raise RecoveryInterventionRequired(
                 "committed operation has incomplete durable steps"
             )
-        final_path = self._artifact_path(plan.artifact_relative_path)
+        final_path = self._artifact_path(plan.artifact_relative_path, plan.artifact_root)
         if not final_path.is_file() or self._file_hash(final_path) != plan.artifact_sha256:
             raise RecoveryInterventionRequired(
                 "committed operation artifact is missing or has an unexpected hash"
@@ -713,19 +736,27 @@ class CrossStoreRecoveryService:
             "lineage": state["lineage"],
         }
 
-    def _artifact_path(self, relative_path: str) -> Path:
+    def _artifact_path(
+        self,
+        relative_path: str,
+        artifact_root: ArtifactRoot,
+    ) -> Path:
         path = Path(relative_path)
         if path.is_absolute() or ".." in path.parts:
             raise CrossStoreRecoveryError(
-                "artifact_relative_path must stay inside the owner project"
+                "artifact_relative_path must stay inside its configured root"
             )
-        project_root = self._project_repository.context.project_root.resolve()
-        resolved = (project_root / path).resolve()
+        root = (
+            self._project_repository.context.project_root
+            if artifact_root == ArtifactRoot.PROJECT
+            else self._project_repository.context.storage_root / "books"
+        ).resolve()
+        resolved = (root / path).resolve()
         try:
-            resolved.relative_to(project_root)
+            resolved.relative_to(root)
         except ValueError as exc:
             raise CrossStoreRecoveryError(
-                "artifact_relative_path escapes the owner project"
+                "artifact_relative_path escapes its configured root"
             ) from exc
         return resolved
 
@@ -754,6 +785,7 @@ class CrossStoreRecoveryService:
 
 __all__ = [
     "RECOVERY_RECORD_SCHEMA_VERSION",
+    "ArtifactRoot",
     "CrossStoreOperationPlan",
     "CrossStoreRecoveryError",
     "CrossStoreRecoveryService",

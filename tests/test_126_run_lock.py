@@ -49,16 +49,18 @@ def test_run_lock_exists_during_execute_and_is_released_after(isolated_agentpro_
     try:
         ensure_test_book_bible(book_id)
 
-        def _exec_guard(*args, **kwargs):
+        def _write_guard(payload):
             assert run_lock_path(run_id).exists()
-            return {"artifact_paths": ["runs/fake_lock/001_WRITE.json"]}
+            return {
+                "tool": "WRITE",
+                "payload": {
+                    "text": str(payload.get("text") or payload.get("input") or "")
+                },
+            }
 
-        with patch(
-            "app.p20_core.runtime.execute_stub",
-            side_effect=_exec_guard,
-        ), patch(
-            "app.p20_core.runtime.read_artifact_text",
-            return_value="Scena dla testu lock ACCEPT.",
+        with patch.dict(
+            "app.p20_core.executor.TOOLS",
+            {"WRITE": _write_guard},
         ), patch(
             "app.p20_core.runtime.run_canon_check",
             side_effect=[

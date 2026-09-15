@@ -30,7 +30,6 @@ from app.p20_core.canon_service import (
     read_artifact_text,
     resolve_resume_run_id,
     run_canon_check,
-    save_chapter,
     save_run_state,
     update_latest_run_marker,
     write_audit,
@@ -54,6 +53,8 @@ from app.p20_core.lock_service import (
     release_run_lock,
 )
 from app.p20_core.storage_paths import get_runs_root
+from app.p20_core.chapter_lineage import persist_chapter_lineage
+from app.p20_core.project_repository import ProjectRepository, StorageResolver
 
 MODES_FILE = Path(__file__).resolve().parents[1] / "modes.json"
 
@@ -653,8 +654,10 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                 except Exception:
                     pass
         output_text = ""
-        if artifact_paths:
-            output_text = read_artifact_text(artifact_paths[-1])
+        for artifact_path in reversed(artifact_paths):
+            output_text = read_artifact_text(artifact_path)
+            if output_text:
+                break
         if not output_text:
             output_text = input_text
 
@@ -683,24 +686,36 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                 break
 
         chapter_path = None
+        chapter_lineage = None
         canon_memory = None
         canonical_change = None
 
         if decision == "ACCEPT" and "WRITE" in modes:
-            chapter_path = save_chapter(
-                book_id=book_id,
-                run_id=run_id,
+            chapter_commit = persist_chapter_lineage(
+                repository=ProjectRepository(
+                    StorageResolver().resolve_project(
+                        execution_context.project_id,
+                        book_id=execution_context.book_id,
+                    )
+                ),
+                execution_context=execution_context,
+                storage_book_id=book_id,
+                artifact_paths=artifact_paths,
                 text=output_text,
-                source_artifact=artifact_paths[-1] if artifact_paths else None,
-                canon_snapshot_path=canon_snapshot_path,
+                quality_decision=quality_decision or None,
+                canon_snapshot_path=_public_path(canon_snapshot_path),
                 pre_report=pre_report,
                 post_report=post_report,
-                project_id=execution_context.project_id,
-                domain_book_id=execution_context.book_id,
+                master_canon=master_canon_ref,
+                project_truth=project_truth_ref,
+                book_bible_binding=book_bible_binding,
+                engine=APP_VERSION,
             )
+            chapter_path = chapter_commit.chapter_path
+            chapter_lineage = chapter_commit.summary()
             if chapter_path:
                 chapter_full = _path_for_read(Path(chapter_path))
-                chapter_doc = _json_load(chapter_full, {})
+                chapter_doc = chapter_commit.document
                 canon_memory = commit_chapter_to_canon(
                     book_id=book_id,
                     run_id=run_id,
@@ -724,20 +739,6 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                         )
 
                 if isinstance(chapter_doc, dict):
-                    chapter_doc["canon_snapshot_path"] = _public_path(canon_snapshot_path)
-                    chapter_doc["master_canon"] = dict(master_canon_ref)
-                    chapter_doc["project_truth"] = dict(project_truth_ref)
-                    if is_write:
-                        chapter_doc["book_bible_path"] = book_bible_binding["path"]
-                        chapter_doc["book_bible_sha256"] = book_bible_binding["sha256"]
-                        chapter_doc["book_bible_contract_version"] = book_bible_binding["contract_version"]
-                        chapter_doc["book_bible"] = dict(book_bible_binding)
-                        chapter_doc["canon_validation"] = {
-                            "source": "book_bible.json",
-                            "path": book_bible_binding["path"],
-                            "sha256": book_bible_binding["sha256"],
-                            "contract_version": book_bible_binding["contract_version"],
-                        }
                     write_trace = next(
                         (
                             trace
@@ -745,15 +746,6 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                             if trace.get("mode") == "WRITE"
                         ),
                         context_traces[-1] if context_traces else None,
-                    )
-                    if write_trace is not None:
-                        chapter_doc["project_id"] = execution_context.project_id
-                        chapter_doc["series_id"] = execution_context.series_id
-                        chapter_doc["context_package_id"] = write_trace["context_package_id"]
-                        chapter_doc["context_hash"] = write_trace["context_hash"]
-                    chapter_full.write_text(
-                        __import__("json").dumps(chapter_doc, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
                     )
                     if write_trace is not None:
                         from app.p20_core.canon_service import process_accepted_artifact
@@ -788,6 +780,8 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
         state["project_truth"] = dict(project_truth_ref)
         if is_write:
             state["book_bible"] = dict(book_bible_binding)
+        if chapter_lineage is not None:
+            state["chapter_lineage"] = dict(chapter_lineage)
         _attach_execution_trace(state, execution_context, context_traces)
         json_write(ensure_run_dirs(run_id) / "run_state.json", state)
         update_latest_run_marker(
@@ -812,6 +806,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             series_id=execution_context.series_id,
             step_id=execution_context.step_id,
             context_packages=context_traces,
+            chapter_lineage=chapter_lineage,
         )
 
         execution_ok = (decision == "ACCEPT" or bool(quality_decision)) and not canonical_failed
@@ -859,6 +854,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             "post_canon_check": post_report,
             "canon_snapshot_path": _public_path(canon_snapshot_path),
             "chapter_path": chapter_path,
+            "chapter_lineage": chapter_lineage,
             "master_canon": master_canon_ref,
             "project_truth": project_truth_ref,
             "book_bible": dict(book_bible_binding) if is_write else {},

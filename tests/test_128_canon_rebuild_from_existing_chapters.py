@@ -17,6 +17,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 client = TestClient(app)
 
 
+def _controlled_write(payload: dict) -> dict:
+    return {
+        "tool": "WRITE",
+        "payload": {"text": str(payload.get("text") or payload.get("input") or "")},
+    }
+
+
 def _book_dir(book_id: str) -> Path:
     return get_books_root() / book_id
 
@@ -124,12 +131,9 @@ def test_accept_after_existing_chapters_returns_full_canon_memory(isolated_agent
             "text": "B",
         })
 
-        with patch(
-            "app.p20_core.runtime.execute_stub",
-            return_value={"artifact_paths": ["runs/fake_rebuild/001_WRITE.json"]},
-        ), patch(
-            "app.p20_core.runtime.read_artifact_text",
-            return_value="Scena dla testu backfill + ACCEPT.",
+        with patch.dict(
+            "app.p20_core.executor.TOOLS",
+            {"WRITE": _controlled_write},
         ), patch(
             "app.p20_core.runtime.run_canon_check",
             side_effect=[

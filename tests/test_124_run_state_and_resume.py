@@ -17,6 +17,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 client = TestClient(app)
 
 
+def _controlled_write(payload: dict) -> dict:
+    return {
+        "tool": "WRITE",
+        "payload": {"text": str(payload.get("text") or payload.get("input") or "")},
+    }
+
+
 def _book_dir(book_id: str) -> Path:
     return get_books_root() / book_id
 
@@ -54,12 +61,9 @@ class TestP20RunState(unittest.TestCase):
         _assert_repo_run_absent(run_id)
         try:
             ensure_test_book_bible(book_id)
-            with patch(
-                "app.p20_core.runtime.execute_stub",
-                return_value={"artifact_paths": ["runs/fake_accept_state/001_WRITE.json"]},
-            ), patch(
-                "app.p20_core.runtime.read_artifact_text",
-                return_value="Scena dla testu run_state ACCEPT.",
+            with patch.dict(
+                "app.p20_core.executor.TOOLS",
+                {"WRITE": _controlled_write},
             ), patch(
                 "app.p20_core.runtime.run_canon_check",
                 side_effect=[
@@ -99,12 +103,9 @@ class TestP20RunState(unittest.TestCase):
         _assert_repo_run_absent(run_id)
         try:
             ensure_test_book_bible(book_id)
-            with patch(
-                "app.p20_core.runtime.execute_stub",
-                return_value={"artifact_paths": ["runs/fake_resume/001_WRITE.json"]},
-            ), patch(
-                "app.p20_core.runtime.read_artifact_text",
-                return_value="Scena dla testu resume.",
+            with patch.dict(
+                "app.p20_core.executor.TOOLS",
+                {"WRITE": _controlled_write},
             ), patch(
                 "app.p20_core.runtime.run_canon_check",
                 side_effect=[
@@ -152,12 +153,9 @@ class TestP20RunState(unittest.TestCase):
         try:
             ensure_test_book_bible(book_a)
             ensure_test_book_bible(book_b)
-            with patch(
-                "app.p20_core.runtime.execute_stub",
-                return_value={"artifact_paths": ["runs/fake_cross/001_WRITE.json"]},
-            ), patch(
-                "app.p20_core.runtime.read_artifact_text",
-                return_value="Scena dla testu izolacji run.",
+            with patch.dict(
+                "app.p20_core.executor.TOOLS",
+                {"WRITE": _controlled_write},
             ), patch(
                 "app.p20_core.runtime.run_canon_check",
                 side_effect=[

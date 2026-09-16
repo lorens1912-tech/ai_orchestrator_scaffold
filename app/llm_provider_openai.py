@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
+import openai
 from openai import OpenAI
-
 
 _client: Optional[OpenAI] = None
 
@@ -17,100 +18,101 @@ def _get_client() -> OpenAI:
 
 
 def _is_unsupported_param_error(e: Exception, param_name: str) -> bool:
-    s = str(e) or ""
-    # działa z realnym komunikatem: "Unsupported parameter: 'temperature' ..."
-    return f"Unsupported parameter: '{param_name}'" in s
+    # Preserve the existing temperature-only compatibility policy.
+    return f"Unsupported parameter: '{param_name}'" in (str(e) or "")
 
 
-def call_text(prompt: str, model: str, temperature: Optional[float] = None) -> Dict[str, Any]:
-    """
-    - Model jest parametrem per-call (zero zamrażania).
-    - temperature jest opcjonalne; jeśli provider je odrzuca dla danego modelu,
-      robimy DROP + RETRY i zwracamy metadane: temperature_requested/temperature_sent/dropped_params.
+def _reported(response) -> dict:
+    usage = getattr(response, "usage", None)
+    measured = {}
+    for key in ("input_tokens", "output_tokens", "total_tokens", "prompt_tokens", "completion_tokens"):
+        value = getattr(usage, key, None)
+        if type(value) is int:
+            measured[key] = value
+    return {"model": getattr(response, "model", None),
+            "model_version": getattr(response, "model_version", None),
+            "system_fingerprint": getattr(response, "system_fingerprint", None),
+            "response_id": getattr(response, "id", None),
+            "request_id": getattr(response, "_request_id", None), "usage": measured or None}
+
+
+def call_text(prompt: str, model: str, temperature: Optional[float] = None, *,
+              observer: Callable[[dict], None] | None = None) -> Dict[str, Any]:
+    """Existing transport, with an explicit per-call durable audit observer.
+
+    SENT records the exact parameter kwargs; content is represented by its hash.
+    SDK internal HTTP retries are not observable application attempts.
     """
     api_mode = (os.getenv("OPENAI_API_MODE", "responses") or "responses").strip().lower()
     c = _get_client()
-
+    api = "chat.completions" if api_mode == "chat" else "responses"
     dropped_params = []
     retried = False
-    temp_requested = temperature
-    temp_sent: Optional[float] = temperature
+    temp_sent = temperature
+    sdk_error = None
 
-    def _chat_call(with_temp: bool):
-        kwargs = dict(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-        )
+    def invoke(with_temp):
+        nonlocal sdk_error
+        kwargs = {"model": model}
+        kwargs.update({"messages": [{"role": "user", "content": prompt}]} if api_mode == "chat"
+                      else {"input": prompt})
         if with_temp and temperature is not None:
             kwargs["temperature"] = temperature
-        return c.chat.completions.create(**kwargs)
-
-    def _responses_call(with_temp: bool):
-        kwargs = dict(
-            model=model,
-            input=prompt,
-        )
-        if with_temp and temperature is not None:
-            kwargs["temperature"] = temperature
-        return c.responses.create(**kwargs)
-
-    if api_mode == "chat":
+        sent = {k: v for k, v in kwargs.items() if k not in {"input", "messages"}}
+        if observer:
+            observer({"event": "START", "api": api, "sent": sent,
+                      "content_parameter": "messages" if api_mode == "chat" else "input",
+                      "input_hash": hashlib.sha256(prompt.encode()).hexdigest(),
+                      "sdk": {"name": "openai", "version": openai.__version__,
+                              "max_retries": c.max_retries,
+                              "http_attempt_count": None, "http_retry_observability": "NOT_INSTRUMENTED"}})
         try:
-            r = _chat_call(with_temp=True)
-        except Exception as e:
-            if temperature is not None and _is_unsupported_param_error(e, "temperature"):
-                dropped_params.append("temperature")
-                retried = True
-                temp_sent = None
-                r = _chat_call(with_temp=False)
-            else:
-                raise
+            response = (c.chat.completions.create(**kwargs) if api_mode == "chat"
+                        else c.responses.create(**kwargs))
+        except BaseException as exc:
+            sdk_error = exc
+            if observer:
+                status = "INTERRUPTED" if not isinstance(exc, Exception) else "FAILED"
+                if isinstance(exc, (TimeoutError, openai.APITimeoutError)):
+                    status = "TIMEOUT"
+                observer({"event": "END", "status": status, "remote_outcome": "UNKNOWN",
+                          "error_type": type(exc).__name__,
+                          "error_code": "UNSUPPORTED_TEMPERATURE" if _is_unsupported_param_error(exc, "temperature")
+                          else "TRANSPORT_ERROR"})
+            raise
+        if observer:
+            observer({"event": "END", "status": "RECEIVED", "remote_outcome": "RESPONSE_RECEIVED",
+                      "provider_reported": _reported(response)})
+        return response
 
-        message = r.choices[0].message
-        text = message.content or ""
-        refused = getattr(message, "refusal", None) is not None
-        return {
-            "text": text,
-            "refused": refused,
-            "provider_returned_model": getattr(r, "model", None),
-            "raw_type": "chat.completions",
-            "params": {"temperature_requested": temp_requested, "temperature_sent": temp_sent},
-            "dropped_params": dropped_params,
-            "retried": retried,
-        }
-
-    # responses
     try:
-        r = _responses_call(with_temp=True)
-    except Exception as e:
-        if temperature is not None and _is_unsupported_param_error(e, "temperature"):
+        r = invoke(True)
+    except Exception as exc:
+        if exc is sdk_error and temperature is not None and _is_unsupported_param_error(exc, "temperature"):
             dropped_params.append("temperature")
             retried = True
             temp_sent = None
-            r = _responses_call(with_temp=False)
+            r = invoke(False)
         else:
             raise
 
-    output_text = getattr(r, "output_text", None)
-    text = output_text or ""
-    refused = False
-    try:
-        for item in r.output or []:
-            for ctn in (getattr(item, "content", None) or []):
-                if (getattr(ctn, "type", None) == "refusal"
-                        or getattr(ctn, "refusal", None) is not None):
+    if api_mode == "chat":
+        message = r.choices[0].message
+        text = message.content or ""
+        refused = getattr(message, "refusal", None) is not None
+    else:
+        output_text = getattr(r, "output_text", None)
+        text = output_text or ""
+        refused = False
+        for item in getattr(r, "output", None) or []:
+            for content in getattr(item, "content", None) or []:
+                if (getattr(content, "type", None) == "refusal"
+                        or getattr(content, "refusal", None) is not None):
                     refused = True
-                if not output_text and hasattr(ctn, "text") and ctn.text:
-                    text += ctn.text
-    except Exception:
-        pass
-
-    return {
-        "text": text,
-        "refused": refused,
-        "provider_returned_model": getattr(r, "model", None),
-        "raw_type": "responses",
-        "params": {"temperature_requested": temp_requested, "temperature_sent": temp_sent},
-        "dropped_params": dropped_params,
-        "retried": retried,
-    }
+                if not output_text and getattr(content, "text", None):
+                    text += content.text
+    # Original metadata keys/values remain unchanged: they participate in
+    # existing frozen research and extraction evidence. Telemetry is separate.
+    return {"text": text, "refused": refused, "provider_returned_model": getattr(r, "model", None),
+            "raw_type": api, "params": {"temperature_requested": temperature, "temperature_sent": temp_sent},
+            "dropped_params": dropped_params, "retried": retried}

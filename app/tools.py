@@ -401,7 +401,7 @@ def _strict_memory_json(text: str) -> dict:
     return result
 
 
-def memory_integrity_provider(payload):
+def memory_integrity_provider(payload, *, invocation_audit=None):
     """Adapt a persisted P20 ContextPackage to the existing OpenAI text transport."""
     from app.p20_core.context_builder import ContextPackage
     from app.p20_core.memory_extraction import validate_memory_model_result
@@ -469,7 +469,9 @@ def memory_integrity_provider(payload):
     )
     try:
         from app.llm_provider_openai import call_text
-        transport = call_text(prompt=prompt, model=effective_model, temperature=None)
+        transport = (invocation_audit.call(prompt=prompt, model=effective_model, temperature=None)
+                     if invocation_audit is not None else
+                     call_text(prompt=prompt, model=effective_model, temperature=None))
     except Exception as exc:
         # SDK/configuration exceptions are normalized so audit never persists
         # provider messages that may echo input or credentials.

@@ -44,7 +44,7 @@ def pipeline(isolated_agentpro_storage, monkeypatch, tmp_path):
     token = read_secret(secret)
     controls = {"version": 1, "protected": False, "verdict": "ACCEPT", "calls": [], "records": None}
 
-    def provider(payload):
+    def provider(payload, *, invocation_audit=None):
         controls["calls"].append(payload)
         if payload["role"] == "EXTRACTOR":
             record = fact(project=payload["project_id"], source=payload["source"],
@@ -384,7 +384,7 @@ def test_actual_impact_path_and_unavailable_derived_rebuild(pipeline):
 def test_unconfigured_provider_fails_explicitly(pipeline, monkeypatch):
     from app.llm_client import run_completion
     client, repo, _, _, _, _ = pipeline
-    monkeypatch.setattr(tools, "memory_integrity_provider", lambda payload: run_completion(payload=payload))
+    monkeypatch.setattr(tools, "memory_integrity_provider", lambda payload, **kwargs: run_completion(payload=payload))
     result = step(client)["canonical_change"]
     assert result == {"status": "FAILED", "canonical_commit": False, "reason": "RuntimeError"}
     assert repo.list_structured_memory_records() == {}

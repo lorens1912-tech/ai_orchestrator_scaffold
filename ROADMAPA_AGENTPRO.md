@@ -247,7 +247,7 @@ niezależna weryfikacja i kontrolowana promocja PROJECT przez istniejący
 Canonical Change; pełna regresja 657 passed, 1 skipped.
 Dowody i ograniczenia formatów: [raport GAP-015](docs/GAP015_REPORT.md).
 API i użycie: [Research](docs/GAP015_RESEARCH.md).
-Live adapter smoke = NOT RUN. GAP-016 nie został rozpoczęty.
+Live adapter smoke = NOT RUN. Bieżący status GAP-016 znajduje się w ETAPIE 11.
 
 Zakres:
 - ResearchRecord,
@@ -265,6 +265,15 @@ Zakres:
 ======================================================================
 ETAP 11 — ROLE I ROUTER MODELI
 ======================================================================
+
+STATUS OPERACYJNY (2026-09-16): GAP-016 = CLOSED.
+Wdrożono wersjonowaną proweniencję aktywnych wywołań P20: requested/resolved/
+sent/provider-reported, parametry i próby SDK, trwałość/recovery w project.db,
+kontekst, audit/artifacts/API i bezpieczne odtwarzanie wyniku.
+Zachowano reguły modeli, authority oraz zamrożone hashe; odmowa STRICT jest
+egzekwowana przed SDK. Pełna regresja: 695 passed, 1 skipped.
+Kontrakt i dowody: docs/GAP016_MODEL_PROVENANCE.md, docs/GAP016_REPORT.md.
+LIVE ADAPTER SMOKE = NOT RUN. GAP-017 = NOT STARTED.
 
 CEL:
 Ustabilizować role i wymienność modeli.

@@ -30,7 +30,7 @@ def _agent_input_error_status(exc: ValueError) -> int | None:
         or detail.startswith("Unknown team_id:")
     ):
         return 400
-    if detail.startswith("TEAM_OVERRIDE_NOT_ALLOWED:"):
+    if detail.startswith("TEAM_OVERRIDE_NOT_ALLOWED:") or detail == "MODEL_POLICY_DENIED":
         return 422
     return None
 

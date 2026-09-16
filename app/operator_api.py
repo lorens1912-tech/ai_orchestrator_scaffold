@@ -307,8 +307,19 @@ def research_source(project_id: str, body: ResearchSourceRequest, principal=Depe
 @router.get("/projects/{project_id}/research/records/{research_id}")
 def read_research(project_id: str, research_id: str, principal=Depends(authenticated_operator)):
     from app.p20_core.research import research_context
-    return _research_operation(principal, lambda operator, registry: research_context(
-        _project(registry, project_id), research_id, include_sources=True))
+    def read(operator, registry):
+        repository = _project(registry, project_id)
+        result = research_context(repository, research_id, include_sources=True)
+        operations = repository.read_research_state()["operations"].values()
+        call_ids = {op.get("invocation", op.get("failure", {})).get("call_id")
+                    for op in operations if isinstance(op.get("invocation", op.get("failure", {})), dict)
+                    and op.get("request", {}).get("research_id") == research_id}
+        from app.p20_core.model_provenance import project_trace
+        result["model_provenance"] = [project_trace(trace)
+                                      for trace in repository.list_model_invocations()
+                                      if trace["operation_id"] in call_ids]
+        return result
+    return _research_operation(principal, read)
 
 
 @router.post("/projects/{project_id}/research/execute")
@@ -326,7 +337,9 @@ def execute_research(project_id: str, body: ResearchRunRequest, principal=Depend
     try:
         return run_research(repository, execution=execution,
             **body.model_dump(exclude={"run_id", "step_id", "model"}),
-            requested_model=decision.requested_model, effective_model=decision.effective_model)
+            requested_model=decision.requested_model, effective_model=decision.effective_model,
+            model_routing={**decision.provenance, "request_sources": {
+                "body": body.model_dump(include={"model"}, exclude_unset=True)}})
     except ResearchError as exc:
         raise HTTPException(422, str(exc)) from None
     except (ValueError, TypeError, KeyError, RuntimeError) as exc:

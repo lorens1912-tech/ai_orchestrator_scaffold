@@ -1306,6 +1306,48 @@ class ProjectRepository:
                 (str(key), str(value)),
             )
 
+    @contextmanager
+    def model_invocation_transaction(self, operation_id: str, *, connection=None):
+        """Short local audit transaction, or participation in an owner transaction."""
+        if connection is None:
+            self.initialize()
+            with self.connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                with self.model_invocation_transaction(operation_id, connection=conn) as state:
+                    yield state
+            return
+        if not isinstance(operation_id, str) or not operation_id.strip():
+            raise ProjectStorageError("model operation_id required")
+        key = "model_invocation.v1:" + operation_id
+        row = connection.execute("SELECT value FROM project_metadata WHERE key=?", (key,)).fetchone()
+        state = {} if row is None else json.loads(row["value"])
+        def validate_scope():
+            if state and (state.get("project_id") != self.scope.scope_id
+                          or state.get("book_id") != self.context.book_id):
+                raise ProjectStorageError("model invocation scope mismatch")
+        validate_scope()
+        yield state
+        validate_scope()
+        if state:
+            connection.execute("INSERT INTO project_metadata(key,value) VALUES (?,?) "
+                               "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                               (key, json.dumps(state, sort_keys=True, separators=(",", ":"), allow_nan=False)))
+
+    def list_model_invocations(self, *, run_id: str | None = None) -> list[dict]:
+        self.initialize()
+        with self.connect() as conn:
+            rows = conn.execute("SELECT value FROM project_metadata "
+                                "WHERE substr(key,1,20)='model_invocation.v1:' ORDER BY key").fetchall()
+        result = []
+        for row in rows:
+            item = json.loads(row["value"])
+            if (item.get("project_id") != self.scope.scope_id
+                    or item.get("book_id") != self.context.book_id):
+                raise ProjectStorageError("model invocation scope mismatch")
+            if run_id is None or item["run_id"] == run_id:
+                result.append(item)
+        return result
+
     def set_scoped_metadata(self, scope: StorageScope, key: str, value: str) -> None:
         self.require_scope(scope)
         self.set_metadata(key, value)
@@ -1370,13 +1412,13 @@ class ProjectRepository:
         return state
 
     @contextmanager
-    def research_transaction(self):
+    def research_transaction(self, *, include_writer: bool = False):
         """Project-local research, immutable evidence and operation receipts."""
         self.initialize()
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             state = self.read_research_state(conn)
-            yield state
+            yield (state, conn) if include_writer else state
             self.write_research_state(conn, state)
 
     def write_research_state(self, connection, state):

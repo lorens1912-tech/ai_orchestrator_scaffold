@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Set, Tuple
 
 from app.runtime_overrides import get_forced_model
@@ -47,9 +47,12 @@ class ModelDecision:
     source: str
     allowlist_ok: bool
     note: str
+    provenance: dict = field(default_factory=dict, compare=False, repr=False)
 
     def to_dict(self):
-        return asdict(self)
+        # Preserve the existing public routing contract.
+        return {key: getattr(self, key) for key in
+                ("requested_model", "effective_model", "source", "allowlist_ok", "note")}
 
 
 def resolve_model(
@@ -61,6 +64,7 @@ def resolve_model(
     Precedencja:
       body > header > preset > force_file > env_force > default
     """
+    raw_inputs = {"body": requested_model, "header": header_model, "preset": preset_model}
     requested_model = _norm(requested_model)
     header_model = _norm(header_model)
     preset_model = _norm(preset_model)
@@ -68,6 +72,18 @@ def resolve_model(
     env_force = _norm(os.getenv("WRITE_MODEL_FORCE"))
     force_file = _norm(get_forced_model())
     default = _norm(_default_model()) or "gpt-4.1-mini"
+
+    allow = _allowlist()
+    policy_mode = _policy_mode()
+
+    def decision(**values):
+        from app.p20_core.model_provenance import fingerprint
+        policy = {"version": "model_policy.v1", "mode": policy_mode,
+                  "allowlist": None if allow is None else sorted(allow),
+                  "default": default, "force_file": force_file, "env_force": env_force}
+        return ModelDecision(**values, provenance={"schema_version": 1,
+            "requested": raw_inputs, "decision": dict(values), "policy": policy,
+            "policy_hash": fingerprint(policy)})
 
     chosen: Optional[str] = None
     source = ""
@@ -92,9 +108,8 @@ def resolve_model(
         chosen = default
         source = "default"
 
-    allow = _allowlist()
     if allow is None:
-        return ModelDecision(
+        return decision(
             requested_model=req,
             effective_model=chosen,
             source=source,
@@ -103,7 +118,7 @@ def resolve_model(
         )
 
     if chosen in allow:
-        return ModelDecision(
+        return decision(
             requested_model=req,
             effective_model=chosen,
             source=source,
@@ -112,9 +127,9 @@ def resolve_model(
         )
 
     # chosen spoza allowlist
-    mode = _policy_mode()
+    mode = policy_mode
     if mode == "STRICT":
-        return ModelDecision(
+        return decision(
             requested_model=req,
             effective_model=default,
             source="blocked",
@@ -124,7 +139,7 @@ def resolve_model(
 
     # PERMISSIVE => fallback
     fallback = default if default in allow else sorted(list(allow))[0]
-    return ModelDecision(
+    return decision(
         requested_model=req,
         effective_model=fallback,
         source="blocked",

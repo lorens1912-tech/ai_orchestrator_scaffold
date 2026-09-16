@@ -692,7 +692,8 @@ def process_accepted_artifact(*, execution_context, text: str, source_trace: dic
             extractor = invoke_memory_model(execution_context=replace(execution_context,
                 step_id=execution_context.step_id + f":canonical:{operation}:extract:{attempt}", technical_retry=False),
                 role="EXTRACTOR", requested_model=requested_model, effective_model=effective_model,
-                source=source, candidate=None, context_sources=context_sources)
+                source=source, candidate=None, context_sources=context_sources,
+                model_routing=source_trace.get("model_routing"))
             with _pipeline_transaction(
                 repository, operation, series_access=series_access,
             ) as state:
@@ -706,7 +707,8 @@ def process_accepted_artifact(*, execution_context, text: str, source_trace: dic
             verifier = invoke_memory_model(execution_context=replace(execution_context,
                 step_id=execution_context.step_id + f":canonical:{operation}:verify:{attempt}", technical_retry=False),
                 role="VERIFIER", requested_model=requested_model, effective_model=effective_model,
-                source=source, candidate=candidate.to_dict(), context_sources=context_sources)
+                source=source, candidate=candidate.to_dict(), context_sources=context_sources,
+                model_routing=source_trace.get("model_routing"))
             with _pipeline_transaction(
                 repository, operation, series_access=series_access,
             ) as state:
@@ -1420,6 +1422,12 @@ def write_audit(
             "context_package_id"
         )
         audit_doc["context_hash"] = context_packages[-1].get("context_hash")
+
+    if project_id and domain_book_id:
+        from app.p20_core.model_provenance import public_trace
+        from app.p20_core.project_repository import ProjectRepository, StorageResolver
+        repository = ProjectRepository(StorageResolver().resolve_project(project_id, book_id=domain_book_id))
+        audit_doc["model_provenance"] = public_trace(repository, run_id=run_id)
 
     append_jsonl(
         book_dir / "audit" / "audit_log.jsonl",

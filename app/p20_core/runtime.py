@@ -330,6 +330,7 @@ def _context_traces(artifact_paths: List[str]) -> List[Dict[str, Any]]:
             "context_hash": context_hash,
             "requested_model": doc.get("requested_model"),
             "effective_model": doc.get("effective_model"),
+            "model_routing": doc.get("model_routing"),
         })
     return traces
 
@@ -807,6 +808,10 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             state["book_bible"] = dict(book_bible_binding)
         if chapter_lineage is not None:
             state["chapter_lineage"] = dict(chapter_lineage)
+        from app.p20_core.model_provenance import public_trace
+        provenance_repository = ProjectRepository(StorageResolver().resolve_project(
+            execution_context.project_id, book_id=execution_context.book_id))
+        state["model_provenance"] = public_trace(provenance_repository, run_id=run_id)
         _attach_execution_trace(state, execution_context, context_traces)
         json_write(ensure_run_dirs(run_id) / "run_state.json", state)
         update_latest_run_marker(

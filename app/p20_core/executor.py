@@ -52,7 +52,7 @@ class MemoryModelInvocationError(RuntimeError):
 def invoke_memory_model(*, execution_context: ProjectExecutionContext, role: str,
                         requested_model: str | None, effective_model: str,
                         source: dict, candidate: dict | None,
-                        context_sources: dict) -> dict:
+                        context_sources: dict, model_routing: dict | None = None) -> dict:
     """Internal integrity call through the same ContextBuilder/provider boundary.
 
     These are internal roles, not additional user-selectable execution modes.
@@ -81,9 +81,17 @@ def invoke_memory_model(*, execution_context: ProjectExecutionContext, role: str
     metadata = {"context_package_id": package.context_package_id, "context_hash": package.context_hash,
                 "requested_model": requested_model, "effective_model": effective_model}
     provider = "P20_PROVIDER_BOUNDARY"
+    from app.p20_core.model_provenance import ModelInvocationAudit
+    audit_repository = ProjectRepository(StorageResolver().resolve_project(
+        execution_context.project_id, book_id=execution_context.book_id))
+    invocation_audit = ModelInvocationAudit(audit_repository, execution_context, package,
+        role=role, mode="MEMORY_" + role, requested_model=requested_model,
+        routing=model_routing,
+        artifact_refs=[source[k] for k in ("artifact_ref", "accepted_step_artifact") if k in source],
+        scope="SERIES" if "series_metadata:" in str(source.get("artifact_ref", "")) else "PROJECT")
     try:
         from app.tools import memory_integrity_provider
-        provider_result = memory_integrity_provider(payload)
+        provider_result = memory_integrity_provider(payload, invocation_audit=invocation_audit)
         transport = None
         if isinstance(provider_result, dict) and set(provider_result) == {"result", "transport"}:
             result = provider_result["result"]
@@ -99,7 +107,12 @@ def invoke_memory_model(*, execution_context: ProjectExecutionContext, role: str
                 raise ValueError("memory transport metadata binding mismatch")
             metadata.update(transport)
             provider = transport["provider"]
+        invocation_audit.validated(quality=(
+            {key: result[key] for key in ("precision_status", "completeness_status") if key in result}
+            or None))
     except (ValueError, TypeError, KeyError, RuntimeError) as exc:
+        invocation_audit.validated(status="INVALID", failure_phase=(
+            getattr(exc, "audit_metadata", {}) or {}).get("failure_phase"))
         failure_reason = type(exc).__name__
         transport_audit = getattr(exc, "audit_metadata", None)
         if (isinstance(transport_audit, dict)
@@ -549,6 +562,7 @@ def _models_for_step(
     runtime_overrides: Dict[str, Any],
     tool_input: Dict[str, Any],
     team: Dict[str, Any],
+    audit: dict | None = None,
 ) -> Tuple[Optional[str], str]:
     requested = (
         step_overrides.get("model")
@@ -560,6 +574,16 @@ def _models_for_step(
         str(requested) if requested else None,
         preset_model=str(team.get("model") or "") or None,
     )
+    if audit is not None:
+        audit.update(decision.provenance)
+        audit["request_sources"] = {
+            "step": {k: step_overrides[k] for k in ("model",) if k in step_overrides},
+            "runtime": {k: runtime_overrides[k] for k in ("model",) if k in runtime_overrides},
+            "payload": {k: tool_input[k] for k in ("requested_model", "model") if k in tool_input},
+            "team": {k: team[k] for k in ("model",) if k in team},
+        }
+    if not decision.allowlist_ok and os.getenv("MODEL_POLICY_MODE", "PERMISSIVE").upper() == "STRICT":
+        raise ValueError("MODEL_POLICY_DENIED")
     requested_identity = str(requested or team.get("model") or "").strip() or None
     return requested_identity, decision.effective_model
 
@@ -711,11 +735,13 @@ def execute_p20(*args, **kwargs) -> List[str]:
             or tool_input.get("requested_policy")
             or team.get("policy_id")
         )
+        model_routing = {}
         requested_model, effective_model = _models_for_step(
             step_overrides=step_overrides,
             runtime_overrides=runtime_overrides,
             tool_input=tool_input,
             team=team,
+            audit=model_routing,
         )
 
         team_id = str(team.get("id") or team.get("team_id") or "").strip()
@@ -762,6 +788,14 @@ def execute_p20(*args, **kwargs) -> List[str]:
             tool_input["context_package_id"] = context_package.context_package_id
             tool_input["context_hash"] = context_package.context_hash
             tool_input["_context_package"] = context_package.to_dict()
+            route_repo = ProjectRepository(StorageResolver().resolve_project(
+                execution_context.project_id, book_id=execution_context.book_id))
+            route_key = "model_route.v1:" + context_package.context_package_id
+            pinned_route = route_repo.get_metadata(route_key)
+            if pinned_route is None:
+                route_repo.set_metadata(route_key, json.dumps(model_routing, sort_keys=True))
+            else:
+                model_routing = json.loads(pinned_route)
 
         if mode_id not in TOOLS:
             result: Dict[str, Any] = {"ok": False, "error": f"UNKNOWN_MODE_TOOL: {mode_id}", "tool": mode_id}
@@ -866,6 +900,7 @@ def execute_p20(*args, **kwargs) -> List[str]:
             "preset_id": preset_id or None,
             "preset_step": step_overrides if step_overrides else None,
             "runtime_override": runtime_overrides if runtime_overrides else None,
+            "model_routing": model_routing,
             "input": tool_input,
             "result": result,
             "created_at": _iso(),
@@ -873,6 +908,11 @@ def execute_p20(*args, **kwargs) -> List[str]:
         if style_trace:
             step_doc["adaptive_style"] = style_trace
         if step_execution_context is not None and context_package is not None:
+            from app.p20_core.model_provenance import public_trace
+            step_doc["model_provenance"] = [
+                trace for trace in public_trace(route_repo, run_id=run_id)
+                if trace["step_id"] == step_execution_context.step_id
+                or trace["step_id"].startswith(step_execution_context.step_id + ":")]
             step_doc.update({
                 "project_id": step_execution_context.project_id,
                 "book_id": step_execution_context.book_id,

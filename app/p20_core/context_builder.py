@@ -207,8 +207,29 @@ def _context_package_semantic_payload(values: Mapping[str, Any]) -> dict[str, An
         "style_version": values["style_version"],
         "memory_snapshot_id": values["memory_snapshot_id"],
         "graph_version": values["graph_version"],
-        "included_items": [item.to_dict() for item in values["included_items"]],
+        "included_items": [
+            _context_item_semantic_payload(item) for item in values["included_items"]
+        ],
     }
+
+
+def _context_item_semantic_payload(item: Any) -> dict[str, Any]:
+    """Keep hashes of persisted pre-F-007 packages backwards compatible."""
+    payload = item.to_dict()
+    if payload.get("logical_identity") is None:
+        payload.pop("logical_identity", None)
+    if not payload.get("provenance"):
+        payload.pop("provenance", None)
+    if not payload.get("reasons"):
+        payload.pop("reasons", None)
+    return payload
+
+
+def _logical_record_type(entity_type: str) -> str:
+    for prefix in ("SERIES_CANON:", "SERIES_MEMORY:", "CONFLICT:"):
+        if entity_type.startswith(prefix):
+            return entity_type[len(prefix):]
+    return entity_type
 
 
 class _Serializable:
@@ -246,6 +267,61 @@ class SemanticProvenance(_Serializable):
             self.source_version, (str, int)
         ):
             raise ContextBuilderError("source_version must be text or integer")
+
+
+@dataclass(frozen=True)
+class ContextProvenance(_Serializable):
+    source_scope: str
+    scope_id: str
+    entity_type: str
+    layer: ContextLayer | str
+    source_version: str | int
+    content_hash: str
+    reason: str
+    mandatory: bool
+    authority: str
+    source_ref: str | None = None
+    frozen: bool | None = None
+    author_locked: bool | None = None
+    source_project_id: str | None = None
+    source_book_id: str | None = None
+
+    def __post_init__(self) -> None:
+        scope = _required_text(self.source_scope, "source_scope").upper()
+        if scope not in {"PROJECT", "SERIES"}:
+            raise ContextBuilderError("source_scope must be PROJECT or SERIES")
+        object.__setattr__(self, "source_scope", scope)
+        object.__setattr__(self, "scope_id", _domain_id(self.scope_id, "scope_id"))
+        for name in ("entity_type", "content_hash", "reason", "authority"):
+            object.__setattr__(self, name, _required_text(getattr(self, name), name))
+        object.__setattr__(self, "layer", _coerce_enum(ContextLayer, self.layer, "layer"))
+        object.__setattr__(self, "source_ref", _optional_text(self.source_ref, "source_ref"))
+        if self.source_project_id is not None:
+            object.__setattr__(self, "source_project_id", _domain_id(
+                self.source_project_id,
+                "source_project_id",
+                DomainNamespace.PROJECT,
+            ))
+        if self.source_book_id is not None:
+            object.__setattr__(self, "source_book_id", _domain_id(
+                self.source_book_id,
+                "source_book_id",
+                DomainNamespace.BOOK,
+            ))
+        if isinstance(self.source_version, bool) or not isinstance(
+            self.source_version, (str, int)
+        ):
+            raise ContextBuilderError("source_version must be text or integer")
+        if not isinstance(self.mandatory, bool):
+            raise ContextBuilderError("mandatory must be boolean")
+        for name in ("frozen", "author_locked"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, bool):
+                raise ContextBuilderError(f"{name} must be boolean when supplied")
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> ContextProvenance:
+        return cls(**dict(payload))
 
 
 @dataclass(frozen=True)
@@ -400,6 +476,13 @@ class ContextCandidate:
     story_importance: int | float | None = None
     narrative_order: int | None = None
     semantic_provenance: SemanticProvenance | None = None
+    logical_record_type: str | None = None
+    logical_content_hash: str | None = None
+    authority: str | None = None
+    frozen: bool | None = None
+    author_locked: bool | None = None
+    provenance: Iterable[ContextProvenance] = ()
+    reasons: Iterable[str] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "project_id", _domain_id(
@@ -433,10 +516,53 @@ class ContextCandidate:
             self.semantic_provenance, SemanticProvenance
         ):
             raise ContextBuilderError("semantic_provenance must be SemanticProvenance")
+        logical_type = self.logical_record_type or _logical_record_type(self.entity_type)
+        object.__setattr__(
+            self, "logical_record_type", _required_text(logical_type, "logical_record_type")
+        )
+        logical_hash = self.logical_content_hash or _sha256(self.representations)
+        object.__setattr__(
+            self, "logical_content_hash", _required_text(
+                logical_hash, "logical_content_hash"
+            )
+        )
+        authority = self.authority or (
+            "CANON" if self.layer == ContextLayer.CANON else "MEMORY"
+        )
+        object.__setattr__(self, "authority", _required_text(authority, "authority"))
+        for name in ("frozen", "author_locked"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, bool):
+                raise ContextBuilderError(f"{name} must be boolean when supplied")
+        provenance = tuple(self.provenance)
+        if any(not isinstance(item, ContextProvenance) for item in provenance):
+            raise ContextBuilderError("provenance must contain ContextProvenance values")
+        object.__setattr__(self, "provenance", tuple(sorted(
+            provenance,
+            key=lambda item: _canonical_json(item.to_dict()),
+        )))
+        reasons = tuple(sorted(set(self.reasons or (self.reason,))))
+        if any(not isinstance(item, str) or not item for item in reasons):
+            raise ContextBuilderError("reasons must contain non-empty text")
+        object.__setattr__(self, "reasons", reasons)
 
     @property
     def key(self) -> tuple[str, str]:
         return self.entity_type, self.entity_id
+
+    @property
+    def logical_identity(self) -> str:
+        return f"{self.logical_record_type}:{self.entity_id}"
+
+    @property
+    def logical_signature(self) -> tuple[str, str, str, bool | None, bool | None]:
+        return (
+            _canonical_json(self.source_version),
+            str(self.logical_content_hash),
+            str(self.authority),
+            self.frozen,
+            self.author_locked,
+        )
 
 
 @runtime_checkable
@@ -472,6 +598,9 @@ class ContextItem(_Serializable):
     content: str
     source_ref: str | None = None
     semantic_provenance: SemanticProvenance | None = None
+    logical_identity: str | None = None
+    provenance: Iterable[ContextProvenance] = ()
+    reasons: Iterable[str] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "entity_id", _domain_id(self.entity_id, "entity_id"))
@@ -492,6 +621,21 @@ class ContextItem(_Serializable):
             object.__setattr__(self, "score_breakdown", MappingProxyType(breakdown))
         if self.content_hash != _sha256(self.content):
             raise ContextBuilderError("context item content_hash does not match content")
+        if self.logical_identity is not None:
+            object.__setattr__(self, "logical_identity", _required_text(
+                self.logical_identity, "logical_identity"
+            ))
+        provenance = tuple(self.provenance)
+        if any(not isinstance(item, ContextProvenance) for item in provenance):
+            raise ContextBuilderError("provenance must contain ContextProvenance values")
+        object.__setattr__(self, "provenance", tuple(sorted(
+            provenance,
+            key=lambda item: _canonical_json(item.to_dict()),
+        )))
+        reasons = tuple(sorted(set(self.reasons)))
+        if any(not isinstance(item, str) or not item for item in reasons):
+            raise ContextBuilderError("reasons must contain non-empty text")
+        object.__setattr__(self, "reasons", reasons)
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> ContextItem:
@@ -499,6 +643,49 @@ class ContextItem(_Serializable):
         provenance = data.get("semantic_provenance")
         if provenance is not None:
             data["semantic_provenance"] = SemanticProvenance(**provenance)
+        data["provenance"] = tuple(
+            ContextProvenance.from_dict(item) for item in data.get("provenance", ())
+        )
+        return cls(**data)
+
+
+@dataclass(frozen=True)
+class DeduplicationTraceEntry(_Serializable):
+    action: str
+    logical_identity: str
+    candidate_refs: Iterable[str]
+    final_item_refs: Iterable[str]
+    provenance: Iterable[ContextProvenance]
+    reasons: Iterable[str]
+    mandatory_preserved: bool
+    mandatory_promoted: bool
+    not_merged_reasons: Iterable[str] = ()
+
+    def __post_init__(self) -> None:
+        for name in ("action", "logical_identity"):
+            object.__setattr__(self, name, _required_text(getattr(self, name), name))
+        for name in ("candidate_refs", "final_item_refs", "reasons", "not_merged_reasons"):
+            values = tuple(sorted(set(getattr(self, name))))
+            if any(not isinstance(item, str) or not item for item in values):
+                raise ContextBuilderError(f"{name} must contain non-empty text")
+            object.__setattr__(self, name, values)
+        provenance = tuple(self.provenance)
+        if any(not isinstance(item, ContextProvenance) for item in provenance):
+            raise ContextBuilderError("provenance must contain ContextProvenance values")
+        object.__setattr__(self, "provenance", tuple(sorted(
+            provenance,
+            key=lambda item: _canonical_json(item.to_dict()),
+        )))
+        for name in ("mandatory_preserved", "mandatory_promoted"):
+            if not isinstance(getattr(self, name), bool):
+                raise ContextBuilderError(f"{name} must be boolean")
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> DeduplicationTraceEntry:
+        data = dict(payload)
+        data["provenance"] = tuple(
+            ContextProvenance.from_dict(item) for item in data.get("provenance", ())
+        )
         return cls(**data)
 
 
@@ -511,6 +698,7 @@ class SelectionSummary(_Serializable):
     top_rejected: Iterable[Mapping[str, Any]]
     ranking_statistics: Mapping[str, float | int | None]
     semantic_retrieval_used: bool
+    deduplication_trace: Iterable[DeduplicationTraceEntry] = ()
 
     def __post_init__(self) -> None:
         for name in ("candidate_count", "selected_count", "excluded_count"):
@@ -524,10 +712,24 @@ class SelectionSummary(_Serializable):
         ))
         if not isinstance(self.semantic_retrieval_used, bool):
             raise ContextBuilderError("semantic_retrieval_used must be boolean")
+        trace = tuple(self.deduplication_trace)
+        if any(not isinstance(item, DeduplicationTraceEntry) for item in trace):
+            raise ContextBuilderError(
+                "deduplication_trace must contain DeduplicationTraceEntry values"
+            )
+        object.__setattr__(self, "deduplication_trace", tuple(sorted(
+            trace,
+            key=lambda item: (item.logical_identity, item.action, item.candidate_refs),
+        )))
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> SelectionSummary:
-        return cls(**dict(payload))
+        data = dict(payload)
+        data["deduplication_trace"] = tuple(
+            DeduplicationTraceEntry.from_dict(item)
+            for item in data.get("deduplication_trace", ())
+        )
+        return cls(**data)
 
 
 @dataclass(frozen=True)
@@ -763,7 +965,7 @@ class ContextBuilder:
 
         # This value is fixed before any repository, graph, series, or semantic retrieval.
         available_tokens = self._calculate_budget(policy)
-        candidates, semantic_used = self._collect_candidates(
+        candidates, semantic_used, deduplication_trace = self._collect_candidates(
             request, policy, profile, series_access
         )
         items, summary = self._select(
@@ -773,6 +975,7 @@ class ContextBuilder:
             profile=profile,
             available_tokens=available_tokens,
             semantic_used=semantic_used,
+            deduplication_trace=deduplication_trace,
         )
         package = ContextPackage.create(
             context_package_id=request.context_package_id,
@@ -844,7 +1047,11 @@ class ContextBuilder:
         policy: ContextPolicy,
         profile: ContextProfile,
         series_access: SeriesAccessContext | None,
-    ) -> tuple[tuple[ContextCandidate, ...], bool]:
+    ) -> tuple[
+        tuple[ContextCandidate, ...],
+        bool,
+        tuple[DeduplicationTraceEntry, ...],
+    ]:
         candidates: dict[tuple[str, str], ContextCandidate] = {}
         for candidate in request.direct_candidates:
             self._add_candidate(candidates, candidate, request.project_id)
@@ -892,20 +1099,51 @@ class ContextBuilder:
             summary = payload.get("summary")
             if isinstance(summary, str) and summary.strip():
                 representations[RepresentationType.SUMMARY] = summary.strip()
+            source_version = payload.get("version", 1)
+            source_ref = self._memory_source_ref(payload)
+            layer = _memory_layer(record_type)
+            logical_hash = _sha256(payload)
+            frozen = payload.get("frozen")
+            author_locked = payload.get("author_locked")
             self._add_candidate(
                 candidates,
                 ContextCandidate(
                     project_id=request.project_id,
                     entity_type=record_type,
                     entity_id=record_id,
-                    layer=_memory_layer(record_type),
+                    layer=layer,
                     reason=reason,
                     representations=representations,
-                    source_version=payload.get("version", 1),
-                    source_ref=self._memory_source_ref(payload),
+                    source_version=source_version,
+                    source_ref=source_ref,
                     confidence=payload.get("confidence"),
                     story_importance=importance,
                     narrative_order=payload.get("narrative_order"),
+                    logical_record_type=record_type,
+                    logical_content_hash=logical_hash,
+                    authority="MEMORY",
+                    frozen=frozen if isinstance(frozen, bool) else None,
+                    author_locked=(
+                        author_locked if isinstance(author_locked, bool) else None
+                    ),
+                    provenance=(ContextProvenance(
+                        source_scope="PROJECT",
+                        scope_id=request.project_id,
+                        entity_type=record_type,
+                        layer=layer,
+                        source_version=source_version,
+                        content_hash=logical_hash,
+                        reason=reason,
+                        mandatory=False,
+                        authority="MEMORY",
+                        source_ref=source_ref,
+                        frozen=frozen if isinstance(frozen, bool) else None,
+                        author_locked=(
+                            author_locked if isinstance(author_locked, bool) else None
+                        ),
+                        source_project_id=request.project_id,
+                        source_book_id=request.book_id,
+                    ),),
                 ),
                 request.project_id,
             )
@@ -949,25 +1187,27 @@ class ContextBuilder:
                 and candidate.layer != ContextLayer.SEMANTIC
             )
             layer = ContextLayer.MUST_INCLUDE if is_required_id else candidate.layer
-            reason = (
-                "SceneContract mandatory reference"
-                if is_required_id
-                else candidate.reason
-            )
             if candidate.layer == ContextLayer.CONFLICT:
                 representations = {
                     RepresentationType.WARNING: self._conflict_warning(candidate)
                 }
             else:
                 representations = candidate.representations
+            effective_reason = (
+                "SceneContract mandatory reference"
+                if is_required_id
+                else candidate.reason
+            )
             normalized.append(replace(
                 candidate,
                 mandatory=mandatory,
                 layer=layer,
-                reason=reason,
+                reason=effective_reason,
                 representations=representations,
+                reasons=tuple(sorted(set(candidate.reasons + (effective_reason,)))),
             ))
-        return tuple(normalized), semantic_used
+        deduplicated, trace = self._deduplicate_project_series(tuple(normalized))
+        return deduplicated, semantic_used, trace
 
     @staticmethod
     def _memory_source_ref(payload: Mapping[str, Any]) -> str | None:
@@ -1004,10 +1244,250 @@ class ContextBuilder:
         candidates[candidate.key] = replace(
             existing,
             mandatory=existing.mandatory or candidate.mandatory,
+            reason="; ".join(sorted(set(existing.reasons + candidate.reasons))),
+            reasons=tuple(sorted(set(existing.reasons + candidate.reasons))),
+            provenance=tuple(sorted(
+                set(existing.provenance + candidate.provenance),
+                key=lambda item: _canonical_json(item.to_dict()),
+            )),
             graph_proximity=max(
                 value for value in (existing.graph_proximity, candidate.graph_proximity, 0)
             ),
         )
+
+    @staticmethod
+    def _candidate_trace_ref(candidate: ContextCandidate) -> str:
+        scopes = ",".join(
+            f"{item.source_scope}:{item.scope_id}" for item in candidate.provenance
+        ) or f"PROJECT:{candidate.project_id}"
+        return (
+            f"{scopes}|{candidate.entity_type}:{candidate.entity_id}"
+            f"|version={_canonical_json(candidate.source_version)}"
+            f"|hash={candidate.logical_content_hash}"
+            f"|authority={candidate.authority}"
+            f"|frozen={_canonical_json(candidate.frozen)}"
+            f"|author_locked={_canonical_json(candidate.author_locked)}"
+        )
+
+    @classmethod
+    def _merge_exact_candidates(
+        cls,
+        candidates: tuple[ContextCandidate, ...],
+    ) -> ContextCandidate:
+        layer_rank = {
+            layer: index for index, layer in enumerate(STRUCTURED_FIRST_LAYER_ORDER)
+        }
+
+        def representative_key(candidate: ContextCandidate) -> tuple[Any, ...]:
+            scopes = {item.source_scope for item in candidate.provenance}
+            scope_rank = 0 if "PROJECT" in scopes else 1 if "SERIES" in scopes else 2
+            return (
+                scope_rank,
+                layer_rank[candidate.layer],
+                candidate.entity_type,
+                candidate.entity_id,
+                _canonical_json(candidate.representations),
+                candidate.source_ref or "",
+            )
+
+        representative = min(candidates, key=representative_key)
+        provenance = tuple(sorted(
+            {item for candidate in candidates for item in candidate.provenance},
+            key=lambda item: _canonical_json(item.to_dict()),
+        ))
+        reasons = tuple(sorted(
+            {reason for candidate in candidates for reason in candidate.reasons}
+        ))
+        return replace(
+            representative,
+            mandatory=any(candidate.mandatory for candidate in candidates),
+            reason="; ".join(reasons),
+            reasons=reasons,
+            provenance=provenance,
+        )
+
+    @staticmethod
+    def _variant_ref(candidate: ContextCandidate) -> str:
+        return (
+            f"{candidate.entity_type}:{candidate.entity_id}"
+            f"@{_canonical_json(candidate.source_version)}"
+            f":{candidate.logical_content_hash}"
+            f":{candidate.authority}"
+            f":{_canonical_json(candidate.frozen)}"
+            f":{_canonical_json(candidate.author_locked)}"
+        )
+
+    @classmethod
+    def _deduplicate_project_series(
+        cls,
+        candidates: tuple[ContextCandidate, ...],
+    ) -> tuple[tuple[ContextCandidate, ...], tuple[DeduplicationTraceEntry, ...]]:
+        groups: dict[str, list[ContextCandidate]] = {}
+        for candidate in candidates:
+            groups.setdefault(candidate.logical_identity, []).append(candidate)
+
+        result: list[ContextCandidate] = []
+        trace: list[DeduplicationTraceEntry] = []
+        for logical_identity in sorted(groups):
+            group = tuple(groups[logical_identity])
+            source_scopes = {
+                item.source_scope
+                for candidate in group
+                for item in candidate.provenance
+            }
+            if not {"PROJECT", "SERIES"}.issubset(source_scopes):
+                result.extend(group)
+                continue
+
+            signature_groups: dict[
+                tuple[str, str, str, bool | None, bool | None],
+                list[ContextCandidate],
+            ] = {}
+            for candidate in group:
+                signature_groups.setdefault(candidate.logical_signature, []).append(candidate)
+
+            merged_variants: list[ContextCandidate] = []
+            for signature in sorted(signature_groups, key=_canonical_json):
+                exact_group = tuple(signature_groups[signature])
+                merged = cls._merge_exact_candidates(exact_group)
+                merged_variants.append(merged)
+                if len(exact_group) > 1:
+                    source_mandatory_values = {
+                        item.mandatory
+                        for candidate in exact_group
+                        for item in candidate.provenance
+                    }
+                    trace.append(DeduplicationTraceEntry(
+                        action="MERGED_EXACT",
+                        logical_identity=logical_identity,
+                        candidate_refs=tuple(
+                            cls._candidate_trace_ref(candidate)
+                            for candidate in exact_group
+                        ),
+                        final_item_refs=(cls._variant_ref(merged),),
+                        provenance=merged.provenance,
+                        reasons=merged.reasons,
+                        mandatory_preserved=merged.mandatory,
+                        mandatory_promoted=(
+                            merged.mandatory and False in source_mandatory_values
+                        ),
+                    ))
+
+            if len(merged_variants) == 1:
+                result.append(merged_variants[0])
+                continue
+
+            differing = []
+            dimensions = (
+                ("source_version", 0),
+                ("content_hash", 1),
+                ("authority", 2),
+                ("frozen", 3),
+                ("author_locked", 4),
+            )
+            signatures = tuple(candidate.logical_signature for candidate in merged_variants)
+            for name, index in dimensions:
+                if len({_canonical_json(signature[index]) for signature in signatures}) > 1:
+                    differing.append(f"different {name}")
+
+            conflict_reason = (
+                "unresolved PROJECT/SERIES logical record conflict: "
+                + ", ".join(differing)
+            )
+            conflict_variants = tuple(sorted(
+                (
+                    {
+                        "entity_type": candidate.entity_type,
+                        "source_version": candidate.source_version,
+                        "content_hash": candidate.logical_content_hash,
+                        "authority": candidate.authority,
+                        "frozen": candidate.frozen,
+                        "author_locked": candidate.author_locked,
+                        "provenance": [item.to_dict() for item in candidate.provenance],
+                    }
+                    for candidate in merged_variants
+                ),
+                key=_canonical_json,
+            ))
+            warning = _canonical_json({
+                "warning": "PROJECT AND SERIES CONTAIN UNRESOLVED LOGICAL RECORD VARIANTS",
+                "logical_identity": logical_identity,
+                "differences": differing,
+                "variants": conflict_variants,
+                "instruction": (
+                    "Treat all variants as unconfirmed until an author decision resolves them."
+                ),
+            })
+            conflict_provenance = tuple(sorted(
+                {
+                    item
+                    for candidate in merged_variants
+                    for item in candidate.provenance
+                },
+                key=lambda item: _canonical_json(item.to_dict()),
+            ))
+            conflict_reasons = tuple(sorted(
+                {conflict_reason}
+                | {
+                    reason
+                    for candidate in merged_variants
+                    for reason in candidate.reasons
+                }
+            ))
+            promoted_variants = tuple(
+                replace(
+                    candidate,
+                    mandatory=True,
+                    reason="; ".join(conflict_reasons),
+                    reasons=conflict_reasons,
+                )
+                for candidate in merged_variants
+            )
+            logical_type, entity_id = logical_identity.split(":", 1)
+            warning_candidate = ContextCandidate(
+                project_id=promoted_variants[0].project_id,
+                entity_type=f"CONFLICT:{logical_type}",
+                entity_id=entity_id,
+                layer=ContextLayer.CONFLICT,
+                reason=conflict_reason,
+                representations={RepresentationType.WARNING: warning},
+                source_version=f"conflict:{_sha256(conflict_variants)[:16]}",
+                mandatory=True,
+                logical_record_type=logical_type,
+                logical_content_hash=_sha256(warning),
+                authority="CONFLICT",
+                provenance=conflict_provenance,
+                reasons=conflict_reasons,
+            )
+            result.extend(promoted_variants)
+            result.append(warning_candidate)
+            trace.append(DeduplicationTraceEntry(
+                action="PRESERVED_CONFLICT",
+                logical_identity=logical_identity,
+                candidate_refs=tuple(
+                    cls._candidate_trace_ref(candidate) for candidate in group
+                ),
+                final_item_refs=tuple(
+                    cls._variant_ref(candidate)
+                    for candidate in (*promoted_variants, warning_candidate)
+                ),
+                provenance=conflict_provenance,
+                reasons=conflict_reasons,
+                mandatory_preserved=any(candidate.mandatory for candidate in group),
+                mandatory_promoted=any(not candidate.mandatory for candidate in group),
+                not_merged_reasons=tuple(differing),
+            ))
+
+        layer_rank = {
+            layer: index for index, layer in enumerate(STRUCTURED_FIRST_LAYER_ORDER)
+        }
+        result.sort(key=lambda candidate: (
+            layer_rank[candidate.layer],
+            candidate.logical_identity,
+            _canonical_json(candidate.logical_signature),
+            candidate.entity_type,
+        ))
+        return tuple(result), tuple(trace)
 
     def _apply_graph_retrieval(
         self,
@@ -1070,19 +1550,44 @@ class ContextBuilder:
         for record in records:
             is_canon = record.state_kind.value == "SERIES_CANON"
             content = record.to_json()
+            layer = ContextLayer.CANON if is_canon else ContextLayer.SERIES_MEMORY
+            authority = "CANON" if is_canon else "MEMORY"
+            reason = "authorized Series Scope state"
+            logical_hash = _sha256(record.state)
             candidate = ContextCandidate(
                 project_id=request.project_id,
                 entity_type=f"{record.state_kind.value}:{record.record_type}",
                 entity_id=str(record.record_id),
-                layer=ContextLayer.CANON if is_canon else ContextLayer.SERIES_MEMORY,
-                reason="authorized Series Scope state",
+                layer=layer,
+                reason=reason,
                 representations={RepresentationType.STRUCTURED: content},
-                source_version=record.version,
+                source_version=record.source_version,
                 source_ref=record.source_ref,
                 mandatory=is_canon,
                 confidence=record.state.get("confidence"),
                 story_importance=record.state.get("importance"),
                 narrative_order=record.state.get("narrative_order"),
+                logical_record_type=record.record_type,
+                logical_content_hash=logical_hash,
+                authority=authority,
+                frozen=record.frozen,
+                author_locked=record.author_locked,
+                provenance=(ContextProvenance(
+                    source_scope="SERIES",
+                    scope_id=request.series_id,
+                    entity_type=f"{record.state_kind.value}:{record.record_type}",
+                    layer=layer,
+                    source_version=record.source_version,
+                    content_hash=logical_hash,
+                    reason=reason,
+                    mandatory=is_canon,
+                    authority=authority,
+                    source_ref=record.source_ref,
+                    frozen=record.frozen,
+                    author_locked=record.author_locked,
+                    source_project_id=str(record.source_project_id),
+                    source_book_id=str(record.source_book_id),
+                ),),
             )
             self._add_candidate(candidates, candidate, request.project_id)
 
@@ -1189,6 +1694,9 @@ class ContextBuilder:
                 content=content,
                 source_ref=candidate.source_ref,
                 semantic_provenance=candidate.semantic_provenance,
+                logical_identity=candidate.logical_identity,
+                provenance=candidate.provenance,
+                reasons=candidate.reasons,
             ))
         if not result:
             raise ContextBuilderError(
@@ -1205,6 +1713,7 @@ class ContextBuilder:
         profile: ContextProfile,
         available_tokens: int,
         semantic_used: bool,
+        deduplication_trace: tuple[DeduplicationTraceEntry, ...],
     ) -> tuple[tuple[ContextItem, ...], SelectionSummary]:
         priority = {layer: index for index, layer in enumerate(policy.layer_priorities)}
         eligible = [
@@ -1324,6 +1833,7 @@ class ContextBuilder:
             top_rejected=tuple(excluded[:policy.top_rejected_limit]),
             ranking_statistics=statistics,
             semantic_retrieval_used=semantic_used,
+            deduplication_trace=deduplication_trace,
         )
         return tuple(selected), summary
 
@@ -1338,9 +1848,11 @@ __all__ = [
     "ContextLayer",
     "ContextOverflowError",
     "ContextPackage",
+    "ContextProvenance",
     "ContextPolicy",
     "ContextProfile",
     "ContextRole",
+    "DeduplicationTraceEntry",
     "MissingMandatoryContextError",
     "OverflowBehavior",
     "RANKING_DIMENSIONS",

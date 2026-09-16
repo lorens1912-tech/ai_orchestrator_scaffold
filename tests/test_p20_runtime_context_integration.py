@@ -369,3 +369,239 @@ def test_technical_retry_reuses_context_package_without_retrieval(
     assert retry_step["context_hash"] == persisted.context_hash
     assert not (REPO_ROOT / "books" / book_id).exists()
     assert not (REPO_ROOT / "runs" / run_id).exists()
+
+
+def test_f007_agent_step_deduplicates_project_series_and_preserves_conflicts(
+    isolated_agentpro_storage,
+    monkeypatch,
+) -> None:
+    project_id = "PROJ-f007-api"
+    book_id = "BOOK-f007-api"
+    series_id = "SERIES-f007-api"
+    foreign_series_id = "SERIES-f007-foreign"
+    run_id = "run-f007-api"
+    exact = _fact(project_id, "FACT-f007-api-exact", book_id, "neutral exact value")
+    conflict = _fact(
+        project_id,
+        "FACT-f007-api-conflict",
+        book_id,
+        "neutral project value",
+    )
+    project_only = _fact(
+        project_id,
+        "FACT-f007-api-project-only",
+        book_id,
+        "neutral project-only value",
+    )
+    ensure_test_book_bible(book_id)
+    project = _project_repository(project_id, book_id)
+    with project.domain_transaction() as transaction:
+        for record in (exact, conflict, project_only):
+            transaction.add_structured_memory_record(record)
+
+    access = SeriesAccessContext.bind(project_id, series_id)
+    series = SeriesRepository(StorageResolver().resolve_series(series_id))
+    series.initialize()
+    series.register_member(
+        access,
+        SeriesMembershipRecord(
+            series_id=series_id,
+            project_id=project_id,
+            book_id=book_id,
+            source_ref="synthetic-f007-api-membership",
+            version=1,
+            created_at=STAMP,
+        ),
+    )
+
+    def save_series_record(
+        record: FactRecord,
+        *,
+        state: dict | None = None,
+        operation_id: str,
+    ) -> None:
+        series.save_series_memory(
+            access,
+            SeriesStateRecord(
+                series_id=series_id,
+                state_kind=SeriesStateKind.MEMORY,
+                source_project_id=project_id,
+                source_book_id=book_id,
+                record_type=record.memory_record_type,
+                record_id=record.record_id,
+                source_version=record.version,
+                source_ref=f"SCENE-{operation_id}",
+                provenance_refs=(f"SCENE-{operation_id}#artifact",),
+                transfer_reason="synthetic F-007 API proof",
+                state=state or record.to_dict(),
+                operation_id=operation_id,
+                version=record.version,
+                frozen=record.frozen,
+                author_locked=record.author_locked,
+                created_at=STAMP,
+                updated_at=STAMP,
+            ),
+        )
+
+    save_series_record(exact, operation_id="series-f007-api-exact")
+    changed_state = conflict.to_dict()
+    changed_state["object_value"] = "neutral series variant"
+    save_series_record(
+        conflict,
+        state=changed_state,
+        operation_id="series-f007-api-conflict",
+    )
+    series_only = _fact(
+        project_id,
+        "FACT-f007-api-series-only",
+        book_id,
+        "neutral series-only value",
+    )
+    save_series_record(series_only, operation_id="series-f007-api-series-only")
+
+    foreign_project_id = "PROJ-f007-foreign"
+    foreign_book_id = "BOOK-f007-foreign"
+    foreign_access = SeriesAccessContext.bind(foreign_project_id, foreign_series_id)
+    foreign_series = SeriesRepository(
+        StorageResolver().resolve_series(foreign_series_id)
+    )
+    foreign_series.initialize()
+    foreign_series.register_member(
+        foreign_access,
+        SeriesMembershipRecord(
+            series_id=foreign_series_id,
+            project_id=foreign_project_id,
+            book_id=foreign_book_id,
+            source_ref="synthetic-f007-foreign-membership",
+            version=1,
+            created_at=STAMP,
+        ),
+    )
+    foreign_record = _fact(
+        foreign_project_id,
+        "FACT-f007-api-foreign-series",
+        foreign_book_id,
+        "foreign series value",
+    )
+    foreign_series.save_series_memory(
+        foreign_access,
+        SeriesStateRecord(
+            series_id=foreign_series_id,
+            state_kind=SeriesStateKind.MEMORY,
+            source_project_id=foreign_project_id,
+            source_book_id=foreign_book_id,
+            record_type=foreign_record.memory_record_type,
+            record_id=foreign_record.record_id,
+            source_version=foreign_record.version,
+            source_ref="SCENE-f007-foreign",
+            provenance_refs=("SCENE-f007-foreign#artifact",),
+            transfer_reason="foreign series isolation proof",
+            state=foreign_record.to_dict(),
+            operation_id="series-f007-api-foreign",
+            version=1,
+            frozen=False,
+            author_locked=False,
+            created_at=STAMP,
+            updated_at=STAMP,
+        ),
+    )
+
+    foreign_project = _project_repository(foreign_project_id, foreign_book_id)
+    with foreign_project.domain_transaction() as transaction:
+        transaction.add_structured_memory_record(
+            _fact(
+                foreign_project_id,
+                "FACT-f007-api-foreign-project",
+                foreign_book_id,
+                "foreign project value",
+            )
+        )
+
+    provider_packages: list[dict] = []
+
+    def provider_adapter(payload: dict) -> dict:
+        provider_packages.append(json.loads(json.dumps(payload["_context_package"])))
+        return {
+            "tool": "WRITE",
+            "payload": {
+                "text": (
+                    "The neutral test character reviewed the synthetic records, "
+                    "noted the unresolved variant, and continued through the "
+                    "controlled test scene without changing any user data."
+                )
+            },
+        }
+
+    monkeypatch.setitem(executor.TOOLS, "WRITE", provider_adapter)
+    api_request = {
+        "mode": "WRITE",
+        "project_id": project_id,
+        "book_id": book_id,
+        "series_id": series_id,
+        "run_id": run_id,
+        "step_id": "step-f007-api",
+        "payload": {"text": "Review the neutral synthetic context."},
+    }
+    client = TestClient(app)
+    response = client.post("/agent/step", json=api_request)
+    assert response.status_code == 200, response.text
+    package = provider_packages[0]
+    items = package["included_items"]
+
+    exact_items = [item for item in items if item["entity_id"] == str(exact.fact_id)]
+    assert len(exact_items) == 1
+    assert {item["source_scope"] for item in exact_items[0]["provenance"]} == {
+        "PROJECT",
+        "SERIES",
+    }
+    project_only_item = next(
+        item for item in items if item["entity_id"] == str(project_only.fact_id)
+    )
+    series_only_item = next(
+        item for item in items if item["entity_id"] == str(series_only.fact_id)
+    )
+    assert {item["source_scope"] for item in project_only_item["provenance"]} == {
+        "PROJECT"
+    }
+    assert {item["source_scope"] for item in series_only_item["provenance"]} == {
+        "SERIES"
+    }
+    assert series_only_item["provenance"][0]["source_project_id"] == project_id
+    assert series_only_item["provenance"][0]["source_book_id"] == book_id
+    assert str(foreign_record.fact_id) not in {item["entity_id"] for item in items}
+    assert "FACT-f007-api-foreign-project" not in {
+        item["entity_id"] for item in items
+    }
+
+    conflict_items = [
+        item for item in items if item["entity_id"] == str(conflict.fact_id)
+    ]
+    assert len(conflict_items) == 3
+    assert sum(item["layer"] == "CONFLICT" for item in conflict_items) == 1
+    assert all(item["mandatory"] for item in conflict_items)
+    trace = package["selection_summary"]["deduplication_trace"]
+    assert any(
+        item["action"] == "MERGED_EXACT"
+        and item["logical_identity"] == f"FACT:{exact.fact_id}"
+        for item in trace
+    )
+    assert any(
+        item["action"] == "PRESERVED_CONFLICT"
+        and item["logical_identity"] == f"FACT:{conflict.fact_id}"
+        and "different content_hash" in item["not_merged_reasons"]
+        for item in trace
+    )
+
+    retry_request = dict(api_request)
+    retry_request["technical_retry"] = True
+    retry = client.post("/agent/step", json=retry_request)
+    assert retry.status_code == 200, retry.text
+    assert provider_packages[1] == package
+
+    reopened = _project_repository(project_id, book_id)
+    persisted = reopened.get_context_package(package["context_package_id"])
+    assert persisted is not None
+    assert persisted.to_dict() == package
+    assert persisted.context_hash == package["context_hash"]
+    assert not (REPO_ROOT / "books" / book_id).exists()
+    assert not (REPO_ROOT / "runs" / run_id).exists()

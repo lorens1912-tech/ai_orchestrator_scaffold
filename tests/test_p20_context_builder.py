@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import os
@@ -893,3 +894,308 @@ def test_context_package_serialization_is_canonical_and_round_trips(repo) -> Non
         package.to_dict(), sort_keys=True, separators=(",", ":")
     )
     assert repo._decode_context_package(serialized) == package
+
+
+def test_f007_preexisting_context_package_hash_remains_readable(repo) -> None:
+    package = build(repo, request())
+    legacy_payload = package.to_dict()
+    legacy_semantic_payload = package.semantic_payload()
+    for item in legacy_payload["included_items"]:
+        item.pop("logical_identity")
+        item.pop("provenance")
+        item.pop("reasons")
+    legacy_payload["selection_summary"].pop("deduplication_trace")
+    for item in legacy_semantic_payload["included_items"]:
+        item.pop("logical_identity", None)
+        item.pop("provenance", None)
+        item.pop("reasons", None)
+    legacy_payload["context_hash"] = hashlib.sha256(
+        json.dumps(
+            legacy_semantic_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    restored = repo._decode_context_package(json.dumps(legacy_payload))
+
+    assert restored.context_hash == legacy_payload["context_hash"]
+    assert restored.compute_context_hash() == restored.context_hash
+    assert restored.selection_summary.deduplication_trace == ()
+
+
+def f007_series_repository(
+    *records: FactRecord,
+    overrides: dict[str, dict] | None = None,
+) -> tuple[SeriesRepository, SeriesAccessContext]:
+    repository = SeriesRepository(StorageResolver().resolve_series(SERIES_ID))
+    access = SeriesAccessContext.bind(PROJECT_ID, SERIES_ID)
+    repository.initialize()
+    repository.register_member(
+        access,
+        SeriesMembershipRecord(
+            series_id=SERIES_ID,
+            project_id=PROJECT_ID,
+            book_id=BOOK_ID,
+            source_ref="synthetic-f007-membership",
+            version=1,
+            created_at="2026-09-16T10:00:00Z",
+        ),
+    )
+    for index, record in enumerate(records, start=1):
+        values = dict((overrides or {}).get(str(record.record_id), {}))
+        state_kind = values.pop("state_kind", SeriesStateKind.MEMORY)
+        state = values.pop("state", record.to_dict())
+        series_record = SeriesStateRecord(
+            series_id=SERIES_ID,
+            state_kind=state_kind,
+            source_project_id=PROJECT_ID,
+            source_book_id=BOOK_ID,
+            record_type=record.memory_record_type,
+            record_id=record.record_id,
+            source_version=values.pop("source_version", record.version),
+            source_ref=f"SCENE-f007-series-{index}",
+            provenance_refs=(f"SCENE-f007-series-{index}#artifact",),
+            transfer_reason="synthetic F-007 continuity proof",
+            state=state,
+            operation_id=f"series-f007-record-{index}",
+            version=values.pop("version", record.version),
+            frozen=values.pop("frozen", record.frozen),
+            author_locked=values.pop("author_locked", record.author_locked),
+            created_at="2026-09-16T10:00:00Z",
+            updated_at="2026-09-16T10:00:00Z",
+            **values,
+        )
+        if state_kind == SeriesStateKind.CANON:
+            repository.save_series_canon(access, series_record)
+        else:
+            repository.save_series_memory(access, series_record)
+    return repository, access
+
+
+def build_f007_series_package(
+    repo: ProjectRepository,
+    series_repo: SeriesRepository,
+    access: SeriesAccessContext,
+    *,
+    req: ContextBuildRequest | None = None,
+):
+    return ContextBuilder(
+        repo,
+        ExactWordCounter(),
+        series_repository=series_repo,
+    ).build(
+        req or request(series_id=SERIES_ID),
+        policy(),
+        default_context_profiles()[ContextRole.WRITER],
+        series_access=access,
+    )
+
+
+def test_f007_exact_project_series_duplicate_is_one_item_with_both_provenances(
+    repo,
+) -> None:
+    record = fact("FACT-f007-exact")
+    persist_memory(repo, record)
+    series_repo, access = f007_series_repository(record)
+
+    package = build_f007_series_package(repo, series_repo, access)
+    project_only = build(
+        repo,
+        request(
+            package_id="CONTEXT-f007-project-only",
+            operation_id="context-f007-project-only",
+        ),
+    )
+
+    items = [
+        item for item in package.included_items
+        if item.entity_id == str(record.fact_id)
+    ]
+    assert len(items) == 1
+    assert {item.source_scope for item in items[0].provenance} == {"PROJECT", "SERIES"}
+    assert package.total_tokens == project_only.total_tokens
+    assert package.selection_summary.candidate_count == project_only.selection_summary.candidate_count
+    trace = package.selection_summary.deduplication_trace
+    assert len(trace) == 1
+    assert trace[0].action == "MERGED_EXACT"
+    assert trace[0].logical_identity == f"FACT:{record.fact_id}"
+    assert len(trace[0].candidate_refs) == 2
+
+
+def test_f007_mandatory_project_optional_series_duplicate_stays_mandatory(repo) -> None:
+    record = fact("FACT-f007-mandatory")
+    persist_memory(repo, record)
+    series_repo, access = f007_series_repository(record)
+
+    package = build_f007_series_package(
+        repo,
+        series_repo,
+        access,
+        req=request(
+            series_id=SERIES_ID,
+            active_scene=scene(facts=(str(record.fact_id),)),
+        ),
+    )
+
+    items = [
+        item for item in package.included_items
+        if item.entity_id == str(record.fact_id)
+    ]
+    assert len(items) == 1
+    assert items[0].mandatory
+    assert items[0].layer == ContextLayer.MUST_INCLUDE
+    assert set(items[0].reasons) == {
+        "SceneContract mandatory reference",
+        "project structured memory",
+        "authorized Series Scope state",
+    }
+    trace = package.selection_summary.deduplication_trace[0]
+    assert trace.mandatory_preserved
+    assert trace.mandatory_promoted
+
+
+@pytest.mark.parametrize(
+    ("difference", "override", "expected_reason"),
+    [
+        ("version", {"source_version": 2, "version": 2}, "different source_version"),
+        (
+            "hash",
+            {"state": {**fact("FACT-f007-conflict").to_dict(), "object_value": "changed"}},
+            "different content_hash",
+        ),
+        ("authority", {"state_kind": SeriesStateKind.CANON}, "different authority"),
+        ("protection", {"frozen": True}, "different frozen"),
+    ],
+)
+def test_f007_different_variant_is_preserved_with_warning(
+    repo,
+    difference,
+    override,
+    expected_reason,
+) -> None:
+    del difference
+    record = fact("FACT-f007-conflict")
+    persist_memory(repo, record)
+    series_repo, access = f007_series_repository(
+        record,
+        overrides={str(record.fact_id): override},
+    )
+
+    package = build_f007_series_package(repo, series_repo, access)
+    variants = [
+        item for item in package.included_items
+        if item.entity_id == str(record.fact_id)
+    ]
+    warnings = [item for item in variants if item.layer == ContextLayer.CONFLICT]
+    sources = [item for item in variants if item.layer != ContextLayer.CONFLICT]
+
+    assert len(sources) == 2
+    assert all(item.mandatory for item in sources)
+    assert len(warnings) == 1
+    assert warnings[0].mandatory
+    assert warnings[0].representation_type == RepresentationType.WARNING
+    assert "UNRESOLVED LOGICAL RECORD VARIANTS" in warnings[0].content
+    conflict_trace = next(
+        item
+        for item in package.selection_summary.deduplication_trace
+        if item.action == "PRESERVED_CONFLICT"
+    )
+    assert expected_reason in conflict_trace.not_merged_reasons
+
+
+def test_f007_different_ids_with_same_text_are_not_merged(repo) -> None:
+    first = fact("FACT-f007-same-text-a")
+    second = fact("FACT-f007-same-text-b")
+    persist_memory(repo, first, second)
+    series_repo, access = f007_series_repository(first, second)
+
+    package = build_f007_series_package(repo, series_repo, access)
+
+    assert item_ids(package).count(str(first.fact_id)) == 1
+    assert item_ids(package).count(str(second.fact_id)) == 1
+    assert {
+        item.logical_identity
+        for item in package.included_items
+        if item.entity_id in {str(first.fact_id), str(second.fact_id)}
+    } == {
+        f"FACT:{first.fact_id}",
+        f"FACT:{second.fact_id}",
+    }
+
+
+def test_f007_order_independent_hash_items_and_trace(
+    repo,
+    monkeypatch,
+) -> None:
+    first_record = fact("FACT-f007-order-a")
+    second_record = fact("FACT-f007-order-b")
+    persist_memory(repo, first_record, second_record)
+    series_repo, access = f007_series_repository(first_record, second_record)
+    first = build_f007_series_package(repo, series_repo, access)
+
+    project_records = repo.list_structured_memory_records()
+    project_scopes = repo.list_structured_memory_record_scopes()
+    series_records = series_repo.list_series_memory(access)
+    monkeypatch.setattr(
+        repo,
+        "list_structured_memory_records",
+        lambda: dict(reversed(tuple(project_records.items()))),
+    )
+    monkeypatch.setattr(
+        repo,
+        "list_structured_memory_record_scopes",
+        lambda: dict(reversed(tuple(project_scopes.items()))),
+    )
+    monkeypatch.setattr(
+        series_repo,
+        "list_series_memory",
+        lambda _access: tuple(reversed(series_records)),
+    )
+    second = build_f007_series_package(
+        repo,
+        series_repo,
+        access,
+        req=request(
+            series_id=SERIES_ID,
+            package_id="CONTEXT-f007-order-two",
+            operation_id="context-f007-order-two",
+        ),
+    )
+
+    assert first.context_hash == second.context_hash
+    assert [item.to_dict() for item in first.included_items] == [
+        item.to_dict() for item in second.included_items
+    ]
+    assert [item.to_dict() for item in first.selection_summary.deduplication_trace] == [
+        item.to_dict() for item in second.selection_summary.deduplication_trace
+    ]
+
+
+def test_f007_retry_and_reopen_preserve_deduplicated_package(repo) -> None:
+    record = fact("FACT-f007-retry")
+    persist_memory(repo, record)
+    series_repo, access = f007_series_repository(record)
+    builder = ContextBuilder(repo, ExactWordCounter(), series_repository=series_repo)
+    first_request = request(series_id=SERIES_ID)
+    first = builder.build(
+        first_request,
+        policy(),
+        default_context_profiles()[ContextRole.WRITER],
+        series_access=access,
+    )
+    retry = builder.build(
+        replace(first_request, context_package_id="CONTEXT-f007-retry-ignored"),
+        policy(),
+        default_context_profiles()[ContextRole.WRITER],
+        series_access=access,
+    )
+    reopened = ProjectRepository(repo.context)
+
+    assert retry == first
+    assert item_ids(first).count(str(record.fact_id)) == 1
+    assert reopened.get_context_package(first.context_package_id) == first
+    assert reopened.get_context_package_for_operation(first_request.operation_id) == first
+    assert next(
+        item for item in first.included_items if item.entity_id == str(record.fact_id)
+    ).layer == ContextLayer.STRUCTURED_MEMORY

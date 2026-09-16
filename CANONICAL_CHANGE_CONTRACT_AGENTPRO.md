@@ -21,7 +21,7 @@ Nie zmieniają Master Canonu ani zaakceptowanych ADR.
 | [MASTER_CANON_AGENTPRO.md](MASTER_CANON_AGENTPRO.md), v2, §18–20, §70–82, §95–98 | Ochrona Kanonu, zgoda autora, lineage, idempotencja, izolacja i pojedynczy guard |
 | [ARCHITEKTURA_AGENTPRO.md](ARCHITEKTURA_AGENTPRO.md), v1.2, §2–3, §44A, §102 | P20.x, API w app.main, niezależna weryfikacja ekstrakcji, atomowy zestaw, operation identity |
 | [ADR-0001.md](ADR-0001.md), §5–7, §9–14 | Repozytoria związane ze scope, SeriesAccessContext, niezależne frozen i author_locked, granice transakcji |
-| [ADR-00XX_NARRATIVE_STATE_ENGINE_PROPOSED.md](ADR-00XX_NARRATIVE_STATE_ENGINE_PROPOSED.md), ACCEPTED, §8, §10–13, §24–29 | Candidate != proposal, CanonService jako owner, bramki przed commitem, audyt i granice recovery |
+| [ADR-00XX_NARRATIVE_STATE_ENGINE.md](ADR-00XX_NARRATIVE_STATE_ENGINE.md), ACCEPTED, §8, §10–13, §24–29 | Candidate != proposal, CanonService jako owner, bramki przed commitem, audyt i granice recovery |
 | [ROADMAPA_AGENTPRO.md](ROADMAPA_AGENTPRO.md), v1.0 | Rozdzielenie kontraktu, implementacji i dowodu; bez zmiany kolejności etapów |
 
 ### Stan potwierdzony w repozytorium

@@ -23,7 +23,7 @@ Architektura AgentPRO
 - ADR-0001
 - przyszłe kontrakty danych Narrative State Engine
 - przyszłe kontrakty procesu Canon Change
-- przyszłe kontrakty Context Buildera
+- kontrakty Context Buildera
 
 ---
 
@@ -47,7 +47,7 @@ Warstwa ta ma zapewniać jednocześnie:
 - wykrywanie sprzeczności,
 - ochronę decyzji autora,
 - kontrolowaną materializację Kanonu,
-- deterministyczne źródło danych dla docelowego Context Buildera określonego w Architekturze.
+- deterministyczne źródło danych dla Context Buildera określonego w Architekturze.
 
 Narrative State Engine nie jest pamięcią modelu LLM.
 
@@ -766,7 +766,7 @@ Model nie może dostać jednej wersji nierozstrzygniętego konfliktu jako pewnej
 
 Narrative State Engine nie tworzy równoległego `ContextAssembler`.
 
-Docelowy Context Builder / ContextPackage jest określony w Architekturze i Roadmapie, ale pozostaje nieukończonym przyszłym zakresem. Na wskazanym HEAD nie ma kompletnej implementacji tego kontraktu.
+Context Builder i ContextPackage są zaimplementowane. GAP-013 jest CLOSED, a aktywny `/agent/step` buduje ContextPackage przez Context Builder z propagowanymi identity project/book/series. Techniczny retry używa tego samego zapisanego ContextPackage.
 
 Narrative State Engine staje się dla niego źródłem strukturalnego stanu.
 
@@ -774,7 +774,7 @@ Poprawny przepływ:
 
 Narrative State Engine
 ↓
-Docelowy jedyny Context Builder
+Jedyny Context Builder
 ↓
 ContextPackage
 ↓
@@ -1017,7 +1017,7 @@ nie może powodować utraty pamięci projektu.
 | Authority + Policy Gate                  | Domain                 | CanonService / policy layer                    | code domenowy          |
 | Canonical Commit                         | Domain                 | CanonService                                   | przez Repository       |
 | Physical persistence                     | Storage                | ProjectRepository / SeriesRepository           | project.db / series.db |
-| Context selection                        | Runtime                | docelowy jedyny Context Builder                | ContextPackage         |
+| Context selection                        | Runtime                | jedyny Context Builder                         | ContextPackage         |
 | Semantic supporting retrieval            | Derived layer          | retrieval subsystem                            | rebuildable indexes    |
 | Raw PDF / screenshot / large source      | Artifact               | artifact subsystem                             | artifact storage       |
 | Artifact provenance                      | Project / Series       | Repository                                     | project.db / series.db |
@@ -1176,7 +1176,7 @@ SQLite + jawne relations/edges wystarczą do pierwszej implementacji.
 
 Odrzucone.
 
-Architektura przewiduje jednego docelowego Context Buildera i ContextPackage. Ich implementacja pozostaje przyszłym, nieukończonym zakresem; Narrative State Engine dostarcza mu dane, nie tworzy równoległego assemblera.
+Context Builder i ContextPackage są zaimplementowane jako jedyny builder i package w architekturze. Narrative State Engine dostarcza mu dane, nie tworzy równoległego assemblera.
 
 ---
 
@@ -1339,7 +1339,7 @@ dopiero gdy zostanie potwierdzone, że:
 9. MemoryEventRecord jest oddzielony od fabularnego EventRecord,
 10. raw artifacts pozostają w istniejącym artifact storage,
 11. CanonicalChangeProposal pozostaje audytowalny,
-12. docelowy Context Builder określony w Architekturze pozostaje jedynym builderem ContextPackage, bez deklarowania jego obecnej kompletności,
+12. Context Builder określony w Architekturze jest zaimplementowanym jedynym builderem ContextPackage,
 13. nie powstaje równoległy memory runtime,
 14. implementacja nie rozpoczyna się przed osobną decyzją.
 

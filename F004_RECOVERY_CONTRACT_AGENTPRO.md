@@ -11,7 +11,7 @@ This contract derives from:
 - `MASTER_CANON_AGENTPRO.md` §§75–84;
 - `ARCHITEKTURA_AGENTPRO.md` §§44, 101–102, 114;
 - `ADR-0001.md` §7 and §18;
-- `ADR-00XX_NARRATIVE_STATE_ENGINE_PROPOSED.md` §§24–25;
+- `ADR-00XX_NARRATIVE_STATE_ENGINE.md` §§24–25;
 - `CANONICAL_CHANGE_CONTRACT_AGENTPRO.md` §§9, 11–12.
 
 It does not change those decisions. A canonical entity set still commits atomically

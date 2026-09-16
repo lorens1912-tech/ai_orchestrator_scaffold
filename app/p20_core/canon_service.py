@@ -1261,6 +1261,7 @@ def write_audit(
     step_id: Optional[str] = None,
     context_packages: Optional[List[Dict[str, Any]]] = None,
     chapter_lineage: Optional[Dict[str, Any]] = None,
+    adaptive_style: Optional[Dict[str, Any]] = None,
 ) -> None:
     book_dir = ensure_book_dirs(
         book_id,
@@ -1284,6 +1285,7 @@ def write_audit(
         "step_id": step_id,
         "context_packages": list(context_packages or []),
         "chapter_lineage": chapter_lineage,
+        "adaptive_style": adaptive_style,
         "engine": APP_VERSION,
     }
     if context_packages:

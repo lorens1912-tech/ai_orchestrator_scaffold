@@ -71,6 +71,7 @@ class ContextLayer(str, Enum):
     TASK = "TASK"
     CANON = "CANON"
     BOOK_BIBLE = "BOOK_BIBLE"
+    STYLE = "STYLE"
     MUST_INCLUDE = "MUST_INCLUDE"
     CONFLICT = "CONFLICT"
     STRUCTURED_MEMORY = "STRUCTURED_MEMORY"
@@ -364,6 +365,7 @@ def default_context_profiles() -> dict[ContextRole, ContextProfile]:
                 ContextLayer.TASK,
                 ContextLayer.CANON,
                 ContextLayer.BOOK_BIBLE,
+                ContextLayer.STYLE,
                 ContextLayer.MUST_INCLUDE,
                 ContextLayer.CONFLICT,
                 ContextLayer.STRUCTURED_MEMORY,

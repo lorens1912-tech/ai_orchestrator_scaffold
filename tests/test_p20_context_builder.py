@@ -865,7 +865,7 @@ def test_project_schema_v3_migrates_to_context_package_storage(repo) -> None:
         connection.execute("UPDATE project_identity SET schema_version = 3")
     before = repo.inspect_schema()
     assert before.current_version == 3 and before.migration_needed
-    assert repo.migrate_schema().current_version == PROJECT_DB_SCHEMA_VERSION == 4
+    assert repo.migrate_schema().current_version == PROJECT_DB_SCHEMA_VERSION == 5
     package = build(repo, request())
     assert repo.get_context_package(package.context_package_id) == package
 

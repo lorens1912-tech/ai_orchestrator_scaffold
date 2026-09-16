@@ -436,6 +436,12 @@ def build_runtime_context_package(
     )
     repository.initialize()
 
+    # Adaptive style remains project-owned.  Loading it through the same
+    # repository keeps the ContextPackage hash bound to the active DNA.
+    from app.p20_core.adaptive_style import StyleRepository
+
+    active_style_dna = StyleRepository(repository).get_active_book_style_dna()
+
     series_repository = None
     series_access = execution_context.series_access_context
     if execution_context.series_id is not None:
@@ -477,7 +483,7 @@ def build_runtime_context_package(
     )
     source_ref = f"runs/{execution_context.run_id}/steps/{execution_context.step_id}"
 
-    direct_candidates = (
+    direct_candidates = [
         ContextCandidate(
             project_id=execution_context.project_id,
             entity_type="TASK",
@@ -512,7 +518,22 @@ def build_runtime_context_package(
             source_ref=str(context_sources.get("book_bible_path") or "book_bible.json"),
             mandatory=True,
         ),
-    )
+    ]
+    if active_style_dna is not None:
+        style_content = _canonical_json(active_style_dna.to_dict())
+        direct_candidates.append(
+            ContextCandidate(
+                project_id=execution_context.project_id,
+                entity_type="BOOK_STYLE_DNA",
+                entity_id=execution_context.book_id,
+                layer=ContextLayer.STYLE,
+                reason="active BookStyleDNA",
+                representations={RepresentationType.STRUCTURED: style_content},
+                source_version=active_style_dna.version,
+                source_ref=f"project.db#BookStyleDNA:v{active_style_dna.version}",
+                mandatory=True,
+            )
+        )
     request = ContextBuildRequest(
         context_package_id=execution_context.context_package_id,
         operation_id=execution_context.operation_id,
@@ -526,11 +547,15 @@ def build_runtime_context_package(
         effective_model=_required_text(effective_model, "effective_model"),
         canon_version=canon_version,
         book_bible_version=bible_version,
-        style_version=context_sources.get("style_version"),
+        style_version=(
+            active_style_dna.version
+            if active_style_dna is not None
+            else context_sources.get("style_version")
+        ),
         memory_snapshot_id=context_sources.get("memory_snapshot_id"),
         graph_version=repository.get_schema_version(),
         created_at=datetime.now(timezone.utc).isoformat(),
-        direct_candidates=direct_candidates,
+        direct_candidates=tuple(direct_candidates),
         graph_starts=_graph_starts(tool_input, repository),
         semantic_query=None,
     )

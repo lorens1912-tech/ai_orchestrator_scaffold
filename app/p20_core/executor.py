@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 import json
 import os
 from datetime import datetime
@@ -16,6 +17,11 @@ from app.p20_core.context_runtime import (
 from app.p20_core.storage_paths import get_books_root, get_runs_root, get_storage_root
 from app.team_resolver import resolve_team
 from app.tools import TOOLS, _p15_hardfail_quality_payload
+from app.p20_core.adaptive_style import (
+    AdaptiveStyleSession,
+    prepare_adaptive_style_session,
+)
+from app.p20_core.project_repository import ProjectRepository, StorageResolver
 
 
 TEXT_MODES = {
@@ -605,6 +611,20 @@ def execute_p20(*args, **kwargs) -> List[str]:
 
     _validate_modes(modes_exec)
 
+    style_session: AdaptiveStyleSession | None = None
+    if execution_context is not None:
+        style_session = prepare_adaptive_style_session(
+            ProjectRepository(
+                StorageResolver().resolve_project(
+                    execution_context.project_id,
+                    book_id=execution_context.book_id,
+                )
+            ),
+            payload_exec,
+            technical_retry=execution_context.technical_retry,
+            operation_id=execution_context.operation_id,
+        )
+
     run_dir = _run_dir(run_id)
     steps_dir = _run_steps_dir(run_id)
     steps_dir.mkdir(parents=True, exist_ok=True)
@@ -624,6 +644,7 @@ def execute_p20(*args, **kwargs) -> List[str]:
             "step_id": execution_context.step_id,
         })
     latest_text = ""
+    latest_text_artifact_id = ""
     artifact_paths: List[str] = []
 
     queue: List[StepItem]
@@ -715,6 +736,10 @@ def execute_p20(*args, **kwargs) -> List[str]:
 
         if mode_id in TEXT_MODES:
             tool_input["text"] = latest_text if latest_text else str(tool_input.get("text") or "")
+        if style_session is not None and mode_id in {"WRITE", "EDIT", "REWRITE"}:
+            # The writer receives only abstract, bounded features. Library source
+            # references and author-like instructions never cross this boundary.
+            tool_input["style_features"] = style_session.writer_features()
 
         step_execution_context = None
         context_package = None
@@ -753,6 +778,77 @@ def execute_p20(*args, **kwargs) -> List[str]:
         if isinstance(result_payload, dict) and result_payload.get("text"):
             latest_text = str(result_payload["text"])
 
+        style_trace: Dict[str, Any] = {}
+        if (
+            style_session is not None
+            and mode_id in {"WRITE", "EDIT", "REWRITE"}
+            and latest_text
+        ):
+            latest_text_artifact_id = f"{run_id}:{step_index:03d}:{mode_id}"
+            result_meta = result_payload.get("meta") if isinstance(result_payload, dict) else None
+            achieved_genome = (
+                result_meta.get("style_achieved_genome")
+                if isinstance(result_meta, dict)
+                and isinstance(result_meta.get("style_achieved_genome"), dict)
+                else None
+            )
+            style_evaluation = style_session.evaluate(
+                artifact_id=latest_text_artifact_id,
+                text=latest_text,
+                achieved_genome=achieved_genome,
+            )
+            style_trace = {
+                "recipe": style_session.recipe.to_dict(),
+                "evaluation": style_evaluation.to_dict(),
+            }
+
+        if style_session is not None and mode_id == "QUALITY":
+            quality_decision = _quality_decision(result)
+            evaluation = style_session.latest_evaluation
+            quality_artifact_hash = hashlib.sha256(latest_text.encode("utf-8")).hexdigest()
+            quality_evaluation_id = f"QUALITY-EVAL-{run_id}:{step_index:03d}"
+            if isinstance(result_payload, dict):
+                quality_meta = result_payload.setdefault("meta", {})
+                if isinstance(quality_meta, dict):
+                    quality_meta["artifact_id"] = latest_text_artifact_id
+                    quality_meta["artifact_hash"] = quality_artifact_hash
+                    quality_meta["quality_evaluation_id"] = quality_evaluation_id
+            if (
+                quality_decision == "ACCEPT"
+                and evaluation is not None
+                and evaluation.style_status != "COMPLIANT"
+                and isinstance(result_payload, dict)
+            ):
+                result_payload["DECISION"] = "REVISE"
+                reasons = result_payload.setdefault("REJECT_REASONS", [])
+                if isinstance(reasons, list) and "STYLE_NOT_COMPLIANT" not in reasons:
+                    reasons.append("STYLE_NOT_COMPLIANT")
+                quality_decision = "REVISE"
+            quality_score_raw = result_payload.get("SCORE", 0) if isinstance(result_payload, dict) else 0
+            try:
+                quality_score = float(quality_score_raw)
+            except (TypeError, ValueError):
+                quality_score = 0.0
+            quality_score = min(1.0, max(0.0, quality_score))
+            performance = style_session.finalize(
+                quality_decision=quality_decision,
+                quality_score=quality_score,
+                quality_evaluation_id=quality_evaluation_id,
+                quality_artifact_hash=quality_artifact_hash,
+                artifact_id=latest_text_artifact_id,
+                artifact_text=latest_text,
+            )
+            style_trace = {
+                "recipe": style_session.recipe.to_dict(),
+                "evaluation": (
+                    evaluation.to_dict() if evaluation is not None else None
+                ),
+                "quality_decision": quality_decision,
+                "performance_record": (
+                    performance.to_dict() if performance is not None else None
+                ),
+            }
+
         step_doc = {
             "run_id": run_id,
             "index": step_index,
@@ -770,6 +866,8 @@ def execute_p20(*args, **kwargs) -> List[str]:
             "result": result,
             "created_at": _iso(),
         }
+        if style_trace:
+            step_doc["adaptive_style"] = style_trace
         if step_execution_context is not None and context_package is not None:
             step_doc.update({
                 "project_id": step_execution_context.project_id,

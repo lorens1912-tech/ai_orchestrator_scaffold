@@ -334,6 +334,19 @@ def _context_traces(artifact_paths: List[str]) -> List[Dict[str, Any]]:
     return traces
 
 
+def _adaptive_style_trace(artifact_paths: List[str]) -> Dict[str, Any] | None:
+    trace = None
+    for artifact_path in artifact_paths:
+        doc = _json_load(_path_for_read(Path(artifact_path)), {})
+        candidate = doc.get("adaptive_style")
+        if isinstance(candidate, dict):
+            trace = dict(candidate)
+            trace["artifact_path"] = artifact_path
+            trace["step_id"] = doc.get("step_id")
+            trace["mode"] = doc.get("mode")
+    return trace
+
+
 def _attach_execution_trace(
     doc: Dict[str, Any],
     execution_context: ProjectExecutionContext,
@@ -634,6 +647,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
 
         artifact_paths = normalize_public_artifact_paths(normalize_artifact_paths(stub_out))
         context_traces = _context_traces(artifact_paths)
+        adaptive_style_trace = _adaptive_style_trace(artifact_paths)
 
         if is_write:
             for _artifact_path in artifact_paths:
@@ -778,6 +792,8 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
         state["canonical_change"] = canonical_change
         state["master_canon"] = dict(master_canon_ref)
         state["project_truth"] = dict(project_truth_ref)
+        if adaptive_style_trace is not None:
+            state["adaptive_style"] = adaptive_style_trace
         if is_write:
             state["book_bible"] = dict(book_bible_binding)
         if chapter_lineage is not None:
@@ -807,6 +823,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             step_id=execution_context.step_id,
             context_packages=context_traces,
             chapter_lineage=chapter_lineage,
+            adaptive_style=adaptive_style_trace,
         )
 
         execution_ok = (decision == "ACCEPT" or bool(quality_decision)) and not canonical_failed
@@ -862,6 +879,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             "canon_memory": canon_memory,
             "canonical_change": canonical_change,
             "context_packages": context_traces,
+            "adaptive_style": adaptive_style_trace,
             "context_package_id": (
                 context_traces[-1]["context_package_id"] if context_traces else None
             ),

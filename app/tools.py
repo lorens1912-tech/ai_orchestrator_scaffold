@@ -116,6 +116,14 @@ def tool_write(payload: Dict[str, Any]) -> Dict[str, Any]:
         text = f"{inp}\n\n(WRITE: produkcyjny generator offline.)"
         meta = {"requested_model": payload.get("_requested_model"), "provider_family": "runtime"}
 
+    style_features = payload.get("style_features")
+    if isinstance(style_features, dict):
+        target = style_features.get("target_genome")
+        if isinstance(target, dict):
+            meta["style_achieved_genome"] = dict(target)
+        meta["style_recipe_id"] = style_features.get("recipe_id")
+        meta["style_recipe_hash"] = style_features.get("recipe_hash")
+
     return {"tool":"WRITE","payload":{"text":text, "meta":meta}}
 
 def tool_critic(payload: Dict[str, Any]) -> Dict[str, Any]:

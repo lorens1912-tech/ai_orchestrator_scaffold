@@ -339,8 +339,8 @@ def test_controlled_v2_to_current_migration_preserves_data_and_read_never_migrat
     with pytest.raises(ProjectStorageError, match="controlled migration"):
         repo.list_edges()
     assert repo.db_path.read_bytes() == before
-    assert repo.migrate_schema().current_version == PROJECT_DB_SCHEMA_VERSION == 4
-    assert repo.get_project_identity()["schema_version"] == 4
+    assert repo.migrate_schema().current_version == PROJECT_DB_SCHEMA_VERSION == 5
+    assert repo.get_project_identity()["schema_version"] == 5
     assert repo.get_metadata("preserved") == "yes"
     write(repo, edge())
     assert repo.get_edge("dependency-1") == edge()

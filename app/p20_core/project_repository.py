@@ -35,7 +35,7 @@ from app.p20_core.storage_paths import (
 )
 
 
-PROJECT_DB_SCHEMA_VERSION = 4
+PROJECT_DB_SCHEMA_VERSION = 5
 PROJECT_DB_FILENAME = "project.db"
 SERIES_DB_SCHEMA_VERSION = 3
 SERIES_DB_FILENAME = "series.db"
@@ -539,6 +539,88 @@ def _validate_project_schema_v4(conn: sqlite3.Connection) -> None:
     )
 
 
+def _create_adaptive_style_tables(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS style_library_profiles (
+            scope_type TEXT NOT NULL CHECK (scope_type = 'PROJECT'),
+            scope_id TEXT NOT NULL,
+            profile_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (scope_type, scope_id, profile_id, version)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS book_style_dna (
+            scope_type TEXT NOT NULL CHECK (scope_type = 'PROJECT'),
+            scope_id TEXT NOT NULL,
+            book_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            is_active INTEGER NOT NULL CHECK (is_active IN (0, 1)),
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (scope_type, scope_id, book_id, version)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS book_style_dna_active "
+        "ON book_style_dna(scope_type, scope_id, book_id) WHERE is_active = 1"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scene_style_recipes (
+            scope_type TEXT NOT NULL CHECK (scope_type = 'PROJECT'),
+            scope_id TEXT NOT NULL,
+            recipe_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (scope_type, scope_id, recipe_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS style_evaluations (
+            scope_type TEXT NOT NULL CHECK (scope_type = 'PROJECT'),
+            scope_id TEXT NOT NULL,
+            style_evaluation_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (scope_type, scope_id, style_evaluation_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS style_performance_records (
+            scope_type TEXT NOT NULL CHECK (scope_type = 'PROJECT'),
+            scope_id TEXT NOT NULL,
+            performance_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (scope_type, scope_id, performance_id)
+        )
+        """
+    )
+
+
+def _apply_project_schema_v4_to_v5(conn: sqlite3.Connection) -> None:
+    _create_adaptive_style_tables(conn)
+    if _table_exists(conn, "project_identity"):
+        conn.execute("UPDATE project_identity SET schema_version = 5 WHERE id = 1")
+
+
+def _validate_project_schema_v5(conn: sqlite3.Connection) -> None:
+    for table in (
+        "style_library_profiles",
+        "book_style_dna",
+        "scene_style_recipes",
+        "style_evaluations",
+        "style_performance_records",
+    ):
+        conn.execute(f"SELECT payload_json FROM {table} LIMIT 0")
+
+
 PROJECT_DB_MIGRATIONS = (
     SchemaMigration(
         source_version=1,
@@ -557,6 +639,12 @@ PROJECT_DB_MIGRATIONS = (
         target_version=4,
         apply=_apply_project_schema_v3_to_v4,
         validate=_validate_project_schema_v4,
+    ),
+    SchemaMigration(
+        source_version=4,
+        target_version=5,
+        apply=_apply_project_schema_v4_to_v5,
+        validate=_validate_project_schema_v5,
     ),
 )
 
@@ -1096,7 +1184,11 @@ class ProjectRepository:
         conn.row_factory = sqlite3.Row
         conn.execute(f"PRAGMA busy_timeout = {_DOMAIN_DB_BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
+        # Re-applying journal_mode requires a write lock. Concurrent retry
+        # owners only need to verify the already-established mode.
+        current_journal_mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        if current_journal_mode != "wal":
+            conn.execute("PRAGMA journal_mode = WAL")
         try:
             yield conn
             conn.commit()
@@ -1156,6 +1248,7 @@ class ProjectRepository:
             _create_project_structured_memory_table(conn)
             _create_project_edges_table(conn)
             _create_context_packages_table(conn)
+            _create_adaptive_style_tables(conn)
             self._ensure_identity(conn)
 
     def _ensure_identity(self, conn: sqlite3.Connection) -> None:

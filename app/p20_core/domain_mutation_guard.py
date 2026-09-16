@@ -267,8 +267,8 @@ class DomainMutationGuard:
         binding = {k: proposal[k] for k in ("proposal_id", "proposal_hash", "project_id", "scope_type", "scope_id")}
         def result(outcome, reason):
             return dict(binding, outcome=outcome, reason=reason, guard_version=DOMAIN_MUTATION_GUARD_VERSION)
-        if proposal["scope_type"] != "PROJECT":
-            return result("DENY", "SERIES_CANONICAL_COMMIT_UNSUPPORTED")
+        if proposal["scope_type"] not in {"PROJECT", "SERIES"}:
+            return result("DENY", "INVALID_CANONICAL_SCOPE")
         if any(impact.get(k) != v for k, v in binding.items()) or not impact.get("impact_id") or not impact.get("result"):
             return result("DENY", "IMPACT_REQUIRED")
         if proposal.get("authority_ref") != "P20_VERIFIED_EXTRACTION_V1":

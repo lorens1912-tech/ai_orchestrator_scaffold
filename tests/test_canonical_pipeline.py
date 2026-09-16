@@ -303,10 +303,10 @@ def test_missing_impact_evidence_is_a_controlled_denial_without_mutation(pipelin
     assert not any(key.startswith("canonical_commit.v1:") for key in repo.list_metadata())
 
 
-def test_unsupported_series_fails_closed_without_project_fallback(pipeline):
+def test_series_without_explicit_identity_fails_closed_without_project_fallback(pipeline):
     client, repo, controls, _, _, _ = pipeline
     result = step(client, scope="SERIES")["canonical_change"]
-    assert result["reason"] == "SERIES_CANONICAL_COMMIT_UNSUPPORTED"
+    assert result["reason"] == "INVALID_CANONICAL_SCOPE"
     assert result["canonical_commit"] is False
     assert controls["calls"] == []
     assert repo.list_structured_memory_records() == {}

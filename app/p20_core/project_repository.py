@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -36,7 +37,7 @@ from app.p20_core.storage_paths import (
 
 PROJECT_DB_SCHEMA_VERSION = 4
 PROJECT_DB_FILENAME = "project.db"
-SERIES_DB_SCHEMA_VERSION = 2
+SERIES_DB_SCHEMA_VERSION = 3
 SERIES_DB_FILENAME = "series.db"
 SYSTEM_DB_SCHEMA_VERSION = 1
 SYSTEM_DB_FILENAME = "agentpro_system.db"
@@ -643,6 +644,41 @@ def _validate_series_schema_v2(conn: sqlite3.Connection) -> None:
     )
 
 
+def _create_series_edges_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS edges (
+            scope_type TEXT NOT NULL CHECK (scope_type = 'SERIES'),
+            scope_id TEXT NOT NULL,
+            edge_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            relation_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (scope_type, scope_id, edge_id)
+        )
+        """
+    )
+    for side in ("source", "target"):
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS series_edges_{side} "
+            f"ON edges(scope_type, scope_id, {side}_id, edge_id)"
+        )
+
+
+def _apply_series_schema_v2_to_v3(conn: sqlite3.Connection) -> None:
+    _create_series_edges_table(conn)
+    if _table_exists(conn, "series_identity"):
+        conn.execute("UPDATE series_identity SET schema_version = 3 WHERE id = 1")
+
+
+def _validate_series_schema_v3(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "SELECT scope_type, scope_id, edge_id, source_id, target_id, relation_type, "
+        "payload_json FROM edges LIMIT 0"
+    )
+
+
 SERIES_DB_MIGRATIONS = (
     SchemaMigration(
         source_version=1,
@@ -650,7 +686,129 @@ SERIES_DB_MIGRATIONS = (
         apply=_apply_series_schema_v1_to_v2,
         validate=_validate_series_schema_v2,
     ),
+    SchemaMigration(
+        source_version=2,
+        target_version=3,
+        apply=_apply_series_schema_v2_to_v3,
+        validate=_validate_series_schema_v3,
+    ),
 )
+
+
+def _insert_scoped_edge(
+    conn: sqlite3.Connection,
+    repository_scope: StorageScope,
+    record: EdgeRecord,
+    *,
+    source_scope: StorageScope,
+    target_scope: StorageScope,
+    error_type: type[ValueError],
+) -> None:
+    from app.p20_core.domain_records import EdgeRecord
+
+    if not isinstance(record, EdgeRecord):
+        raise error_type("graph write requires an EdgeRecord")
+    record = EdgeRecord(**record.to_dict())
+    for scope in (record.scope, source_scope, target_scope):
+        _require_matching_scope(repository_scope, scope, error_type)
+    conn.execute(
+        "INSERT INTO edges (scope_type, scope_id, edge_id, source_id, target_id, "
+        "relation_type, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (record.scope_type, record.scope_id, record.edge_id, str(record.source_id),
+         str(record.target_id), record.relation_type.value, record.to_json()),
+    )
+
+
+def _decode_scoped_edge(repository: Any, row: sqlite3.Row, error_type: type[ValueError]) -> EdgeRecord:
+    from app.p20_core.domain_records import EdgeRecord
+
+    try:
+        record = EdgeRecord(**json.loads(row["payload_json"]))
+        repository.require_scope(record.scope)
+        serialized = record.to_dict()
+        for key in ("scope_type", "scope_id", "edge_id", "source_id", "target_id", "relation_type"):
+            if serialized[key] != row[key]:
+                raise error_type(f"edge index/payload mismatch: {key}")
+        return record
+    except (TypeError, ValueError, KeyError) as exc:
+        raise error_type("malformed scoped edge") from exc
+
+
+def _traverse_scoped_dependencies(
+    repository: Any,
+    start: GraphNodeRef,
+    policy: DependencyTraversalPolicy | None,
+    *,
+    error_type: type[ValueError],
+    read_connection: Callable[[], Any],
+) -> tuple[DependencyTraversalStep, ...]:
+    from app.p20_core.project_graph import (
+        DependencyTraversalPolicy, DependencyTraversalStep, GraphNodeRef,
+        GraphTraversalLimitError, TraversalDirection,
+    )
+
+    if not isinstance(start, GraphNodeRef):
+        raise error_type("traversal requires a scoped GraphNodeRef")
+    repository.require_scope(start.scope)
+    policy = DependencyTraversalPolicy() if policy is None else policy
+    if not isinstance(policy, DependencyTraversalPolicy):
+        raise error_type("traversal requires a DependencyTraversalPolicy")
+    if not policy.read_only:
+        repository.initialize()
+    pending = deque([(start.node_id, 0)])
+    visited_nodes = {str(start.node_id)}
+    visited_edges: set[str] = set()
+    examined_edges: set[str] = set()
+    result = []
+    connection = read_connection() if policy.read_only else repository.connect()
+    directions = None if policy.relation_directions is None else dict(policy.relation_directions)
+    with connection as conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN")
+        while pending:
+            node, depth = pending.popleft()
+            if depth >= policy.max_depth or policy.relation_types == ():
+                continue
+            params: list[Any] = [repository.scope.scope_type.value, repository.scope.scope_id]
+            if policy.direction == TraversalDirection.BOTH:
+                predicate = "(source_id = ? OR target_id = ?)"
+                params.extend([str(node), str(node)])
+            else:
+                side = "target" if policy.direction == TraversalDirection.INCOMING else "source"
+                predicate = f"{side}_id = ?"
+                params.append(str(node))
+            if policy.relation_types is not None:
+                predicate += " AND relation_type IN (" + ",".join("?" for _ in policy.relation_types) + ")"
+                params.extend(relation.value for relation in policy.relation_types)
+            params.append(policy.max_edges + 1)
+            rows = conn.execute(
+                "SELECT * FROM edges WHERE scope_type = ? AND scope_id = ? AND "
+                + predicate + " ORDER BY edge_id LIMIT ?", params,
+            )
+            for row in rows:
+                edge = repository._decode_edge(row)
+                if edge.edge_id in visited_edges:
+                    continue
+                if edge.edge_id not in examined_edges:
+                    if len(examined_edges) >= policy.max_edges:
+                        raise GraphTraversalLimitError("dependency traversal max_edges exceeded")
+                    examined_edges.add(edge.edge_id)
+                if directions is not None:
+                    direction = directions.get(edge.relation_type)
+                    outgoing = str(edge.source_id) == str(node)
+                    if (direction is None
+                            or (direction == TraversalDirection.OUTGOING and not outgoing)
+                            or (direction == TraversalDirection.INCOMING and outgoing)):
+                        continue
+                if len(visited_edges) >= policy.max_edges:
+                    raise GraphTraversalLimitError("dependency traversal max_edges exceeded")
+                visited_edges.add(edge.edge_id)
+                target = edge.target_id if str(edge.source_id) == str(node) else edge.source_id
+                result.append(DependencyTraversalStep(edge, depth + 1, node, target))
+                if str(target) not in visited_nodes:
+                    visited_nodes.add(str(target))
+                    pending.append((target, depth + 1))
+    return tuple(result)
 
 
 class ProjectDomainTransaction:
@@ -665,19 +823,9 @@ class ProjectDomainTransaction:
     def add_edge(
         self, record: EdgeRecord, *, source_scope: StorageScope, target_scope: StorageScope,
     ) -> None:
-        from app.p20_core.domain_records import EdgeRecord
-
-        if not isinstance(record, EdgeRecord):
-            raise ProjectStorageError("graph write requires an EdgeRecord")
-        record = EdgeRecord(**record.to_dict())
-        for scope in (record.scope, source_scope, target_scope):
-            _require_matching_scope(self.scope, scope, ProjectStorageError)
-        # Creation only: duplicate identity cannot overwrite a dependency or its provenance.
-        self._conn.execute(
-            "INSERT INTO edges (scope_type, scope_id, edge_id, source_id, target_id, "
-            "relation_type, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (record.scope_type, record.scope_id, record.edge_id, str(record.source_id),
-             str(record.target_id), record.relation_type.value, record.to_json()),
+        _insert_scoped_edge(
+            self._conn, self.scope, record, source_scope=source_scope,
+            target_scope=target_scope, error_type=ProjectStorageError,
         )
 
     def add_fact_record(
@@ -1245,17 +1393,7 @@ class ProjectRepository:
                 raise
 
     def _decode_edge(self, row: sqlite3.Row) -> EdgeRecord:
-        from app.p20_core.domain_records import EdgeRecord
-
-        try:
-            record = EdgeRecord(**json.loads(row["payload_json"]))
-            self.require_scope(record.scope)
-            for key in ("scope_type", "scope_id", "edge_id", "source_id", "target_id", "relation_type"):
-                if record.to_dict()[key] != row[key]:
-                    raise ProjectStorageError(f"edge index/payload mismatch: {key}")
-            return record
-        except (TypeError, ValueError, KeyError) as exc:
-            raise ProjectStorageError("malformed project edge") from exc
+        return _decode_scoped_edge(self, row, ProjectStorageError)
 
     def get_edge(self, edge_id: str) -> EdgeRecord | None:
         self.initialize()
@@ -1295,72 +1433,10 @@ class ProjectRepository:
     def traverse_dependencies(
         self, start: GraphNodeRef, policy: DependencyTraversalPolicy | None = None,
     ) -> tuple[DependencyTraversalStep, ...]:
-        from app.p20_core.project_graph import (
-            DependencyTraversalPolicy, DependencyTraversalStep, GraphNodeRef,
-            GraphTraversalLimitError, TraversalDirection,
+        return _traverse_scoped_dependencies(
+            self, start, policy, error_type=ProjectStorageError,
+            read_connection=self._graph_read_connection,
         )
-
-        if not isinstance(start, GraphNodeRef):
-            raise ProjectStorageError("traversal requires a scoped GraphNodeRef")
-        self.require_scope(start.scope)
-        policy = DependencyTraversalPolicy() if policy is None else policy
-        if not isinstance(policy, DependencyTraversalPolicy):
-            raise ProjectStorageError("traversal requires a DependencyTraversalPolicy")
-        if not policy.read_only:
-            self.initialize()
-        pending = deque([(start.node_id, 0)])
-        visited_nodes = {str(start.node_id)}
-        visited_edges: set[str] = set()
-        examined_edges: set[str] = set()
-        result = []
-        connection = self._graph_read_connection() if policy.read_only else self.connect()
-        directions = None if policy.relation_directions is None else dict(policy.relation_directions)
-        with connection as conn:
-            # One SQLite read snapshot for the entire multi-hop traversal.
-            if not conn.in_transaction:
-                conn.execute("BEGIN")
-            while pending:
-                node, depth = pending.popleft()
-                if depth >= policy.max_depth or policy.relation_types == ():
-                    continue
-                params: list[Any] = [self.scope.scope_type.value, self.scope.scope_id]
-                if policy.direction == TraversalDirection.BOTH:
-                    predicate = "(source_id = ? OR target_id = ?)"
-                    params.extend([str(node), str(node)])
-                else:
-                    side = "target" if policy.direction == TraversalDirection.INCOMING else "source"
-                    predicate = f"{side}_id = ?"
-                    params.append(str(node))
-                if policy.relation_types is not None:
-                    predicate += " AND relation_type IN (" + ",".join("?" for _ in policy.relation_types) + ")"
-                    params.extend(r.value for r in policy.relation_types)
-                params.append(policy.max_edges + 1)
-                rows = conn.execute(
-                    "SELECT * FROM edges WHERE scope_type = ? AND scope_id = ? AND "
-                    + predicate + " ORDER BY edge_id LIMIT ?", params,
-                )
-                for row in rows:
-                    edge = self._decode_edge(row)
-                    if edge.edge_id in visited_edges:
-                        continue
-                    if edge.edge_id not in examined_edges:
-                        if len(examined_edges) >= policy.max_edges:
-                            raise GraphTraversalLimitError("dependency traversal max_edges exceeded")
-                        examined_edges.add(edge.edge_id)
-                    if directions is not None:
-                        direction = directions.get(edge.relation_type)
-                        outgoing = str(edge.source_id) == str(node)
-                        if direction is None or (direction == TraversalDirection.OUTGOING and not outgoing) or (direction == TraversalDirection.INCOMING and outgoing):
-                            continue
-                    if len(visited_edges) >= policy.max_edges:
-                        raise GraphTraversalLimitError("dependency traversal max_edges exceeded")
-                    visited_edges.add(edge.edge_id)
-                    target = edge.target_id if str(edge.source_id) == str(node) else edge.source_id
-                    result.append(DependencyTraversalStep(edge, depth + 1, node, target))
-                    if str(target) not in visited_nodes:
-                        visited_nodes.add(str(target))
-                        pending.append((target, depth + 1))
-        return tuple(result)
 
     def list_fact_records(self) -> dict[str, str]:
         self.initialize()
@@ -1565,6 +1641,24 @@ class ProjectRepository:
         )
 
 
+class SeriesDomainTransaction:
+    def __init__(self, conn: sqlite3.Connection, scope: StorageScope) -> None:
+        self._conn = conn
+        self._scope = _coerce_storage_scope(scope, SeriesStorageError)
+
+    @property
+    def scope(self) -> StorageScope:
+        return self._scope
+
+    def add_edge(
+        self, record: EdgeRecord, *, source_scope: StorageScope, target_scope: StorageScope,
+    ) -> None:
+        _insert_scoped_edge(
+            self._conn, self.scope, record, source_scope=source_scope,
+            target_scope=target_scope, error_type=SeriesStorageError,
+        )
+
+
 class SeriesRepository:
     def __init__(self, context: SeriesStorageContext) -> None:
         self.context = context
@@ -1626,6 +1720,7 @@ class SeriesRepository:
                 """
             )
             _create_series_memory_tables(conn)
+            _create_series_edges_table(conn)
             self._ensure_identity(conn)
 
     def _ensure_identity(self, conn: sqlite3.Connection) -> None:
@@ -1704,6 +1799,268 @@ class SeriesRepository:
         if not isinstance(access, SeriesAccessContext):
             raise SeriesAccessError("access must be a SeriesAccessContext")
         access.require_series(self.context.series_id)
+
+    def get_metadata_readonly(
+        self, access: SeriesAccessContext, key: str,
+    ) -> str | None:
+        """Locate SERIES process metadata without initialization or migration."""
+        self._require_access_context(access)
+        conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA query_only = ON")
+            identity = conn.execute(
+                "SELECT series_id FROM series_identity WHERE id = 1"
+            ).fetchone()
+            if identity is None or identity["series_id"] != self.context.series_id:
+                raise SeriesStorageError("series.db identity does not match repository context")
+            self._require_registered_member(conn, access)
+            row = conn.execute(
+                "SELECT value FROM series_metadata WHERE key = ?", (str(key),)
+            ).fetchone()
+            return None if row is None else str(row["value"])
+        finally:
+            conn.close()
+
+    @contextmanager
+    def canonical_proposal_transaction(
+        self,
+        access: SeriesAccessContext,
+        proposal_id: str,
+        *,
+        include_writer: bool = False,
+    ):
+        """Serialize one SERIES proposal with its canonical and graph basis."""
+        self._require_access_context(access)
+        proposal_id = _normalize_identifier(proposal_id, "proposal_id", SeriesStorageError)
+        self.initialize()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._require_registered_member(conn, access)
+            key = "canonical_proposal.v1:" + proposal_id
+            row = conn.execute(
+                "SELECT value FROM series_metadata WHERE key = ?", (key,)
+            ).fetchone()
+            document = {} if row is None else json.loads(str(row["value"]))
+            persisted = conn.execute(
+                "SELECT record_type, record_id, payload_json FROM series_state_records "
+                "WHERE scope_type = ? AND scope_id = ? AND state_kind = ? "
+                "ORDER BY record_type, record_id",
+                (ScopeType.SERIES.value, self.scope.scope_id, "SERIES_CANON"),
+            ).fetchall()
+            records = []
+            for stored in persisted:
+                wrapper = json.loads(str(stored["payload_json"]))
+                records.append({
+                    "record_type": str(stored["record_type"]),
+                    "record_id": str(stored["record_id"]),
+                    "payload_json": json.dumps(
+                        wrapper["state"], sort_keys=True, separators=(",", ":"), allow_nan=False,
+                    ),
+                    "series_payload_json": str(stored["payload_json"]),
+                })
+            edges = [dict(item) for item in conn.execute(
+                "SELECT * FROM edges WHERE scope_type = ? AND scope_id = ? ORDER BY edge_id",
+                (self.scope.scope_type.value, self.scope.scope_id),
+            )]
+            snapshot = {"records": records, "edges": edges}
+            if include_writer:
+                yield document, snapshot, conn
+            else:
+                yield document, snapshot
+            if document:
+                conn.execute(
+                    "INSERT INTO series_metadata (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False)),
+                )
+
+    @contextmanager
+    def canonical_pipeline_operation(
+        self, access: SeriesAccessContext, operation_id: str,
+    ):
+        """Serialize accepted-artifact processing entirely inside series.db."""
+        self._require_access_context(access)
+        operation_id = _normalize_identifier(operation_id, "operation_id", SeriesStorageError)
+        self.initialize()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._require_registered_member(conn, access)
+            key = "canonical_pipeline.v1:" + operation_id
+            row = conn.execute(
+                "SELECT value FROM series_metadata WHERE key = ?", (key,)
+            ).fetchone()
+            state = {} if row is None else json.loads(str(row["value"]))
+            yield state
+            conn.execute(
+                "INSERT INTO series_metadata (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, json.dumps(state, sort_keys=True, separators=(",", ":"), allow_nan=False)),
+            )
+
+    def apply_canonical_record_set(
+        self,
+        access: SeriesAccessContext,
+        connection: sqlite3.Connection,
+        proposal: dict,
+        snapshot: dict,
+        *,
+        impact: dict,
+        approval: dict | None,
+    ) -> dict:
+        """Apply SERIES canon, history and guard result in the caller transaction."""
+        from app.p20_core.series_memory import SeriesStateKind, SeriesStateRecord
+
+        self._require_access_context(access)
+        access.require_project(proposal["project_id"])
+        self.require_scope(StorageScope(proposal["scope_type"], proposal["scope_id"]))
+        decision = DomainMutationGuard().evaluate_canonical(
+            proposal=proposal, snapshot=snapshot, impact=impact, approval=approval,
+        )
+        if decision["outcome"] != "ALLOW":
+            raise SeriesStorageError("canonical mutation denied: " + decision["reason"])
+        current = {
+            (record["record_type"], record["record_id"]): record
+            for record in snapshot["records"]
+        }
+        for mutation in proposal["proposed_mutations"]:
+            kind = mutation["target_entity_type"]
+            identity = mutation["target_entity_id"]
+            proposed_state = mutation["proposed_state"]
+            existing = current.get((kind, identity))
+            history_key = "canonical_versions.v1:" + kind + ":" + identity
+            previous = connection.execute(
+                "SELECT value FROM series_metadata WHERE key = ?", (history_key,)
+            ).fetchone()
+            history = [] if previous is None else json.loads(str(previous["value"]))
+            if not history and existing is not None:
+                history.append(json.loads(existing["payload_json"]))
+            history.append(proposed_state)
+            connection.execute(
+                "INSERT INTO series_metadata(key,value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (history_key, json.dumps(history, sort_keys=True, separators=(",", ":"), allow_nan=False)),
+            )
+            existing_wrapper = (
+                None if existing is None else json.loads(existing["series_payload_json"])
+            )
+            operation_digest = hashlib.sha256(
+                f"{proposal['proposal_hash']}|{kind}|{identity}".encode("utf-8")
+            ).hexdigest()
+            wrapper = SeriesStateRecord(
+                series_id=self.scope.scope_id,
+                state_kind=SeriesStateKind.CANON,
+                source_project_id=proposal["project_id"],
+                source_book_id=proposal["book_id"],
+                record_type=kind,
+                record_id=identity,
+                source_version=proposed_state["version"],
+                source_ref=proposal["source_artifact_ref"],
+                provenance_refs=(
+                    proposal["source_artifact_ref"],
+                    proposal["extraction_candidate_set_id"],
+                    proposal["verification_ref"]["id"],
+                ),
+                transfer_reason="CANONICAL_CHANGE",
+                state=proposed_state,
+                operation_id="series-canonical-" + operation_digest,
+                version=proposed_state["version"],
+                frozen=proposed_state["frozen"],
+                author_locked=proposed_state["author_locked"],
+                created_at=(
+                    proposal["created_at"]
+                    if existing_wrapper is None
+                    else existing_wrapper["created_at"]
+                ),
+                updated_at=proposal["created_at"],
+            )
+            connection.execute(
+                "INSERT INTO series_state_records (scope_type, scope_id, state_kind, "
+                "record_type, record_id, source_project_id, payload_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(scope_type, scope_id, state_kind, record_type, record_id) "
+                "DO UPDATE SET source_project_id=excluded.source_project_id, "
+                "payload_json=excluded.payload_json",
+                (ScopeType.SERIES.value, self.scope.scope_id, SeriesStateKind.CANON.value,
+                 kind, identity, proposal["project_id"], wrapper.to_json()),
+            )
+        return decision
+
+    @contextmanager
+    def domain_transaction(
+        self, access: SeriesAccessContext,
+    ) -> Iterator[SeriesDomainTransaction]:
+        self._require_access_context(access)
+        self.initialize()
+        with self.connect() as conn:
+            conn.execute("BEGIN")
+            self._require_registered_member(conn, access)
+            tx = SeriesDomainTransaction(conn, self.scope)
+            try:
+                yield tx
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def _decode_edge(self, row: sqlite3.Row) -> EdgeRecord:
+        return _decode_scoped_edge(self, row, SeriesStorageError)
+
+    def get_edge(self, access: SeriesAccessContext, edge_id: str) -> EdgeRecord | None:
+        self.require_registered_member(access)
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM edges WHERE scope_type = ? AND scope_id = ? AND edge_id = ?",
+                (self.scope.scope_type.value, self.scope.scope_id, edge_id),
+            ).fetchone()
+        return None if row is None else self._decode_edge(row)
+
+    def list_edges(self, access: SeriesAccessContext) -> tuple[EdgeRecord, ...]:
+        self.require_registered_member(access)
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM edges WHERE scope_type = ? AND scope_id = ? ORDER BY edge_id",
+                (self.scope.scope_type.value, self.scope.scope_id),
+            ).fetchall()
+        return tuple(self._decode_edge(row) for row in rows)
+
+    @contextmanager
+    def _graph_read_connection(
+        self, access: SeriesAccessContext,
+    ) -> Iterator[sqlite3.Connection]:
+        self._require_access_context(access)
+        conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA query_only = ON")
+            conn.execute("BEGIN")
+            if _read_schema_version(conn) != SERIES_DB_SCHEMA_VERSION:
+                raise SeriesStorageError(
+                    "graph analysis requires current schema; use controlled migration"
+                )
+            identity = conn.execute(
+                "SELECT series_id FROM series_identity WHERE id = 1"
+            ).fetchone()
+            if identity is None or identity["series_id"] != self.context.series_id:
+                raise SeriesStorageError("series.db identity does not match repository context")
+            self._require_registered_member(conn, access)
+            yield conn
+        finally:
+            conn.close()
+
+    def traverse_dependencies(
+        self,
+        access: SeriesAccessContext,
+        start: GraphNodeRef,
+        policy: DependencyTraversalPolicy | None = None,
+    ) -> tuple[DependencyTraversalStep, ...]:
+        self._require_access_context(access)
+        if policy is None or not getattr(policy, "read_only", False):
+            self.require_registered_member(access)
+        return _traverse_scoped_dependencies(
+            self, start, policy, error_type=SeriesStorageError,
+            read_connection=lambda: self._graph_read_connection(access),
+        )
 
     def register_member(self, access: SeriesAccessContext, membership: Any) -> Any:
         from app.p20_core.series_memory import SeriesMembershipRecord

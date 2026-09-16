@@ -374,8 +374,6 @@ class EdgeRecord(SerializableRecord):
         if not _SAFE_ID_BODY.fullmatch(edge_id):
             raise DomainContractError("edge_id contains unsafe characters")
         scope = StorageScope(self.scope_type, self.scope_id)
-        if scope.scope_type.value != "PROJECT":
-            raise DomainContractError("edge scope must be PROJECT")
         object.__setattr__(self, "scope_type", scope.scope_type.value)
         object.__setattr__(self, "scope_id", scope.scope_id)
         for side in ("source", "target"):
@@ -383,8 +381,14 @@ class EdgeRecord(SerializableRecord):
             node_type = getattr(self, f"{side}_type")
             if node_type not in {node_id.namespace.name, node_id.namespace.value}:
                 raise DomainContractError(f"{side}_type does not match domain id namespace")
-            if node_id.namespace == DomainNamespace.PROJECT and str(node_id) != scope.scope_id:
+            if (scope.scope_type.value == "PROJECT"
+                    and node_id.namespace == DomainNamespace.PROJECT
+                    and str(node_id) != scope.scope_id):
                 raise DomainContractError("cross-project edge endpoint is forbidden")
+            if (scope.scope_type.value == "SERIES"
+                    and node_id.namespace == DomainNamespace.SERIES
+                    and str(node_id) != scope.scope_id):
+                raise DomainContractError("cross-series edge endpoint is forbidden")
             object.__setattr__(self, f"{side}_id", node_id)
             object.__setattr__(self, f"{side}_type", node_id.namespace.name)
         try:
@@ -404,7 +408,7 @@ class EdgeRecord(SerializableRecord):
     @property
     def scope(self) -> StorageScope:
         # Both endpoints are local to this scope; IDs never trigger global lookup.
-        return StorageScope.project(self.scope_id)
+        return StorageScope(self.scope_type, self.scope_id)
 
 
 @dataclass(frozen=True)

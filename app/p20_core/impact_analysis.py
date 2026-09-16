@@ -1,8 +1,4 @@
-"""Read-only potential impact over the project graph, not canonical mutation.
-
-SERIES graph analysis is deliberately unsupported until the existing graph
-contract supports it. Access is checked before that limitation is reported.
-"""
+"""Read-only potential impact over a repository-scoped graph."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,7 +8,8 @@ from types import MappingProxyType
 from app.p20_core.domain_records import DomainContractError, DomainId, DomainNamespace, EdgeRelationType
 from app.p20_core.project_graph import DependencyTraversalPolicy, GraphNodeRef, TraversalDirection
 from app.p20_core.project_repository import (
-    ProjectRepository, ScopeType, SeriesAccessContext, SeriesAccessError, StorageScope,
+    ProjectRepository, ScopeType, SeriesAccessContext, SeriesAccessError,
+    SeriesRepository, StorageScope,
 )
 
 
@@ -132,13 +129,17 @@ class ImpactResult:
                 "operation_type": self.source.operation_type,
             },
             "max_depth": self.max_depth, "max_edges": self.max_edges,
-            "coverage": "BOUNDED_PROJECT_GRAPH",
+            "coverage": (
+                "BOUNDED_PROJECT_GRAPH"
+                if self.source.scope.scope_type == ScopeType.PROJECT
+                else "BOUNDED_SERIES_GRAPH"
+            ),
             "impacts": [item.to_dict() for item in self.impacts],
         }
 
 
 def analyze_impact(
-    repository: ProjectRepository,
+    repository: ProjectRepository | SeriesRepository,
     request: ImpactRequest,
     *,
     max_depth: int = 8,
@@ -150,21 +151,29 @@ def analyze_impact(
     No temporal filtering or automatic invalidation is implied. The result covers
     only persisted edges within the explicit depth bound, not unrecorded links.
     """
-    if not isinstance(repository, ProjectRepository) or not isinstance(request, ImpactRequest):
-        raise DomainContractError("impact requires ProjectRepository and ImpactRequest")
-    repository.require_scope(StorageScope.project(request.project_id))
-    if request.scope.scope_type == ScopeType.SERIES:
+    if not isinstance(repository, (ProjectRepository, SeriesRepository)) or not isinstance(request, ImpactRequest):
+        raise DomainContractError("impact requires a scoped repository and ImpactRequest")
+    repository.require_scope(request.scope)
+    if request.scope.scope_type == ScopeType.PROJECT:
+        if not isinstance(repository, ProjectRepository):
+            raise DomainContractError("PROJECT impact requires ProjectRepository")
+    else:
+        if not isinstance(repository, SeriesRepository):
+            raise DomainContractError("SERIES impact requires SeriesRepository")
         if not isinstance(series_access, SeriesAccessContext):
             raise SeriesAccessError("impact SERIES requires explicit access context")
         series_access.require_project(request.project_id)
         series_access.require_series(request.scope_id)
-        raise ImpactScopeUnsupportedError("GAP-010 graph supports PROJECT only; SERIES traversal is not available")
     start = GraphNodeRef(request.scope, request.entity_id)
     policy = DependencyTraversalPolicy(
         direction=TraversalDirection.BOTH, max_depth=max_depth, max_edges=max_edges,
         relation_directions=tuple(IMPACT_RELATION_DIRECTIONS.items()), read_only=True,
     )
-    steps = repository.traverse_dependencies(start, policy)
+    steps = (
+        repository.traverse_dependencies(series_access, start, policy)
+        if isinstance(repository, SeriesRepository)
+        else repository.traverse_dependencies(start, policy)
+    )
     # GAP-010 supplies BFS order. Retain its first shortest path, not a second traversal.
     paths: dict[str, tuple[ImpactPathHop, ...]] = {str(start.node_id): ()}
     items = []

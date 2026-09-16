@@ -15,11 +15,17 @@ class GraphNodeRef:
     node_id: DomainId | str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.scope, StorageScope) or self.scope.scope_type.value != "PROJECT":
-            raise DomainContractError("graph node scope must be PROJECT")
+        if not isinstance(self.scope, StorageScope):
+            raise DomainContractError("graph node scope must be PROJECT or SERIES")
         node_id = self.node_id if isinstance(self.node_id, DomainId) else DomainId.parse(self.node_id)
-        if node_id.namespace.value == "PROJ" and str(node_id) != self.scope.scope_id:
+        if (self.scope.scope_type.value == "PROJECT"
+                and node_id.namespace.value == "PROJ"
+                and str(node_id) != self.scope.scope_id):
             raise DomainContractError("cross-project graph node is forbidden")
+        if (self.scope.scope_type.value == "SERIES"
+                and node_id.namespace.value == "SERIES"
+                and str(node_id) != self.scope.scope_id):
+            raise DomainContractError("cross-series graph node is forbidden")
         object.__setattr__(self, "node_id", node_id)
 
 

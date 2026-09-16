@@ -14,9 +14,11 @@ from app.p20_core.project_graph import (
 )
 from app.p20_core.project_repository import (
     PROJECT_DB_MIGRATIONS, PROJECT_DB_SCHEMA_VERSION, ProjectRepository,
-    ProjectStorageError, SchemaMigration, SeriesRepository, StorageResolver,
+    ProjectStorageError, SchemaMigration, SERIES_DB_SCHEMA_VERSION,
+    SeriesAccessContext, SeriesAccessError, SeriesRepository, StorageResolver,
     StorageScope, SystemRepository,
 )
+from app.p20_core.series_memory import SeriesMembershipRecord
 
 
 @pytest.fixture
@@ -52,6 +54,29 @@ def ids(result):
     return [(step.edge.edge_id, step.depth, str(step.to_node)) for step in result]
 
 
+def series_edge(edge_id="series-dependency-1", source="EVENT-series-a",
+                target="EVENT-series-b", series_id="SERIES-graph"):
+    return EdgeRecord(
+        edge_id=edge_id, scope_type="SERIES", scope_id=series_id,
+        source_type="EVENT", source_id=source, target_type="EVENT", target_id=target,
+        relation_type="DEPENDS_ON", valid_from="001", valid_to=None,
+        confidence=1, source_ref="synthetic:series-graph", version=1,
+    )
+
+
+def registered_series(series_id="SERIES-graph", project_id="PROJ-series-member",
+                      book_id="BOOK-series-member"):
+    repository = SeriesRepository(StorageResolver().resolve_series(series_id))
+    repository.initialize()
+    access = SeriesAccessContext.bind(project_id, series_id)
+    repository.register_member(access, SeriesMembershipRecord(
+        series_id=series_id, project_id=project_id, book_id=book_id,
+        source_ref="synthetic:series-membership", version=1,
+        created_at="2026-09-16T00:00:00Z",
+    ))
+    return repository, access
+
+
 def test_edge_contract_stable_ids_provenance_and_canonical_serialization():
     record = edge()
     assert isinstance(record.source_id, DomainId)
@@ -70,7 +95,7 @@ def test_edge_contract_stable_ids_provenance_and_canonical_serialization():
     {"target_id": "EVENT-../escape"}, {"source_id": "EVENT-.."},
     {"source_type": "FACT"}, {"target_type": "SCENE"},
     {"edge_id": "../edge"}, {"edge_id": ""},
-    {"scope_type": "SERIES"}, {"relation_type": "INVENTED"},
+    {"scope_type": "SYSTEM"}, {"relation_type": "INVENTED"},
     {"valid_from": "002", "valid_to": "001"},
     {"confidence": float("nan")}, {"confidence": 1.1},
     {"source_ref": ""}, {"version": 0},
@@ -101,6 +126,70 @@ def test_repository_roundtrip_and_no_overwrite(repo, isolated_agentpro_storage):
     assert repo.get_edge("dependency-1") == edge()
 
 
+def test_series_edge_persistence_traversal_reopen_and_rollback(isolated_agentpro_storage):
+    repository, access = registered_series()
+    first = series_edge()
+    second = series_edge("series-dependency-2", "EVENT-series-b", "EVENT-series-c")
+    with repository.domain_transaction(access) as tx:
+        tx.add_edge(first, source_scope=repository.scope, target_scope=repository.scope)
+        tx.add_edge(second, source_scope=repository.scope, target_scope=repository.scope)
+    reopened = SeriesRepository(StorageResolver().resolve_series("SERIES-graph"))
+    assert reopened.list_edges(access) == (first, second)
+    traversal = reopened.traverse_dependencies(
+        access, GraphNodeRef(reopened.scope, "EVENT-series-a"),
+        DependencyTraversalPolicy(max_depth=2),
+    )
+    assert ids(traversal) == [
+        ("series-dependency-1", 1, "EVENT-series-b"),
+        ("series-dependency-2", 2, "EVENT-series-c"),
+    ]
+    with pytest.raises(RuntimeError, match="abort"):
+        with reopened.domain_transaction(access) as tx:
+            tx.add_edge(
+                series_edge("series-rolled-back", "EVENT-series-c", "EVENT-series-d"),
+                source_scope=reopened.scope, target_scope=reopened.scope,
+            )
+            raise RuntimeError("abort")
+    assert reopened.get_edge(access, "series-rolled-back") is None
+
+
+def test_series_graph_access_and_cross_series_isolation(isolated_agentpro_storage):
+    first, access = registered_series("SERIES-graph-a")
+    second, second_access = registered_series("SERIES-graph-b")
+    with first.domain_transaction(access) as tx:
+        tx.add_edge(
+            series_edge(series_id="SERIES-graph-a"),
+            source_scope=first.scope, target_scope=first.scope,
+        )
+    assert second.list_edges(second_access) == ()
+    with pytest.raises(SeriesAccessError):
+        first.list_edges(second_access)
+    with pytest.raises(SeriesAccessError):
+        first.traverse_dependencies(
+            second_access, GraphNodeRef(second.scope, "EVENT-series-a")
+        )
+
+
+def test_controlled_series_v2_to_v3_graph_migration_preserves_membership(isolated_agentpro_storage):
+    repository, access = registered_series("SERIES-graph-migration")
+    with repository.connect() as conn:
+        conn.execute("DROP TABLE edges")
+        conn.execute("UPDATE schema_version SET version=2")
+        conn.execute("UPDATE series_identity SET schema_version=2")
+    assert repository.inspect_schema().migration_needed
+    with pytest.raises(ValueError, match="controlled migration"):
+        repository.list_edges(access)
+    status = repository.migrate_schema()
+    assert status.current_version == SERIES_DB_SCHEMA_VERSION == 3
+    assert repository.require_registered_member(access).project_id.value == access.project_id
+    with repository.domain_transaction(access) as tx:
+        tx.add_edge(
+            series_edge(series_id="SERIES-graph-migration"),
+            source_scope=repository.scope, target_scope=repository.scope,
+        )
+    assert len(repository.list_edges(access)) == 1
+
+
 @pytest.mark.parametrize("foreign", ["record", "source", "target"])
 def test_cross_project_edge_write_rejected(repo, foreign):
     other = StorageScope.project("PROJ-other")
@@ -121,13 +210,14 @@ def test_cross_project_traversal_rejected(repo):
         repo.traverse_dependencies("EVENT-a")
 
 
-def test_graph_node_requires_valid_project_scoped_id():
-    with pytest.raises(DomainContractError):
-        GraphNodeRef(StorageScope.series("SERIES-one"), "EVENT-a")
+def test_graph_node_requires_valid_scoped_id():
+    assert GraphNodeRef(StorageScope.series("SERIES-one"), "EVENT-a").scope == StorageScope.series("SERIES-one")
     with pytest.raises(DomainContractError):
         GraphNodeRef(StorageScope.project("PROJ-one"), "EVENT-../a")
     with pytest.raises(DomainContractError):
         GraphNodeRef(StorageScope.project("PROJ-one"), "PROJ-other")
+    with pytest.raises(DomainContractError):
+        GraphNodeRef(StorageScope.series("SERIES-one"), "SERIES-other")
 
 
 def test_whole_domain_transaction_rolls_back(repo):
@@ -212,7 +302,7 @@ def test_malformed_stored_graph_fails_closed(repo, corruption):
         repo.get_edge("dependency-1")
 
 
-def test_project_isolation_and_series_system_unchanged(repo):
+def test_project_isolation_and_other_stores_unchanged(repo):
     resolver = StorageResolver()
     other = ProjectRepository(resolver.resolve_project("PROJ-other"))
     series = SeriesRepository(resolver.resolve_series("SERIES-graph"))
@@ -226,9 +316,10 @@ def test_project_isolation_and_series_system_unchanged(repo):
     assert other.list_edges() == ()
     assert traverse(other) == ()
     assert {p: p.read_bytes() for p in before} == before
-    for r in (series, system):
-        with r.connect() as conn:
-            assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'edges'").fetchone() is None
+    with series.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0] == 0
+    with system.connect() as conn:
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'edges'").fetchone() is None
 
 
 def old_schema(repo):

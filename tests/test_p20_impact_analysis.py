@@ -7,14 +7,14 @@ import pytest
 
 from app.p20_core.domain_records import DomainContractError, DomainId, EdgeRecord, EdgeRelationType
 from app.p20_core.impact_analysis import (
-    IMPACT_RELATION_DIRECTIONS, ImpactClass, ImpactRequest, ImpactScopeUnsupportedError,
-    analyze_impact,
+    IMPACT_RELATION_DIRECTIONS, ImpactClass, ImpactRequest, analyze_impact,
 )
 from app.p20_core.project_graph import DependencyTraversalPolicy, GraphTraversalLimitError, TraversalDirection
 from app.p20_core.project_repository import (
     PROJECT_DB_SCHEMA_VERSION, ProjectRepository, ProjectStorageError,
     SeriesAccessContext, SeriesAccessError, SeriesRepository, StorageResolver,
 )
+from app.p20_core.series_memory import SeriesMembershipRecord
 
 
 @pytest.fixture
@@ -136,20 +136,35 @@ def test_cross_project_scope_and_same_local_ids(repo):
 
 @pytest.mark.parametrize("access", [None, SeriesAccessContext.bind("PROJ-other", "SERIES-one"),
                                     SeriesAccessContext.bind("PROJ-impact", "SERIES-other")])
-def test_series_requires_exact_access_before_any_read(repo, access, monkeypatch):
-    monkeypatch.setattr(repo, "traverse_dependencies", lambda *args: pytest.fail("unexpected graph read"))
-    with pytest.raises(SeriesAccessError):
-        analyze_impact(repo, request(scope_type="SERIES", scope_id="SERIES-one"), series_access=access)
-
-
-def test_authorized_series_is_explicitly_unsupported_not_global_or_empty(repo):
+def test_series_requires_exact_access_before_any_read(isolated_agentpro_storage, access, monkeypatch):
     series = SeriesRepository(StorageResolver().resolve_series("SERIES-one"))
     series.initialize()
+    monkeypatch.setattr(series, "traverse_dependencies", lambda *args: pytest.fail("unexpected graph read"))
+    with pytest.raises(SeriesAccessError):
+        analyze_impact(series, request(scope_type="SERIES", scope_id="SERIES-one"), series_access=access)
+
+
+def test_authorized_series_impact_uses_series_repository_without_project_fallback(repo):
+    series = SeriesRepository(StorageResolver().resolve_series("SERIES-one"))
+    series.initialize()
+    access = SeriesAccessContext.bind("PROJ-impact", "SERIES-one")
+    series.register_member(access, SeriesMembershipRecord(
+        series_id="SERIES-one", project_id="PROJ-impact", book_id="BOOK-impact",
+        source_ref="synthetic:membership", version=1, created_at="2026-09-16T00:00:00Z",
+    ))
+    series_edge = edge("series-1", "SCENE-series", "FACT-a")
+    series_edge = EdgeRecord(**dict(series_edge.to_dict(), scope_type="SERIES", scope_id="SERIES-one"))
+    with series.domain_transaction(access) as tx:
+        tx.add_edge(series_edge, source_scope=series.scope, target_scope=series.scope)
     before = series.db_path.read_bytes()
-    with pytest.raises(ImpactScopeUnsupportedError, match="PROJECT only"):
-        analyze_impact(repo, request(scope_type="SERIES", scope_id="SERIES-one"),
-                       series_access=SeriesAccessContext.bind("PROJ-impact", "SERIES-one"))
+    result = analyze_impact(
+        series, request(scope_type="SERIES", scope_id="SERIES-one"), series_access=access,
+    )
+    assert [item.entity_id for item in result.impacts] == ["SCENE-series"]
+    assert result.to_dict()["coverage"] == "BOUNDED_SERIES_GRAPH"
     assert series.db_path.read_bytes() == before
+    with pytest.raises(ProjectStorageError):
+        analyze_impact(repo, request(scope_type="SERIES", scope_id="SERIES-one"), series_access=access)
 
 
 def test_analysis_reuses_traversal_once_and_does_not_mutate(repo, monkeypatch):

@@ -10,7 +10,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict
 
 from app.p20_core.local_operator import OperatorError, authenticate, project_for_operator
-from app.p20_core.project_repository import ensure_system_repository, SeriesAccessError
+from app.p20_core.project_repository import (
+    ensure_system_repository, SeriesAccessContext, SeriesAccessError,
+    SeriesRepository, StorageResolver, SystemRepository,
+)
 from app.p20_core.canon_service import operator_proposal_review, record_operator_decision, commit_canonical_proposal
 
 router = APIRouter(prefix="/operator", tags=["local operator"])
@@ -67,6 +70,31 @@ def _project(registry, project_id):
     return project_for_operator(registry, project_id, book_id)
 
 
+def _proposal_target(registry, project_id: str, proposal_id: str):
+    """Resolve an authorized proposal to its sole owning local repository."""
+    project = _project(registry, project_id)
+    matches = []
+    if project.get_metadata("canonical_proposal.v1:" + proposal_id) is not None:
+        return project, None
+    book_id = registry[project_id]
+    system_reader = SystemRepository(StorageResolver().resolve_system())
+    for series_id, membership_book_id in system_reader.discover_series_memberships(project_id):
+        if membership_book_id != book_id:
+            continue
+        access = SeriesAccessContext.bind(project_id, series_id)
+        series = SeriesRepository(StorageResolver().resolve_series(series_id))
+        if series.get_metadata_readonly(
+            access, "canonical_proposal.v1:" + proposal_id,
+        ) is not None:
+            series.require_registered_member(access, book_id=book_id)
+            matches.append((series, access))
+    if not matches:
+        raise OperatorError("PROPOSAL_NOT_FOUND", 404)
+    if len(matches) != 1:
+        raise OperatorError("PROPOSAL_SCOPE_AMBIGUOUS", 409)
+    return matches[0]
+
+
 @router.get("/identity")
 def identity(principal=Depends(authenticated_operator)):
     return _with_operator(principal, lambda operator, registry: operator.to_dict())
@@ -74,16 +102,24 @@ def identity(principal=Depends(authenticated_operator)):
 
 @router.get("/projects/{project_id}/proposals/{proposal_id}")
 def read_proposal(project_id: str, proposal_id: str, principal=Depends(authenticated_operator)):
-    return _with_operator(principal, lambda operator, registry:
-        operator_proposal_review(_project(registry, project_id), proposal_id, operator,
-                                ttl_seconds=challenge_ttl_seconds(), issue_challenge=False))
+    def operation(operator, registry):
+        repository, access = _proposal_target(registry, project_id, proposal_id)
+        return operator_proposal_review(
+            repository, proposal_id, operator, ttl_seconds=challenge_ttl_seconds(),
+            issue_challenge=False, series_access=access,
+        )
+    return _with_operator(principal, operation)
 
 
 @router.post("/projects/{project_id}/proposals/{proposal_id}/review")
 def prepare_decision(project_id: str, proposal_id: str, principal=Depends(authenticated_operator)):
-    return _with_operator(principal, lambda operator, registry:
-        operator_proposal_review(_project(registry, project_id), proposal_id, operator,
-                                ttl_seconds=challenge_ttl_seconds()))
+    def operation(operator, registry):
+        repository, access = _proposal_target(registry, project_id, proposal_id)
+        return operator_proposal_review(
+            repository, proposal_id, operator, ttl_seconds=challenge_ttl_seconds(),
+            series_access=access,
+        )
+    return _with_operator(principal, operation)
 
 
 class DecisionRequest(BaseModel):
@@ -98,8 +134,12 @@ class DecisionRequest(BaseModel):
 @router.post("/projects/{project_id}/proposals/{proposal_id}/decision")
 def decide(project_id: str, proposal_id: str, body: DecisionRequest,
            principal=Depends(authenticated_operator)):
-    return _with_operator(principal, lambda operator, registry:
-        record_operator_decision(_project(registry, project_id), proposal_id, operator, body.model_dump()))
+    def operation(operator, registry):
+        repository, access = _proposal_target(registry, project_id, proposal_id)
+        return record_operator_decision(
+            repository, proposal_id, operator, body.model_dump(), series_access=access,
+        )
+    return _with_operator(principal, operation)
 
 
 class CommitRequest(BaseModel):
@@ -110,6 +150,10 @@ class CommitRequest(BaseModel):
 @router.post("/projects/{project_id}/proposals/{proposal_id}/commit")
 def commit(project_id: str, proposal_id: str, body: CommitRequest,
            principal=Depends(authenticated_operator)):
-    return _with_operator(principal, lambda operator, registry:
-        commit_canonical_proposal(_project(registry, project_id), proposal_id,
-                                  expected_hash=body.proposal_hash, identity=operator))
+    def operation(operator, registry):
+        repository, access = _proposal_target(registry, project_id, proposal_id)
+        return commit_canonical_proposal(
+            repository, proposal_id, expected_hash=body.proposal_hash,
+            identity=operator, series_access=access,
+        )
+    return _with_operator(principal, operation)

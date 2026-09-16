@@ -8,6 +8,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
+from app.p20_core.domain_records import SceneContract
 from app.p20_core.project_repository import ProjectRepository, ProjectStorageError
 
 
@@ -57,6 +58,15 @@ def _unit(value: Any, name: str) -> float:
     result = float(value)
     if not math.isfinite(result) or result < 0 or result > 1:
         raise AdaptiveStyleError(f"{name} must be between 0 and 1")
+    return result
+
+
+def _non_negative_number(value: Any, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AdaptiveStyleError(f"{name} must be numeric")
+    result = float(value)
+    if not math.isfinite(result) or result < 0:
+        raise AdaptiveStyleError(f"{name} must be a non-negative finite number")
     return result
 
 
@@ -232,8 +242,8 @@ class SceneIndexKey:
     def __post_init__(self) -> None:
         for name in ("scene_type", "narrative_function", "pov"):
             object.__setattr__(self, name, _text(getattr(self, name), name))
-        object.__setattr__(self, "target_tension", _unit(self.target_tension, "target_tension"))
-        object.__setattr__(self, "target_pace", _unit(self.target_pace, "target_pace"))
+        object.__setattr__(self, "target_tension", _non_negative_number(self.target_tension, "target_tension"))
+        object.__setattr__(self, "target_pace", _non_negative_number(self.target_pace, "target_pace"))
         object.__setattr__(self, "book_style_dna_version", _version(self.book_style_dna_version, "book_style_dna_version"))
 
     def to_dict(self) -> dict[str, Any]:
@@ -429,6 +439,9 @@ class StyleRepository:
         payload_json = _canonical_json(dna.to_dict())
         with self.project_repository.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            active = conn.execute("SELECT version FROM book_style_dna WHERE scope_type='PROJECT' AND scope_id=? AND book_id=? AND is_active=1", (self.project_repository.scope.scope_id, dna.book_id)).fetchone()
+            if active is not None and dna.version < int(active["version"]):
+                raise ProjectStorageError("BookStyleDNA cannot replace a newer active version")
             existing = conn.execute("SELECT payload_json FROM book_style_dna WHERE scope_type='PROJECT' AND scope_id=? AND book_id=? AND version=?", (self.project_repository.scope.scope_id, dna.book_id, dna.version)).fetchone()
             if existing is not None and str(existing["payload_json"]) != payload_json:
                 raise ProjectStorageError("BookStyleDNA version already exists with different content")
@@ -522,7 +535,11 @@ class StyleComposer:
                 components.append((sum(getattr(item.genome, name) for item in matching_profiles) / len(matching_profiles), 0.2))
             weighted_history = [(getattr(item.achieved_genome, name), item.decayed_weight(dna.version)) for item in selected_history]
             if weighted_history and sum(weight for _value, weight in weighted_history) > 0:
-                components.append((sum(value * weight for value, weight in weighted_history) / sum(weight for _value, weight in weighted_history), 0.2))
+                history_weight = min(
+                    0.2,
+                    0.2 * sum(weight for _value, weight in weighted_history) / len(weighted_history),
+                )
+                components.append((sum(value * weight for value, weight in weighted_history) / sum(weight for _value, weight in weighted_history), history_weight))
             total_weight = sum(weight for _value, weight in components)
             values[name] = dna.genome_bounds[name].clamp(sum(value * weight for value, weight in components) / total_weight)
         values["lexical_register"] = dna.lexical_register
@@ -587,28 +604,45 @@ def prepare_adaptive_style_session(
     *,
     technical_retry: bool = False,
     operation_id: str | None = None,
+    require_style: bool = False,
 ) -> AdaptiveStyleSession | None:
     config = payload.get("adaptive_style")
     style_repository = StyleRepository(project_repository)
+    dna = style_repository.get_active_book_style_dna()
     if config is None:
+        if dna is not None and require_style:
+            raise AdaptiveStyleError("adaptive_style scene context is required for active BookStyleDNA")
         return None
     if not isinstance(config, Mapping):
         raise AdaptiveStyleError("adaptive_style must be an object")
-    dna_payload = config.get("book_style_dna")
-    if dna_payload is not None:
-        dna = BookStyleDNA.from_dict(dna_payload)
-        style_repository.save_book_style_dna(dna)
-    else:
-        dna = style_repository.get_active_book_style_dna()
+    forbidden_runtime_sources = {
+        key for key in ("book_style_dna", "style_library_profiles")
+        if key in config
+    }
+    if forbidden_runtime_sources:
+        raise AdaptiveStyleError(
+            "runtime payload cannot modify curated style sources: "
+            + ", ".join(sorted(forbidden_runtime_sources))
+        )
     if dna is None:
-        raise AdaptiveStyleError("adaptive_style requires persisted or supplied BookStyleDNA")
-    for item in config.get("style_library_profiles", ()):
-        style_repository.save_library_profile(StyleLibraryProfile.from_dict(item))
-    scene = config.get("scene")
-    if not isinstance(scene, Mapping):
-        raise AdaptiveStyleError("adaptive_style.scene is required")
-    scene_id = _text(scene.get("scene_id"), "scene_id")
-    key = SceneIndexKey(scene_type=scene.get("scene_type"), narrative_function=scene.get("narrative_function"), pov=scene.get("pov"), target_tension=scene.get("target_tension"), target_pace=scene.get("target_pace"), book_style_dna_version=dna.version)
+        raise AdaptiveStyleError("adaptive_style requires persisted BookStyleDNA")
+    raw_scene_contract = config.get("scene_contract")
+    if not isinstance(raw_scene_contract, Mapping):
+        raise AdaptiveStyleError("adaptive_style.scene_contract is required")
+    try:
+        scene_contract = SceneContract(**dict(raw_scene_contract))
+        scene_contract.require_project_scope(project_repository.scope)
+    except (TypeError, ValueError) as exc:
+        raise AdaptiveStyleError("adaptive_style.scene_contract is invalid") from exc
+    scene_id = str(scene_contract.scene_id)
+    key = SceneIndexKey(
+        scene_type=config.get("scene_type"),
+        narrative_function=scene_contract.purpose,
+        pov=str(scene_contract.pov_character_id),
+        target_tension=scene_contract.target_tension,
+        target_pace=scene_contract.target_pace,
+        book_style_dna_version=dna.version,
+    )
     recipe = (
         style_repository.get_recipe_for_operation(operation_id)
         if operation_id is not None

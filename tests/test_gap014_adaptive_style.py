@@ -4,11 +4,13 @@ import json
 import hashlib
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.p20_core.adaptive_style import (
     AdaptiveStyleSession,
+    AdaptiveStyleError,
     BookStyleDNA,
     GenomeBound,
     SceneIndexKey,
@@ -18,9 +20,18 @@ from app.p20_core.adaptive_style import (
     StyleLibraryProfile,
     StylePerformanceRecord,
     StyleRepository,
+    prepare_adaptive_style_session,
 )
 from app.p20_core.book_bible_test_helper import ensure_test_book_bible
-from app.p20_core.project_repository import ProjectRepository, StorageResolver
+from app.p20_core.project_repository import (
+    ProjectRepository,
+    ProjectStorageError,
+    StorageResolver,
+)
+from app.p20_core.context_runtime import (
+    ProjectExecutionContext,
+    build_runtime_context_package,
+)
 from app.p20_core.storage_paths import get_runs_root, get_storage_root
 
 
@@ -97,6 +108,9 @@ def test_dna_persistence_reopen_versioning_and_project_isolation(isolated_agentp
     foreign = StyleRepository(repository("PROJ-style-b", "BOOK-style-b"))
     assert foreign.get_active_book_style_dna() is None
     assert foreign.list_performance() == ()
+
+    with pytest.raises(ProjectStorageError, match="newer active version"):
+        styles.save_book_style_dna(dna("BOOK-style-a", 1, 0.4))
 
 
 def test_composer_is_deterministic_bounded_and_uses_full_scene_index(isolated_agentpro_storage):
@@ -186,6 +200,48 @@ def test_quality_gate_controls_performance_idempotently_and_old_dna_decays(isola
     assert accepted.decayed_weight(1) == 0.9
     assert accepted.decayed_weight(2) == 0.225
 
+    new_dna = dna("BOOK-style-gate", 2, 0.5)
+    current_record = StylePerformanceRecord.from_dict(
+        {
+            **accepted.to_dict(),
+            "performance_id": "STYLE-PERF-current-version",
+            "scene_index_key": scene_key(2).to_dict(),
+            "dna_version": 2,
+            "achieved_genome": genome(0.7).to_dict(),
+        }
+    )
+    old_record = StylePerformanceRecord.from_dict(
+        {
+            **accepted.to_dict(),
+            "performance_id": "STYLE-PERF-old-version",
+            "achieved_genome": genome(0.7).to_dict(),
+        }
+    )
+    without_history = StyleComposer().compose(
+        dna=new_dna,
+        scene_id="SCENE-style-decay",
+        scene_index_key=scene_key(2),
+        library=(),
+        history=(),
+    )
+    with_current = StyleComposer().compose(
+        dna=new_dna,
+        scene_id="SCENE-style-decay",
+        scene_index_key=scene_key(2),
+        library=(),
+        history=(current_record,),
+    )
+    with_old = StyleComposer().compose(
+        dna=new_dna,
+        scene_id="SCENE-style-decay",
+        scene_index_key=scene_key(2),
+        library=(),
+        history=(old_record,),
+    )
+    current_influence = abs(with_current.target_genome.pacing - without_history.target_genome.pacing)
+    old_influence = abs(with_old.target_genome.pacing - without_history.target_genome.pacing)
+    assert 0 < old_influence < current_influence
+
 
 def test_noncompliant_style_cannot_create_performance(isolated_agentpro_storage):
     repo = repository("PROJ-style-negative", "BOOK-style-negative")
@@ -247,19 +303,110 @@ def test_project_schema_v4_migrates_to_adaptive_style_storage(isolated_agentpro_
     assert StyleRepository(repo).get_active_book_style_dna().version == 1
 
 
-def _adaptive_payload(book_id: str) -> dict:
+def _scene_contract(project_id: str) -> dict:
     return {
-        "book_style_dna": dna(book_id).to_dict(),
-        "style_library_profiles": [library().to_dict()],
-        "scene": {
-            "scene_id": "SCENE-gap014-api",
-            "scene_type": "dialogue",
-            "narrative_function": "revelation",
-            "pov": "close-third",
-            "target_tension": 0.7,
-            "target_pace": 0.6,
-        },
+        "scene_id": "SCENE-gap014-api",
+        "project_id": project_id,
+        "chapter_id": "CHAPTER-gap014-api",
+        "order": 1,
+        "narrative_order": 1,
+        "pov_character_id": "CHAR-gap014-pov",
+        "participant_character_ids": ["CHAR-gap014-pov"],
+        "location_id": None,
+        "route_id": None,
+        "time_start": "T0",
+        "time_end": "T1",
+        "purpose": "revelation",
+        "goal": "test goal",
+        "obstacle": "test obstacle",
+        "conflict": "test conflict",
+        "stakes": "test stakes",
+        "outcome": "test outcome",
+        "state_change": "test state change",
+        "facts_required": [],
+        "facts_created": [],
+        "facts_revealed": [],
+        "must_include_facts": [],
+        "must_include_events": [],
+        "must_include_threads": [],
+        "must_include_character_states": [],
+        "threads_opened": [],
+        "threads_progressed": [],
+        "threads_closed": [],
+        "setups_created": [],
+        "payoffs_completed": [],
+        "reader_knowledge_added": [],
+        "target_tension": 5,
+        "target_pace": 4,
+        "status": "READY_TO_WRITE",
+        "version": 1,
     }
+
+
+def _adaptive_payload(project_id: str) -> dict:
+    return {
+        "scene_type": "dialogue",
+        "scene_contract": _scene_contract(project_id),
+    }
+
+
+def test_runtime_cannot_mutate_style_sources_and_active_dna_cannot_be_skipped(
+    isolated_agentpro_storage,
+):
+    repo = repository("PROJ-style-runtime-guard", "BOOK-style-runtime-guard")
+    styles = StyleRepository(repo)
+    styles.save_book_style_dna(dna("BOOK-style-runtime-guard"))
+    styles.save_library_profile(library())
+
+    with pytest.raises(AdaptiveStyleError, match="runtime payload cannot modify"):
+        prepare_adaptive_style_session(
+            repo,
+            {
+                "adaptive_style": {
+                    **_adaptive_payload("PROJ-style-runtime-guard"),
+                    "book_style_dna": dna("BOOK-style-runtime-guard", 2).to_dict(),
+                }
+            },
+            require_style=True,
+        )
+    assert styles.get_active_book_style_dna().version == 1
+
+    with pytest.raises(AdaptiveStyleError, match="scene context is required"):
+        prepare_adaptive_style_session(repo, {}, require_style=True)
+
+
+def test_context_hash_changes_with_active_dna_version(isolated_agentpro_storage):
+    project_id = "PROJ-style-context-hash"
+    book_id = "BOOK-style-context-hash"
+    repo = repository(project_id, book_id)
+    styles = StyleRepository(repo)
+    styles.save_book_style_dna(dna(book_id, 1, 0.4))
+    execution = ProjectExecutionContext.create(
+        project_id=project_id,
+        book_id=book_id,
+        series_id=None,
+        run_id="run-style-context-hash",
+        step_id="step-style-context-hash",
+    )
+    arguments = {
+        "execution_context": execution,
+        "mode": "WRITE",
+        "role": "AUTHOR",
+        "requested_model": None,
+        "effective_model": "test-model",
+        "tool_input": {"input": "neutral synthetic input"},
+        "context_sources": {},
+    }
+    first = build_runtime_context_package(**arguments)
+    styles.save_book_style_dna(dna(book_id, 2, 0.6))
+    with repo.connect() as connection:
+        connection.execute(
+            "DELETE FROM context_packages WHERE scope_type='PROJECT' AND scope_id=? AND operation_id=?",
+            (project_id, execution.operation_id),
+        )
+    second = build_runtime_context_package(**arguments)
+    assert first.style_version == 1 and second.style_version == 2
+    assert first.context_hash != second.context_hash
 
 
 def test_agent_step_p20_style_flow_context_memory_and_audit(
@@ -272,9 +419,12 @@ def test_agent_step_p20_style_flow_context_memory_and_audit(
     domain_book_id = "BOOK-gap014_api_book"
     run_id = "run-gap014-api"
     ensure_test_book_bible(storage_book_id)
+    style_repo = StyleRepository(repository(project_id, domain_book_id))
+    style_repo.save_book_style_dna(dna(domain_book_id))
+    style_repo.save_library_profile(library())
     payload = {
         "input": " ".join(["neutral synthetic narrative sentence"] * 160),
-        "adaptive_style": _adaptive_payload(domain_book_id),
+        "adaptive_style": _adaptive_payload(project_id),
     }
     response = TestClient(app).post(
         "/agent/step",
@@ -305,13 +455,50 @@ def test_agent_step_p20_style_flow_context_memory_and_audit(
     features = write_doc["input"]["style_features"]
     assert set(features) == {"target_genome", "selected_techniques", "recipe_id", "recipe_hash"}
     assert "source_ref" not in json.dumps(features)
-    assert any(item["layer"] == "STYLE" for item in write_doc["input"]["_context_package"]["included_items"])
+    context_items = write_doc["input"]["_context_package"]["included_items"]
+    assert any(item["layer"] == "STYLE" for item in context_items)
+    assert any(
+        item["entity_type"] == "SCENE" and item["reason"] == "active SceneContract"
+        for item in context_items
+    )
     assert quality_doc["adaptive_style"]["performance_record"]["accepted_artifact_hash"] == quality_doc["adaptive_style"]["evaluation"]["artifact_hash"]
     assert quality_doc["result"]["payload"]["meta"]["artifact_hash"] == quality_doc["adaptive_style"]["evaluation"]["artifact_hash"]
 
     audit = json.loads((get_runs_root() / run_id / "audit.json").read_text(encoding="utf-8"))
     assert audit["adaptive_style"]["recipe"]["recipe_hash"] == features["recipe_hash"]
     assert audit["adaptive_style"]["performance_record"]["status"] == "ACCEPTED"
+
+    omitted = TestClient(app).post(
+        "/agent/step",
+        json={
+            "project_id": project_id,
+            "book_id": storage_book_id,
+            "run_id": "run-gap014-omitted-style",
+            "mode": "WRITE",
+            "payload": {"input": "neutral synthetic input"},
+        },
+    )
+    assert omitted.status_code == 422
+    assert "scene context is required" in omitted.json()["detail"]
+
+    mutation_attempt = TestClient(app).post(
+        "/agent/step",
+        json={
+            "project_id": project_id,
+            "book_id": storage_book_id,
+            "run_id": "run-gap014-style-mutation",
+            "mode": "WRITE",
+            "payload": {
+                "input": "neutral synthetic input",
+                "adaptive_style": {
+                    **_adaptive_payload(project_id),
+                    "book_style_dna": dna(domain_book_id, 2).to_dict(),
+                },
+            },
+        },
+    )
+    assert mutation_attempt.status_code == 422
+    assert style_repo.get_active_book_style_dna().version == 1
 
     retry = TestClient(app).post(
         "/agent/step",

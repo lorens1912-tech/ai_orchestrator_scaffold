@@ -6,6 +6,7 @@ from app.p20_core.contracts import AgentStepRequest
 from app.p20_core.book_bible_contract import BookBibleContractError
 from app.p20_core.canon_rebuild import canon_rebuild_endpoint
 from app.p20_core.context_runtime import ProjectExecutionIdentityError
+from app.p20_core.adaptive_style import AdaptiveStyleError
 from app.config_registry import load_presets
 from app.canon_check import canon_check
 from app.canon_store import load_canon
@@ -20,6 +21,8 @@ app.include_router(operator_router)
 
 
 def _agent_input_error_status(exc: ValueError) -> int | None:
+    if isinstance(exc, AdaptiveStyleError):
+        return 422
     detail = str(exc)
     if (
         detail.startswith("Unknown mode:")

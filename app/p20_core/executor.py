@@ -623,6 +623,10 @@ def execute_p20(*args, **kwargs) -> List[str]:
             payload_exec,
             technical_retry=execution_context.technical_retry,
             operation_id=execution_context.operation_id,
+            require_style=any(
+                mode in {"WRITE", "EDIT", "REWRITE"}
+                for mode in modes_exec
+            ),
         )
 
     run_dir = _run_dir(run_id)

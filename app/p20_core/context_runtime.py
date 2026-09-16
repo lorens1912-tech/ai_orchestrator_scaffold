@@ -21,7 +21,7 @@ from app.p20_core.context_builder import (
     STRUCTURED_FIRST_LAYER_ORDER,
     default_context_profiles,
 )
-from app.p20_core.domain_records import DomainId, DomainNamespace
+from app.p20_core.domain_records import DomainId, DomainNamespace, SceneContract
 from app.p20_core.project_graph import GraphNodeRef
 from app.p20_core.project_repository import (
     ProjectRepository,
@@ -482,6 +482,17 @@ def build_runtime_context_package(
         context_sources.get("book_bible_version") or _source_version(book_bible)
     )
     source_ref = f"runs/{execution_context.run_id}/steps/{execution_context.step_id}"
+    scene_contract = None
+    adaptive_style = tool_input.get("adaptive_style")
+    if isinstance(adaptive_style, Mapping) and isinstance(
+        adaptive_style.get("scene_contract"), Mapping
+    ):
+        try:
+            scene_contract = SceneContract(**dict(adaptive_style["scene_contract"]))
+        except (TypeError, ValueError) as exc:
+            raise ProjectExecutionIdentityError(
+                "adaptive style SceneContract is invalid"
+            ) from exc
 
     direct_candidates = [
         ContextCandidate(
@@ -556,6 +567,7 @@ def build_runtime_context_package(
         graph_version=repository.get_schema_version(),
         created_at=datetime.now(timezone.utc).isoformat(),
         direct_candidates=tuple(direct_candidates),
+        scene_contract=scene_contract,
         graph_starts=_graph_starts(tool_input, repository),
         semantic_query=None,
     )

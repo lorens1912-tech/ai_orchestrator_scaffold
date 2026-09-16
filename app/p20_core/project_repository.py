@@ -1334,6 +1334,10 @@ class ProjectRepository:
                 (self.scope.scope_type.value, self.scope.scope_id),
             )]
             snapshot = {"records": records, "edges": edges}
+            # Only v2 research proposals bind research state. Original extraction
+            # snapshots and hashes remain byte-for-byte compatible.
+            if document and document["versions"][document["current_version"]]["proposal"].get("source_kind") == "RESEARCH":
+                snapshot["research"] = self.read_research_state(conn)
             if include_writer:
                 yield document, snapshot, conn
             else:
@@ -1344,6 +1348,45 @@ class ProjectRepository:
                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     (key, json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False)),
                 )
+
+    def read_research_state(self, connection=None) -> dict:
+        if connection is None:
+            self.initialize()
+            with self.connect() as conn:
+                return self.read_research_state(conn)
+        row = connection.execute("SELECT value FROM project_metadata WHERE key='research.v1'").fetchone()
+        state = json.loads(row["value"]) if row else {
+            "schema_version": 1, "project_id": self.scope.scope_id,
+            "book_id": self.context.book_id, "records": {}, "sources": {},
+            "claims": {}, "operations": {}, "conflicts": {}, "decisions": {},
+        }
+        if (state.get("schema_version") != 1 or state.get("project_id") != self.scope.scope_id
+                or state.get("book_id") != self.context.book_id
+                or any(item.get("project_id") != self.scope.scope_id
+                       for table in ("records", "sources") for versions in state[table].values() for item in versions)
+                or any(claim.get("research_id") not in state["records"]
+                       for versions in state["claims"].values() for claim in versions)):
+            raise ProjectStorageError("research evidence scope mismatch")
+        return state
+
+    @contextmanager
+    def research_transaction(self):
+        """Project-local research, immutable evidence and operation receipts."""
+        self.initialize()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            state = self.read_research_state(conn)
+            yield state
+            self.write_research_state(conn, state)
+
+    def write_research_state(self, connection, state):
+        if state["project_id"] != self.scope.scope_id or state["book_id"] != self.context.book_id:
+            raise ProjectStorageError("research scope mismatch")
+        connection.execute(
+            "INSERT INTO project_metadata(key,value) VALUES('research.v1',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (json.dumps(state, sort_keys=True, separators=(",", ":"), allow_nan=False),),
+        )
 
     @contextmanager
     def canonical_pipeline_operation(self, operation_id: str):
@@ -1410,6 +1453,46 @@ class ProjectRepository:
         this connection. No filesystem or Series writes participate.
         """
         self.require_scope(StorageScope(proposal["scope_type"], proposal["scope_id"]))
+        if proposal.get("source_kind") == "RESEARCH" or proposal.get("authority_ref") == "P20_VERIFIED_RESEARCH_V1":
+            from app.p20_core.research import validate_promotion_evidence, verified_evidence, digest
+            from app.p20_core.canon_service import canonical_proposal_hash, _validate_review_proposal
+            if not connection.in_transaction:
+                raise ProjectStorageError("research mutation requires local transaction")
+            _validate_review_proposal(self, proposal)
+            row = connection.execute("SELECT value FROM project_metadata WHERE key=?",
+                                     ("canonical_proposal.v1:" + proposal["proposal_id"],)).fetchone()
+            saved = {} if row is None else json.loads(row["value"])
+            record = saved.get("versions", {}).get(saved.get("current_version"), {})
+            if (record.get("proposal", {}).get("proposal_hash") != proposal["proposal_hash"]
+                    or canonical_proposal_hash(proposal) != proposal["proposal_hash"]
+                    or approval is None or record.get("decision") != approval
+                    or record.get("impact") != impact):
+                raise ProjectStorageError("research requires persisted bound operator approval")
+            actual = {"records": [dict(r) for r in connection.execute(
+                "SELECT record_type,record_id,payload_json FROM project_structured_memory_records "
+                "WHERE scope_type=? AND scope_id=? ORDER BY record_type,record_id",
+                ("PROJECT", self.scope.scope_id))],
+                "edges": [dict(r) for r in connection.execute(
+                    "SELECT * FROM edges WHERE scope_type=? AND scope_id=? ORDER BY edge_id",
+                    ("PROJECT", self.scope.scope_id))], "research": self.read_research_state(connection)}
+            if actual != snapshot or digest(actual) != record["basis_hash"]:
+                raise ProjectStorageError("stale physical research write basis")
+            challenge = record.get("challenges", {}).get(approval.get("challenge_id"), {})
+            if (not challenge.get("used") or challenge.get("proposal_hash") != proposal["proposal_hash"]
+                    or challenge.get("basis_hash") != record["basis_hash"]
+                    or challenge.get("operator_id") != approval.get("operator_id")):
+                raise ProjectStorageError("research approval challenge unavailable")
+            validate_promotion_evidence(proposal, actual["research"])
+            evidence = verified_evidence(actual["research"], proposal["research_evidence"]["operation_id"])
+            for operation in [evidence["operation"], *evidence["extractions"].values()]:
+                call = operation["invocation"]
+                package_row = connection.execute("SELECT payload_json FROM context_packages WHERE operation_id=?",
+                                                 (call["call_id"],)).fetchone()
+                if package_row is None:
+                    raise ProjectStorageError("research context unavailable")
+                package = self._decode_context_package(package_row["payload_json"])
+                if package.context_hash != call["context_hash"] or package.context_package_id != call["context_package_id"]:
+                    raise ProjectStorageError("research context binding mismatch")
         decision = DomainMutationGuard().evaluate_canonical(
             proposal=proposal, snapshot=snapshot, impact=impact, approval=approval)
         if decision["outcome"] != "ALLOW":

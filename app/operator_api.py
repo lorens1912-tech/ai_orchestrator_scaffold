@@ -7,7 +7,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.p20_core.local_operator import OperatorError, authenticate, project_for_operator
 from app.p20_core.project_repository import (
@@ -230,3 +230,118 @@ def commit(project_id: str, proposal_id: str, body: CommitRequest,
             identity=operator, series_access=access,
         )
     return _with_operator(principal, operation)
+
+
+class ResearchQuestionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    operation_id: str
+    research_id: str
+    question: str
+    purpose: str
+    related_entity_refs: list[str] = Field(default_factory=list)
+
+
+class ResearchSourceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    operation_id: str
+    source_id: str
+    version: int = Field(ge=1)
+    source_type: Literal["WEB", "PDF", "BOOK", "MAP", "REPORT", "DOCUMENT", "USER_NOTE", "OTHER"]
+    title: str
+    author: str | None = None
+    publisher: str | None = None
+    url_or_reference: str | None = None
+    publication_date: str | None = None
+    reliability: float | None = Field(default=None, ge=0, le=1)
+    notes: str | None = None
+    content: str | None = None
+
+
+class ResearchRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    operation_id: str
+    research_id: str
+    action: Literal["EXTRACT", "VERIFY"]
+    source_refs: list[dict] = Field(default_factory=list)
+    claim_ids: list[str] = Field(default_factory=list)
+    run_id: str
+    step_id: str
+    model: str | None = None
+
+
+class ResearchProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    proposal_id: str
+    operation_id: str
+    target_fact_ids: dict[str, str]
+    fiction_decision: dict | None = None
+
+
+def _research_operation(principal, operation):
+    from app.p20_core.research import ResearchError
+    try:
+        return _with_operator(principal, operation)
+    except ResearchError as exc:
+        raise HTTPException(422, str(exc)) from None
+    except (ValueError, TypeError, KeyError) as exc:
+        # Request and evidence errors expose no provider responses or credentials.
+        raise HTTPException(422, "RESEARCH_INVALID:" + type(exc).__name__) from None
+    except ProjectStorageError:
+        raise HTTPException(409, "RESEARCH_STORAGE_CONFLICT") from None
+
+
+@router.post("/projects/{project_id}/research/questions")
+def research_question(project_id: str, body: ResearchQuestionRequest, principal=Depends(authenticated_operator)):
+    from app.p20_core.research import create_research
+    return _research_operation(principal, lambda operator, registry: create_research(
+        _project(registry, project_id), requested_by=operator.operator_id, **body.model_dump()))
+
+
+@router.post("/projects/{project_id}/research/sources")
+def research_source(project_id: str, body: ResearchSourceRequest, principal=Depends(authenticated_operator)):
+    from app.p20_core.research import import_source
+    return _research_operation(principal, lambda operator, registry: import_source(
+        _project(registry, project_id), **body.model_dump()))
+
+
+@router.get("/projects/{project_id}/research/records/{research_id}")
+def read_research(project_id: str, research_id: str, principal=Depends(authenticated_operator)):
+    from app.p20_core.research import research_context
+    return _research_operation(principal, lambda operator, registry: research_context(
+        _project(registry, project_id), research_id, include_sources=True))
+
+
+@router.post("/projects/{project_id}/research/execute")
+def execute_research(project_id: str, body: ResearchRunRequest, principal=Depends(authenticated_operator)):
+    from app.model_policy import resolve_model
+    from app.p20_core.context_runtime import ProjectExecutionContext
+    from app.p20_core.research import run_research, ResearchError
+    # Release the system credential/registry transaction BEFORE external work.
+    repository = _with_operator(principal, lambda operator, registry: _project(registry, project_id))
+    decision = resolve_model(body.model)
+    if not decision.allowlist_ok and os.getenv("MODEL_POLICY_MODE", "PERMISSIVE").upper() == "STRICT":
+        raise HTTPException(422, "RESEARCH_MODEL_POLICY_DENIED")
+    execution = ProjectExecutionContext.create(project_id=project_id, book_id=repository.context.book_id,
+        series_id=None, run_id=body.run_id, step_id=body.step_id)
+    try:
+        return run_research(repository, execution=execution,
+            **body.model_dump(exclude={"run_id", "step_id", "model"}),
+            requested_model=decision.requested_model, effective_model=decision.effective_model)
+    except ResearchError as exc:
+        raise HTTPException(422, str(exc)) from None
+    except (ValueError, TypeError, KeyError, RuntimeError) as exc:
+        raise HTTPException(422, "RESEARCH_EXECUTION_FAILED:" + type(exc).__name__) from None
+
+
+@router.post("/projects/{project_id}/research/operations/{operation_id}/recover")
+def recover_research(project_id: str, operation_id: str, principal=Depends(authenticated_operator)):
+    from app.p20_core.research import recover_operation
+    return _research_operation(principal, lambda operator, registry: recover_operation(
+        _project(registry, project_id), operation_id, recovered_by=operator.operator_id))
+
+
+@router.post("/projects/{project_id}/research/proposals")
+def propose_research(project_id: str, body: ResearchProposalRequest, principal=Depends(authenticated_operator)):
+    from app.p20_core.canon_service import prepare_research_proposal
+    return _research_operation(principal, lambda operator, registry: prepare_research_proposal(
+        _project(registry, project_id), **body.model_dump()))

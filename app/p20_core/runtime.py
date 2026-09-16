@@ -648,6 +648,13 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
         artifact_paths = normalize_public_artifact_paths(normalize_artifact_paths(stub_out))
         context_traces = _context_traces(artifact_paths)
         adaptive_style_trace = _adaptive_style_trace(artifact_paths)
+        research_results = []
+        for artifact_path in artifact_paths:
+            document = _json_load(_path_for_read(Path(artifact_path)), {})
+            if document.get("mode") == "FACTCHECK":
+                research_results.append(document.get("result", {}).get("payload", {}))
+        research_failed = any(r.get("execution_status") in {"FAILED", "NOT_PERFORMED"}
+                              for r in research_results)
 
         if is_write:
             for _artifact_path in artifact_paths:
@@ -704,7 +711,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
         canon_memory = None
         canonical_change = None
 
-        if decision == "ACCEPT" and "WRITE" in modes:
+        if decision == "ACCEPT" and "WRITE" in modes and not research_failed:
             chapter_commit = persist_chapter_lineage(
                 repository=ProjectRepository(
                     StorageResolver().resolve_project(
@@ -774,7 +781,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             isinstance(canonical_change, dict)
             and canonical_change.get("status") == "FAILED"
         )
-        execution_decision = "FAILED" if canonical_failed else decision
+        execution_decision = "FAILED" if canonical_failed or research_failed else decision
 
         state = save_run_state(
             run_id,
@@ -790,6 +797,8 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
         )
         state["decision"] = execution_decision
         state["canonical_change"] = canonical_change
+        if research_results:
+            state["research"] = research_results
         state["master_canon"] = dict(master_canon_ref)
         state["project_truth"] = dict(project_truth_ref)
         if adaptive_style_trace is not None:
@@ -826,7 +835,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             adaptive_style=adaptive_style_trace,
         )
 
-        execution_ok = (decision == "ACCEPT" or bool(quality_decision)) and not canonical_failed
+        execution_ok = (decision == "ACCEPT" or bool(quality_decision)) and not (canonical_failed or research_failed)
         if quality_decision and decision != "ACCEPT":
             quality_gate_reasons = quality_reasons
         else:
@@ -886,6 +895,8 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             "context_hash": context_traces[-1]["context_hash"] if context_traces else None,
         }
         response.update(stop_fields)
+        if research_results:
+            response["research"] = research_results
         return response
     finally:
         if run_lock_acquired:

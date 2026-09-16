@@ -530,6 +530,28 @@ def build_runtime_context_package(
             mandatory=True,
         ),
     ]
+    research_config = tool_input.get("research")
+    if isinstance(research_config, Mapping) and research_config.get("research_id"):
+        from app.p20_core.research import research_context
+        content = research_context(repository, research_config["research_id"],
+                                   include_sources=context_role == ContextRole.CANON)
+        direct_candidates.append(ContextCandidate(
+            project_id=execution_context.project_id, entity_type="RESEARCH",
+            entity_id=research_config["research_id"], layer=ContextLayer.STRUCTURED_MEMORY,
+            reason="explicit project research, not canonical authority",
+            representations={RepresentationType.STRUCTURED: _canonical_json(content)},
+            source_version=_source_version(content), source_ref="project.db#research.v1",
+            mandatory=True, authority="RESEARCH_ONLY_NOT_CANON",
+        ))
+        if any(c["status"] != "RESOLVED" for c in content["conflicts"]):
+            direct_candidates.append(ContextCandidate(
+                project_id=execution_context.project_id, entity_type="RESEARCH_CONFLICT",
+                entity_id=research_config["research_id"], layer=ContextLayer.CONFLICT,
+                reason="unresolved research contradiction",
+                representations={RepresentationType.STRUCTURED: _canonical_json(content["conflicts"])},
+                source_version=_source_version(content["conflicts"]),
+                source_ref="project.db#research.v1/conflicts", mandatory=True,
+            ))
     if active_style_dna is not None:
         style_content = _canonical_json(active_style_dna.to_dict())
         direct_candidates.append(

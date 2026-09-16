@@ -33,6 +33,7 @@ class MutationType(str, Enum):
 
 
 class MutationReasonCode(str, Enum):
+    RESEARCH_CANONICAL_APPROVAL_REQUIRED = "RESEARCH_CANONICAL_APPROVAL_REQUIRED"
     CREATE_ALLOWED = "CREATE_ALLOWED"
     IDEMPOTENT = "IDEMPOTENT"
     UPDATE_ALLOWED = "UPDATE_ALLOWED"
@@ -47,6 +48,11 @@ class MutationReasonCode(str, Enum):
 
 def _canonical_json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def research_managed(payload: dict | None) -> bool:
+    return bool(payload and (payload.get("predicate") == "research_assertion" or
+                str(payload.get("source_artifact_ref") or "").startswith("project.db#research.v1/")))
 
 
 def _serialize(value: Any) -> Any:
@@ -271,8 +277,17 @@ class DomainMutationGuard:
             return result("DENY", "INVALID_CANONICAL_SCOPE")
         if any(impact.get(k) != v for k, v in binding.items()) or not impact.get("impact_id") or not impact.get("result"):
             return result("DENY", "IMPACT_REQUIRED")
-        if proposal.get("authority_ref") != "P20_VERIFIED_EXTRACTION_V1":
+        research = proposal.get("authority_ref") == "P20_VERIFIED_RESEARCH_V1"
+        if research:
+            from app.p20_core.research import validate_promotion_evidence
+            try:
+                validate_promotion_evidence(proposal, snapshot.get("research", {}))
+            except (ValueError, KeyError, TypeError):
+                return result("DENY", "RESEARCH_EVIDENCE_INVALID")
+        elif proposal.get("authority_ref") != "P20_VERIFIED_EXTRACTION_V1":
             return result("DENY", "AUTHORITY_UNRESOLVED")
+        elif proposal.get("contract_version") != "1.0" or proposal.get("source_kind") is not None:
+            return result("DENY", "EXTRACTION_CONTRACT_MISMATCH")
         if proposal.get("policy_ref") != "CANONICAL_CHANGE_V1":
             return result("DENY", "POLICY_UNRESOLVED")
         current_records = {(r["record_type"], r["record_id"]): json.loads(r["payload_json"])
@@ -281,6 +296,8 @@ class DomainMutationGuard:
         for mutation in proposal["proposed_mutations"]:
             current = current_records.get((mutation["target_entity_type"], mutation["target_entity_id"]))
             proposed = mutation["proposed_state"]
+            if not research and (research_managed(current) or research_managed(proposed)):
+                return result("DENY", "RESEARCH_CANONICAL_APPROVAL_REQUIRED")
             import hashlib
             if mutation["operation_type"] == "CREATE":
                 if current is not None or mutation["expected_current_version"] is not None or mutation["expected_current_hash"] is not None:
@@ -307,11 +324,12 @@ class DomainMutationGuard:
             if check.denied and check.reason_code not in {
                 MutationReasonCode.FROZEN_RECORD, MutationReasonCode.AUTHOR_LOCKED_RECORD,
                 MutationReasonCode.FROZEN_AND_AUTHOR_LOCKED_RECORD,
+                *({MutationReasonCode.RESEARCH_CANONICAL_APPROVAL_REQUIRED} if research else set()),
             }:
                 return result("DENY", check.reason_code.value)
             if current and proposed.get("version", 0) <= current.get("version", 0):
                 return result("DENY", "VERSION_NOT_INCREMENTED")
-        if protected:
+        if protected or research:
             if approval is None:
                 return result("REQUIRE_USER_APPROVAL", "PROTECTED_MUTATION")
             if (any(approval.get(k) != v for k, v in binding.items())
@@ -341,6 +359,11 @@ class DomainMutationGuard:
         proposed_frozen = _payload_frozen(proposed)
         current_author_locked = False if current is None else _payload_author_locked(current)
         proposed_author_locked = _payload_author_locked(proposed)
+
+        if research_managed(current) or research_managed(proposed):
+            return self._deny(context, MutationReasonCode.RESEARCH_CANONICAL_APPROVAL_REQUIRED,
+                              current_version, proposed_version, current_frozen, proposed_frozen,
+                              current_author_locked, proposed_author_locked)
 
         if current is None:
             return self._decision(

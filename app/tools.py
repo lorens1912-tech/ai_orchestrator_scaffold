@@ -315,7 +315,8 @@ def tool_uniqueness(payload: Dict[str, Any]) -> Dict[str, Any]:
     }}
 
 def tool_factcheck(payload: Dict[str, Any]) -> Dict[str, Any]:
-    return {"tool":"FACTCHECK","payload":{"ISSUES":[], "meta":{"requested_model": payload.get("_requested_model")}}}
+    from app.p20_core.research import factcheck
+    return factcheck(payload)
 
 def tool_style(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"tool":"STYLE","payload":{"text": (payload.get("text") or ""), "meta":{"requested_model": payload.get("_requested_model")}}}

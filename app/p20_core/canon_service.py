@@ -63,21 +63,35 @@ def _validate_review_proposal(repository, proposal: dict, *, series_access=None)
         "proposed_mutations", "source", "actor_ref", "authority_ref", "policy_ref",
         "proposal_version", "proposal_hash", "status", "created_at",
     }
-    if set(proposal) != required or proposal["contract_version"] != "1.0":
+    research = proposal.get("contract_version") == "2.0" and proposal.get("source_kind") == "RESEARCH"
+    source_fields = {"source_artifact_id", "source_artifact_ref", "source_artifact_hash",
+                     "source_artifact_version", "source_scene_id", "extraction_candidate_set_id",
+                     "extraction_candidate_hash", "verification_ref"}
+    if research:
+        required = (required - source_fields) | {"source_kind", "research_evidence", "fiction_decision"}
+        if proposal.get("scope_type") != "PROJECT" or proposal.get("authority_ref") != "P20_VERIFIED_RESEARCH_V1":
+            raise OperatorError("RESEARCH_AUTHORITY_SCOPE_MISMATCH", 422)
+    if set(proposal) != required or proposal["contract_version"] != ("2.0" if research else "1.0"):
         raise OperatorError("INVALID_PROPOSAL_SCHEMA", 422)
     import re
     for name in ("proposal_id", "run_id", "step_id", "source_artifact_id", "source_artifact_ref",
                  "source_scene_id", "context_package_id", "extraction_candidate_set_id", "source", "created_at"):
+        if research and name in source_fields:
+            continue
         if not isinstance(proposal[name], str) or not proposal[name].strip():
             raise OperatorError("INVALID_PROPOSAL_SCHEMA", 422)
     for name in ("proposal_hash", "source_artifact_hash", "context_hash", "extraction_candidate_hash"):
+        if research and name in source_fields:
+            continue
         if not isinstance(proposal[name], str) or not re.fullmatch("[0-9a-f]{64}", proposal[name]):
             raise OperatorError("INVALID_PROPOSAL_HASH", 422)
-    if type(proposal["source_artifact_version"]) is not int or proposal["source_artifact_version"] < 1:
+    if not research and (type(proposal["source_artifact_version"]) is not int or proposal["source_artifact_version"] < 1):
         raise OperatorError("INVALID_ARTIFACT_VERSION", 422)
     if proposal["status"] not in {"AWAITING_USER_APPROVAL", "APPROVED_FOR_COMMIT", "READY_FOR_ANALYSIS", "COMMITTED", "STALE", "REJECTED", "FAILED"}:
         raise OperatorError("PROPOSAL_NOT_READY_FOR_REVIEW", 409)
     for name in ("verification_ref", "actor_ref", "authority_ref", "policy_ref"):
+        if research and name == "verification_ref":
+            continue
         if not proposal[name]:
             raise OperatorError("MISSING_PROPOSAL_EVIDENCE", 422)
     from app.p20_core.project_repository import (
@@ -283,7 +297,7 @@ def record_operator_decision(repository, proposal_id: str, identity, request: di
                     "canonical_commit": False}
         record["decision"] = evidence
         challenge["used"] = True
-        if "pipeline" in record:
+        if "pipeline" in record or proposal.get("source_kind") == "RESEARCH":
             proposal["status"] = "APPROVED_FOR_COMMIT" if request["decision"] == "APPROVE" else "REJECTED"
         # Decision evidence only. No transition to COMMITTED or bypass of the domain guard.
         return evidence
@@ -341,7 +355,7 @@ def _validate_canonical_record_set(proposal: dict, snapshot: dict) -> None:
     from app.p20_core.local_operator import OperatorError
     states = {r["record_id"]: json.loads(r["payload_json"]) for r in snapshot["records"]}
     states.update({m["target_entity_id"]: m["proposed_state"] for m in proposal["proposed_mutations"]})
-    known = set(states) | {proposal["source_scene_id"], proposal["project_id"], proposal["book_id"]}
+    known = set(states) | {proposal.get("source_scene_id"), proposal["project_id"], proposal["book_id"]}
     # A persisted CharacterState binds its stable character identity to this project.
     character_states = {r["record_id"] for r in snapshot["records"] if r["record_type"] == "CHARACTER_STATE"}
     character_states.update(m["target_entity_id"] for m in proposal["proposed_mutations"] if m["target_entity_type"] == "CHARACTER_STATE")
@@ -432,16 +446,25 @@ def commit_canonical_proposal(repository, proposal_id: str, *, expected_hash: st
             or not impact.get("result")
         ):
             raise OperatorError("REVIEW_EVIDENCE_MISSING", 409)
-        _pipeline_evidence(record)
         metadata_table = "series_metadata" if proposal["scope_type"] == "SERIES" else "project_metadata"
-        source_key = proposal["source_artifact_ref"].removeprefix(
-            "series_metadata:" if proposal["scope_type"] == "SERIES" else "project_metadata:"
-        ).removesuffix("#source")
-        source_row = conn.execute(
-            f"SELECT value FROM {metadata_table} WHERE key=?", (source_key,)
-        ).fetchone()
-        if source_row is None or json.loads(source_row["value"])["source"] != record["pipeline"]["source"]:
-            raise OperatorError("SOURCE_VERSION_UNAVAILABLE", 409)
+        if proposal.get("source_kind") == "RESEARCH":
+            from app.p20_core.research import validate_promotion_evidence
+            try:
+                validate_promotion_evidence(proposal, snapshot["research"])
+            except ValueError as exc:
+                proposal["status"] = "STALE"
+                record["failure"] = str(exc)
+                return {"status": "STALE", "reason": str(exc), "canonical_commit": False}
+        else:
+            _pipeline_evidence(record)
+            source_key = proposal["source_artifact_ref"].removeprefix(
+                "series_metadata:" if proposal["scope_type"] == "SERIES" else "project_metadata:"
+            ).removesuffix("#source")
+            source_row = conn.execute(
+                f"SELECT value FROM {metadata_table} WHERE key=?", (source_key,)
+            ).fetchone()
+            if source_row is None or json.loads(source_row["value"])["source"] != record["pipeline"]["source"]:
+                raise OperatorError("SOURCE_VERSION_UNAVAILABLE", 409)
         _validate_canonical_record_set(proposal, snapshot)
         try:
             _validate_review_basis(proposal, snapshot)
@@ -484,12 +507,116 @@ def commit_canonical_proposal(repository, proposal_id: str, *, expected_hash: st
             "created_at": utc_now_iso()}
         proposal["status"] = "COMMITTED"
         record["receipt"] = receipt
+        if proposal.get("source_kind") == "RESEARCH":
+            from app.p20_core.research import AuthorDecision
+            state = repository.read_research_state(conn)
+            for mutation in proposal["proposed_mutations"]:
+                claim_id = mutation["provenance"]["claim_id"]
+                fiction = proposal["fiction_decision"]
+                decision = AuthorDecision(
+                    decision_id="DECISION-" + _evidence_hash([proposal_id, proposal["proposal_hash"], claim_id])[:32],
+                    scope_id=proposal["scope_id"], subject_id=claim_id,
+                    decision_type="FICTION" if fiction else "CANONICAL_PROMOTION",
+                    decision=mutation["proposed_state"]["reality_status"],
+                    reason=fiction["reason"] if fiction else "Explicit approval of verified research promotion",
+                    impact_refs=[impact["impact_id"]], created_at=receipt["created_at"],
+                    created_by=approval["operator_id"], proposal_hash=proposal["proposal_hash"],
+                    evidence_hash=mutation["provenance"]["claim_hash"],
+                    target_fact_id=mutation["target_entity_id"],
+                    target_state_hash=mutation["provenance"]["state_hash"],
+                ).model_dump()
+                state["decisions"][decision["decision_id"]] = decision
+                if fiction:
+                    for conflict in state["conflicts"].values():
+                        if conflict["entity_id"] == claim_id:
+                            conflict.update(status="RESOLVED", resolution=fiction["reason"],
+                                            resolved_by=decision["decision_id"], resolved_at=receipt["created_at"])
+            repository.write_research_state(conn, state)
         # This metadata is the durable commit audit, atomic with versions and state.
         conn.execute(
             f"INSERT INTO {metadata_table}(key,value) VALUES (?,?)",
             ("canonical_commit.v1:" + receipt["operation_id"], json.dumps(receipt, sort_keys=True)),
         )
         return receipt
+
+
+def prepare_research_proposal(repository, *, proposal_id: str, operation_id: str,
+                              target_fact_ids: dict, fiction_decision=None) -> dict:
+    """Freeze a PROJECT research proposal; never grant approval or commit."""
+    from app.p20_core.research import verified_evidence, validate_promotion_evidence, digest
+    from app.p20_core.domain_records import FactRecord
+    from app.p20_core.domain_mutation_guard import DomainMutationGuard
+    from app.p20_core.local_operator import OperatorError
+    with _canonical_transaction(repository, proposal_id, include_writer=True) as (document, snapshot, conn):
+        state = repository.read_research_state(conn)
+        snapshot["research"] = state
+        evidence = verified_evidence(state, operation_id)
+        request_hash = _evidence_hash({"operation_id": operation_id, "targets": target_fact_ids,
+                                      "fiction": fiction_decision, "evidence": digest(evidence)})
+        if document:
+            current_record = document["versions"][document["current_version"]]
+            if (current_record.get("research_request_hash") == request_hash
+                    and (current_record.get("receipt") or (
+                        current_record["proposal"]["status"] not in {"STALE", "REJECTED", "FAILED"}
+                        and current_record["basis_hash"] == _evidence_hash(snapshot)))):
+                return current_record["proposal"]
+            # An explicit new source/assessment under the same proposal ID is
+            # a new version, preserving the old decision and receipt.
+            if current_record["proposal"]["status"] != "COMMITTED":
+                current_record["proposal"]["status"] = "STALE"
+            proposal_version = int(document["current_version"]) + 1
+        else:
+            proposal_version = 1
+        op = evidence["operation"]
+        claims = op["result"]["claims"]
+        if set(target_fact_ids) != {c["claim_id"] for c in claims}:
+            raise OperatorError("RESEARCH_SET_MAPPING_REQUIRED", 422)
+        current = {r["record_id"]: json.loads(r["payload_json"]) for r in snapshot["records"]}
+        mutations = []
+        created_at = utc_now_iso()
+        for claim in claims:
+            identity = target_fact_ids[claim["claim_id"]]
+            old = current.get(identity)
+            fact = FactRecord(fact_id=identity, project_id=repository.scope.scope_id,
+                subject_id=identity, predicate="research_assertion", object_type="TEXT", object_id=None,
+                object_value=claim["claim"], reality_status="REAL_VERIFIED" if fiction_decision is None else fiction_decision["reality_status"],
+                verification_status=claim["verification_status"], confidence=claim["confidence"],
+                frozen=False if old is None else old.get("frozen"), author_locked=False if old is None else old.get("author_locked"),
+                valid_from=None, valid_to=None, established_event_id=None, established_scene_id=None,
+                source_artifact_ref="project.db#research.v1/operations/" + operation_id,
+                source_refs=[f"{r['source_id']}:v{r['version']}:{r['content_hash']}" for r in claim["source_refs"]],
+                canon_version=1 if old is None else old["canon_version"] + 1,
+                version=1 if old is None else old["version"] + 1,
+                created_at=created_at if old is None else old["created_at"], updated_at=created_at).to_dict()
+            mutations.append(dict(target_entity_type="FACT", target_entity_id=identity,
+                operation_type="CREATE" if old is None else "UPDATE", expected_current_version=None if old is None else old["version"],
+                expected_current_hash=None if old is None else _evidence_hash(old), proposed_state=fact,
+                provenance={"claim_id": claim["claim_id"], "claim_hash": digest(claim), "state_hash": digest(fact)}))
+        invocation = op["invocation"]
+        proposal = dict(contract_version="2.0", source_kind="RESEARCH", proposal_id=proposal_id,
+            project_id=repository.scope.scope_id, book_id=repository.context.book_id, series_id=None,
+            scope_type="PROJECT", scope_id=repository.scope.scope_id,
+            run_id=invocation["run_id"], step_id=invocation["step_id"],
+            context_package_id=invocation["context_package_id"], context_hash=invocation["context_hash"],
+            research_evidence={"operation_id": operation_id, "hash": digest(evidence)},
+            fiction_decision=fiction_decision, source="RESEARCH_CLAIM", actor_ref=invocation["call_id"],
+            authority_ref="P20_VERIFIED_RESEARCH_V1", policy_ref="CANONICAL_CHANGE_V1",
+            proposal_version=proposal_version, proposal_hash="", status="READY_FOR_ANALYSIS", created_at=created_at,
+            proposed_mutations=sorted(mutations, key=lambda m: (m["target_entity_type"], m["target_entity_id"], m["operation_type"])))
+        proposal["proposal_hash"] = canonical_proposal_hash(proposal)
+        _validate_review_proposal(repository, proposal)
+        validate_promotion_evidence(proposal, state)
+        _validate_canonical_record_set(proposal, snapshot)
+        impact = _canonical_impact(repository, proposal, snapshot)
+        guard = DomainMutationGuard().evaluate_canonical(proposal=proposal, snapshot=snapshot, impact=impact)
+        if guard["outcome"] != "REQUIRE_USER_APPROVAL":
+            raise OperatorError("RESEARCH_PROMOTION_DENIED:" + guard["reason"], 409)
+        proposal["status"] = "AWAITING_USER_APPROVAL"
+        document.setdefault("versions", {})[str(proposal_version)] = dict(proposal=proposal,
+            research_request_hash=request_hash, basis_hash=_evidence_hash(snapshot),
+            impact=impact, initial_guard=guard, challenges={}, decision=None)
+        document["current_version"] = str(proposal_version)
+        return proposal
 
 
 def process_accepted_artifact(*, execution_context, text: str, source_trace: dict,

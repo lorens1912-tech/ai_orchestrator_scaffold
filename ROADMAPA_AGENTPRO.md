@@ -242,6 +242,13 @@ ETAP 10 — RESEARCH I WERYFIKACJA FAKTÓW
 CEL:
 Pełny przepływ źródło→claim→verify→decision→canon.
 
+Status wykonawczy 2026-09-16: **GAP-015 = CLOSED** — tekstowy import źródeł,
+niezależna weryfikacja i kontrolowana promocja PROJECT przez istniejący
+Canonical Change; pełna regresja 657 passed, 1 skipped.
+Dowody i ograniczenia formatów: [raport GAP-015](docs/GAP015_REPORT.md).
+API i użycie: [Research](docs/GAP015_RESEARCH.md).
+Live adapter smoke = NOT RUN. GAP-016 nie został rozpoczęty.
+
 Zakres:
 - ResearchRecord,
 - ResearchSource,

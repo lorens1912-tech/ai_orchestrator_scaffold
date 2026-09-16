@@ -4,7 +4,9 @@
 
 **STATUS: ACCEPTED**
 Data akceptacji: 2026-09-15
-Wersja dokumentu: 1.1 (uzupełnienie §6; schemat proposal/hash v1.0 bez zmian)
+Wersja dokumentu: 1.2 (zaakceptowane uzupełnienie research §15, 2026-09-16)
+Historia: v1.0 zaakceptowana 2026-09-15; v1.1 uzupełnia §6.
+Schemat ekstrakcji proposal/hash v1.0 pozostaje bez zmian; research używa wariantu v2.0.
 Data: 2026-09-15
 Baza przeglądu: `f7bf22cde472d37193aeb99ca946e9252d932d09`
 Zakres: kontrakt procesu potrzebny do późniejszej remediacji F-002 / F-006.
@@ -553,3 +555,74 @@ F-002 = NOT STARTED
 F-006 = NOT STARTED
 F-004 = NOT STARTED
 GAP-014 = NOT STARTED
+
+## 15. ACCEPTED — Research jako dodatkowe wejście PROJECT (2026-09-16)
+
+Decyzja operatora „POLECENIE WYKONAWCZE — GAP-015 / RESEARCH → CANON”.
+Powiązanie: [ADR Narrative State §8.2](ADR-00XX_NARRATIVE_STATE_ENGINE.md),
+ARCHITEKTURA §49–54. Wcześniejsze sekcje i historyczne statusy zachowują historię
+decyzji; poniższe addytywne rozszerzenie dotyczy wyłącznie nowego wejścia research.
+
+### 15.1. Authority i wariant źródła
+
+`P20_VERIFIED_RESEARCH_V1`, origin/source `RESEARCH_CLAIM`, scope `PROJECT`.
+To odrębny proces dowodowy w istniejącym CanonService, guardzie i approval.
+Sama nazwa authority, CONFIRMED, confidence i uwierzytelnienie nie są zgodą.
+Nie dopuszcza promocji researchu do SERIES ani podstawienia authority ekstrakcji.
+
+Ten sam CanonicalChangeProposal ma jawne warianty:
+
+- `contract_version=1.0`: dotychczasowa ekstrakcja zaakceptowanego artefaktu;
+  wszystkie dotychczasowe pola i wymagania pozostają obowiązkowe.
+- `contract_version=2.0`, `source_kind=RESEARCH`: wspólne project/book/scope,
+  run/step, ContextPackage, proposed_mutations, expected versions/hashes,
+  authority/policy, proposal_version/hash, status i created_at;
+  zamiast artefaktu/sceny/candidate set/precision-completeness: `research_evidence`
+  (`operation_id`, backendowy `hash`) oraz `fiction_decision` (null albo
+  `reality_status`, `reason`). Nie tworzy fikcyjnej sceny ani candidate set.
+
+Hash nadal obejmuje wszystkie pola poza status i proposal_hash. Stare dokumenty,
+decyzje i receipts zachowują oryginalny preimage i hashe; nie ma migracji hashy.
+Wersja dokumentu 1.2 nie jest wersją schematu propozycji.
+
+### 15.2. Dowody i semantyka
+
+ProjectRepository przechowuje wersje research/source/claim oraz niezmienne
+zakończone operacje, wyniki i provenance w `project.db`, metadata `research.v1`.
+Źródło ma rzeczywiście odczytany tekst, SHA-256 i cytaty z zakresem znaków albo
+jawne REFERENCE_ONLY. Sam URL nigdy nie potwierdza odczytania materiału.
+
+Zestaw dowodowy wiąże projekt, książkę, research, operację/run/step, wersje i
+hashe źródeł i claimów, kryteria weryfikacji, odrębne wywołania ekstraktora i
+weryfikatora oraz ich zapisane konteksty. Wynik niezależnej oceny musi pokrywać
+cały zestaw. Cytaty muszą odpowiadać zakresom rzeczywistego materiału.
+
+Promocja mapuje dokładne zweryfikowane twierdzenie na FactRecord
+(`predicate=research_assertion`, tekst twierdzenia bez rozszerzeń), z hashem
+claimu i proposed_state w provenance. Same poprawne hashe nie zastępują
+weryfikacji semantycznej. REAL_VERIFIED wymaga CONFIRMED popartego dowodami.
+Jawna fikcja ma zakres całego wskazanego zestawu propozycji, powód i zgodę;
+zachowuje źródłowy UNCERTAIN/DISPUTED i nie staje się REAL_VERIFIED.
+
+### 15.3. Approval, final guard, transakcja
+
+Każde CREATE/UPDATE/REPLACE researchu wymaga uwierzytelnionego review/challenge/
+decision istniejącego operatora, także gdy frozen=false i author_locked=false.
+Stan bez decyzji: AWAITING_USER_APPROVAL, canonical_commit=false.
+Zgoda jest związana z proposal_hash, scope i konkretnym Impact Analysis.
+REJECT, DENY i brak dowodów blokują zapis; zgoda nie odblokowuje ochrony.
+
+Finalna kontrola dowodów, aktualnych wersji, analizy i zgody oraz zapis
+kanonicznych rekordów, historii, AuthorDecision i audytu następują w jednej
+lokalnej transakcji SQLite project.db. Repozytorium powtarza kontrolę przy
+fizycznym zapisie. Wywołania modeli/sieci odbywają się poza transakcją zapisu.
+DERIVED_REBUILD_UNSUPPORTED i CURRENT_PROTECTION_UNKNOWN pozostają fail-closed.
+
+Zmiana podstawy oznacza STALE: nowa wersja propozycji, kontrole i nowa zgoda.
+Stare dowody i decyzje pozostają w historii. Technical retry zachowuje zapisane
+wejścia i ContextPackage; nowy research/ocena jest nową operacją. Retry commitu
+zwraca istniejący receipt. Jawne recovery przerwanej operacji unieważnia jej
+poprzednią próbę, uniemożliwiając późny zapis z tej próby.
+
+Operacje researchu mieszczą się w project.db. Nie deklarują transakcji globalnej;
+istniejące rzeczywiste operacje między storage nadal podlegają F-004.

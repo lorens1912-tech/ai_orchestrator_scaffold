@@ -1,0 +1,1435 @@
+{
+  "package_id": "AGENTPRO_STYLE_LIBRARY_24",
+  "package_version": 1,
+  "source_document": "AGENTPRO_CODEX_JEDNO_ZADANIE_PELNE_ZRODLA_24_PROFILE_2026-09-16.md",
+  "source_profile_set_hash": "ffb23daa35b5c5dfd2bc8f76aec30460f44f0b1d63ead0c4ae6020eeb0b04893",
+  "profiles": [
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-freida-mcfadden",
+      "display_name": "Freida McFadden",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Freida McFadden",
+      "source_version": "v0.1",
+      "source_hash": "39e7508bf9156e03c6896835daf6091e417a39287fc170622680e06854bb8ba4",
+      "extracted_techniques": [
+        "breadcrumbs",
+        "częste, zróżnicowane cliffhangery",
+        "fair misdirection",
+        "first-person present close POV",
+        "hidden motive",
+        "immediate anomaly / secret hook",
+        "kontrolowane uwalnianie informacji",
+        "krótkie rozdziały i akapity",
+        "low-friction conversational prose",
+        "ograniczony backstory",
+        "public/private self",
+        "twist-first / backward plotting"
+      ],
+      "genome": {
+        "pacing": 0.95
+      },
+      "applicability_tags": [
+        "cliffhanger",
+        "commercial-page-turner",
+        "domestic-thriller",
+        "hook",
+        "pacing",
+        "page-turnability",
+        "psychological-thriller",
+        "twist-architecture"
+      ],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "MARKET CORE"
+        ],
+        "segment": [
+          "psychological thriller",
+          "domestic thriller",
+          "commercial page-turner"
+        ],
+        "functions": [
+          null,
+          null,
+          "HOOK 95",
+          "PACING 95",
+          "PAGE-TURNABILITY 98",
+          "CLIFFHANGER 95",
+          "TWIST ARCHITECTURE 98",
+          null
+        ],
+        "risks": [
+          "niewiarygodny twist",
+          "płytka charakterystyka",
+          "powtarzalne cliffhangery",
+          "widoczna formuła"
+        ],
+        "source_ratings": {
+          "hook": 95,
+          "pacing": 95,
+          "page_turnability": 98,
+          "cliffhanger": 95,
+          "twist_architecture": 98
+        },
+        "raw_profile_markdown": "# 1. FREIDA McFADDEN — v0.1\n\nSegment:\n- psychological thriller\n- domestic thriller\n- commercial page-turner\n\nStatus:\n- MARKET CORE\n\nRdzeń:\n- twist-first / backward plotting\n- breadcrumbs\n- fair misdirection\n- first-person present close POV\n- low-friction conversational prose\n- krótkie rozdziały i akapity\n- częste, zróżnicowane cliffhangery\n- immediate anomaly / secret hook\n- kontrolowane uwalnianie informacji\n- ograniczony backstory\n- public/private self\n- hidden motive\n\nNajmocniejsze funkcje:\n- HOOK 95\n- PACING 95\n- PAGE-TURNABILITY 98\n- CLIFFHANGER 95\n- TWIST ARCHITECTURE 98\n\nRyzyka:\n- niewiarygodny twist\n- płytka charakterystyka\n- powtarzalne cliffhangery\n- widoczna formuła\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-dan-brown",
+      "display_name": "Dan Brown",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Dan Brown",
+      "source_version": "v0.1",
+      "source_hash": "181b476243437ba2ab723718c43cb87d6788125eba20443ae1c3de487ced647f",
+      "extracted_techniques": [
+        "bardzo wysokie tempo",
+        "cięcie przed odpoczynkiem",
+        "clue → clue chain",
+        "contract + clock + crucible",
+        "ekspozycja pod presją",
+        "false-assumption collapse",
+        "identity reveal",
+        "information reveal",
+        "kontrola wiedzy czytelnika/postaci",
+        "location switch",
+        "lokacja jako część historii",
+        "physical threat",
+        "prosty cel w złożonym świecie",
+        "przełączanie POV",
+        "puzzle pending",
+        "research jako mechanizm fabuły",
+        "rozdział jako jednostka napięcia",
+        "równoległe wątki",
+        "time pressure",
+        "unanswered discovery"
+      ],
+      "genome": {},
+      "applicability_tags": [
+        "cliffhanger",
+        "conspiracy",
+        "intellectual-thriller",
+        "location",
+        "pacing",
+        "parallel-plot",
+        "puzzle",
+        "research-integration",
+        "suspense",
+        "thriller",
+        "ticking-clock"
+      ],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          null
+        ],
+        "segment": [
+          "thriller",
+          "conspiracy",
+          "intellectual thriller"
+        ],
+        "functions": [
+          null,
+          "PACING",
+          "SUSPENSE",
+          "CLIFFHANGER",
+          "PARALLEL_PLOT",
+          "RESEARCH_INTEGRATION",
+          "LOCATION",
+          "PUZZLE",
+          "TICKING_CLOCK",
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {},
+        "raw_profile_markdown": "# 2. DAN BROWN — v0.1\n\nSegment:\n- thriller\n- conspiracy\n- intellectual thriller\n\nGłówne funkcje:\n- PACING\n- SUSPENSE\n- CLIFFHANGER\n- PARALLEL_PLOT\n- RESEARCH_INTEGRATION\n- LOCATION\n- PUZZLE\n- TICKING_CLOCK\n\nRdzeń:\n- contract + clock + crucible\n- prosty cel w złożonym świecie\n- bardzo wysokie tempo\n- rozdział jako jednostka napięcia\n- cięcie przed odpoczynkiem\n\nTypy hooków:\n- physical threat\n- information reveal\n- unanswered discovery\n- identity reveal\n- location switch\n- puzzle pending\n- false-assumption collapse\n- time pressure\n\nTechniki:\n- równoległe wątki\n- przełączanie POV\n- kontrola wiedzy czytelnika/postaci\n- clue → clue chain\n- research jako mechanizm fabuły\n- ekspozycja pod presją\n- lokacja jako część historii\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-lee-child",
+      "display_name": "Lee Child",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Lee Child",
+      "source_version": null,
+      "source_hash": "6fc79d3d24a8e0696abc9206bfc155c5edf1fb39d8f714047ad34d418cf61e36",
+      "extracted_techniques": [
+        "COMPETENCE_REWARD",
+        "FORWARD_QUESTION_CHAIN",
+        "INFORMATION_RELEASE_RATE",
+        "problem → observation → inference → decision → action → consequence",
+        "READER_INFORMATION_GAP"
+      ],
+      "genome": {
+        "pacing": 0.94,
+        "suspense": 0.91
+      },
+      "applicability_tags": [
+        "action-clarity",
+        "chapter-hooks",
+        "competence-reward",
+        "curiosity-management",
+        "forward-momentum",
+        "information-release"
+      ],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          "forward momentum",
+          "curiosity management",
+          "information release",
+          "action clarity",
+          "competence reward",
+          "chapter hooks",
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "forward_momentum": 98,
+          "pacing": 94,
+          "suspense": 91,
+          "curiosity_management": 97,
+          "information_control": 96,
+          "action_clarity": 97,
+          "scene_economy": 94,
+          "violence": 86,
+          "darkness": 70
+        },
+        "raw_profile_markdown": "# 3. LEE CHILD\n\nStatus:\n- A+ / CORE PROFILE\n\nFunkcja:\n- forward momentum\n- curiosity management\n- information release\n- action clarity\n- competence reward\n- chapter hooks\n\nTechniki:\n- FORWARD_QUESTION_CHAIN\n- INFORMATION_RELEASE_RATE\n- READER_INFORMATION_GAP\n- COMPETENCE_REWARD\n- problem → observation → inference → decision → action → consequence\n\nStyle Genome:\n- forward_momentum 98\n- pacing 94\n- suspense 91\n- curiosity_management 97\n- information_control 96\n- action_clarity 97\n- scene_economy 94\n- violence 86\n- darkness 70\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-graham-brown",
+      "display_name": "Graham Brown",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Graham Brown",
+      "source_version": "v0.1",
+      "source_hash": "78fdf2b858225bfafd0439a2b5c28a7317473bef1e97d13e57f53eee13c54a5f",
+      "extracted_techniques": [
+        "action + investigation",
+        "competent team",
+        "experimental technology jako mechanizm fabuły",
+        "foreshadowed/fair twists",
+        "global/future-oriented threat",
+        "high tension floor",
+        "hostile environments",
+        "mystery before solution",
+        "problem-solving ponad brute force",
+        "real-world foundation + speculative extension",
+        "red herrings",
+        "science zintegrowane z akcją",
+        "szybkie przemieszczanie geograficzne",
+        "ticking clock"
+      ],
+      "genome": {},
+      "applicability_tags": [
+        "action",
+        "adventure",
+        "adventure-thriller",
+        "global-threat",
+        "global-thriller",
+        "location",
+        "research-integration",
+        "team",
+        "techno-thriller",
+        "technology"
+      ],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          null
+        ],
+        "segment": [
+          "adventure thriller",
+          "techno-thriller",
+          "global thriller"
+        ],
+        "functions": [
+          null,
+          null,
+          null,
+          "GLOBAL_THREAT",
+          "TECHNOLOGY",
+          "ACTION",
+          "TEAM",
+          "LOCATION",
+          "ADVENTURE",
+          "RESEARCH_INTEGRATION"
+        ],
+        "risks": [
+          "technologia ponad plausibility",
+          "over-escalation",
+          "za dużo antagonistów",
+          "action saturation",
+          "cienkie postacie"
+        ],
+        "source_ratings": {
+          "global_adventure": 98,
+          "technology_integration": 96,
+          "large_scale_threat": 98,
+          "action": 94,
+          "research_to_plot": 94,
+          "foreshadowed_twist": 96,
+          "team_competence": 94,
+          "locations": 95,
+          "ticking_clock": 94,
+          "red_herrings": 94
+        },
+        "raw_profile_markdown": "# 4. GRAHAM BROWN — v0.1\n\nSegment:\n- adventure thriller\n- techno-thriller\n- global thriller\n\nTyp:\n- AUTHOR_REFERENCE\n\nPrimary components:\n- GLOBAL_THREAT\n- TECHNOLOGY\n- ACTION\n- TEAM\n- LOCATION\n- ADVENTURE\n- RESEARCH_INTEGRATION\n\nFingerprint:\n- global/future-oriented threat\n- experimental technology jako mechanizm fabuły\n- science zintegrowane z akcją\n- ticking clock\n- competent team\n- problem-solving ponad brute force\n- szybkie przemieszczanie geograficzne\n- hostile environments\n- mystery before solution\n- action + investigation\n- red herrings\n- foreshadowed/fair twists\n- high tension floor\n- real-world foundation + speculative extension\n\nFunctional ratings:\n- global_adventure 98\n- technology_integration 96\n- large_scale_threat 98\n- action 94\n- research_to_plot 94\n- foreshadowed_twist 96\n- team_competence 94\n- locations 95\n- ticking_clock 94\n- red_herrings 94\n\nRyzyka:\n- technologia ponad plausibility\n- over-escalation\n- za dużo antagonistów\n- action saturation\n- cienkie postacie\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-gillian-flynn",
+      "display_name": "Gillian Flynn",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Gillian Flynn",
+      "source_version": null,
+      "source_hash": "c5b050657e713518e8da71661a405092b27eb01f0a4f4ab8bcb7b82f4a7924d4",
+      "extracted_techniques": [
+        "CONTROLLED_OMISSION",
+        "identity mask pressure",
+        "RETROSPECTIVE_INEVITABILITY",
+        "slow tightening",
+        "unreliable narration"
+      ],
+      "genome": {
+        "pacing": 0.82
+      },
+      "applicability_tags": [
+        "controlled-omission",
+        "fair-play-twist",
+        "identity-performance",
+        "psychological-suspense",
+        "reader-misdirection",
+        "toxic-relationships",
+        "unreliable-pov"
+      ],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          "psychological suspense",
+          "unreliable POV",
+          "controlled omission",
+          "fair-play twist",
+          "reader misdirection",
+          "toxic relationships",
+          "identity performance",
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "psychological_suspense": 99,
+          "reader_manipulation": 99,
+          "unreliable_narration": 98,
+          "twist_architecture": 98,
+          "controlled_omission": 98,
+          "character_darkness": 96,
+          "relationship_conflict": 99,
+          "atmospheric_unease": 96,
+          "pacing": 82
+        },
+        "raw_profile_markdown": "# 5. GILLIAN FLYNN\n\nStatus:\n- A+ / CORE PROFILE\n\nFunkcja:\n- psychological suspense\n- unreliable POV\n- controlled omission\n- fair-play twist\n- reader misdirection\n- toxic relationships\n- identity performance\n\nTechniki:\n- RETROSPECTIVE_INEVITABILITY\n- CONTROLLED_OMISSION\n- unreliable narration\n- identity mask pressure\n- slow tightening\n\nStyle Genome:\n- psychological_suspense 99\n- reader_manipulation 99\n- unreliable_narration 98\n- twist_architecture 98\n- controlled_omission 98\n- character_darkness 96\n- relationship_conflict 99\n- atmospheric_unease 96\n- pacing 82\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-graham-masterton",
+      "display_name": "Graham Masterton",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Graham Masterton",
+      "source_version": "v0.1",
+      "source_hash": "4ff7e398cd055e63cec08dcade8717709071cfccbf6a17892a1a5c033d5a8785",
+      "extracted_techniques": [
+        "atmosfera jako część konstrukcji",
+        "body threat",
+        "brutalny impact",
+        "conversational / invisible prose",
+        "crime/horror hybrid",
+        "folklore integration",
+        "low friction",
+        "ostry, konkretny detal",
+        "prostsze słownictwo z mocnym rytmem",
+        "sensory immersion",
+        "supernatural rules",
+        "wiarygodne postacie w niemożliwych sytuacjach"
+      ],
+      "genome": {},
+      "applicability_tags": [
+        "crime-thriller",
+        "dark-crime",
+        "horror",
+        "supernatural-thriller"
+      ],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "SPECIALIST + COMMERCIAL PROVEN"
+        ],
+        "segment": [
+          "horror",
+          "dark crime",
+          "crime thriller",
+          "supernatural thriller"
+        ],
+        "functions": [
+          null,
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "horror_suspense": 98,
+          "sensory_immersion": 97,
+          "body_threat": 99,
+          "violence_impact": 98,
+          "atmosphere": 96,
+          "supernatural_rules": 97,
+          "crime_horror_hybrid": 99,
+          "folklore_integration": 96,
+          "research_to_atmosphere": 93,
+          "place_integration": 92,
+          "readability": 92,
+          "procedural_crime": 88,
+          "dialogue": 80,
+          "deep_introspection": 60,
+          "ornamental_prose": 35,
+          "subtle_violence": 35
+        },
+        "raw_profile_markdown": "# 6. GRAHAM MASTERTON — v0.1\n\nSegment:\n- horror\n- dark crime\n- crime thriller\n- supernatural thriller\n\nStatus:\n- SPECIALIST + COMMERCIAL PROVEN\n\nFingerprint:\n- conversational / invisible prose\n- low friction\n- prostsze słownictwo z mocnym rytmem\n- sensory immersion\n- ostry, konkretny detal\n- atmosfera jako część konstrukcji\n- wiarygodne postacie w niemożliwych sytuacjach\n- body threat\n- brutalny impact\n- supernatural rules\n- crime/horror hybrid\n- folklore integration\n\nFunctional ratings:\n- HORROR_SUSPENSE 98\n- SENSORY_IMMERSION 97\n- BODY_THREAT 99\n- VIOLENCE_IMPACT 98\n- ATMOSPHERE 96\n- SUPERNATURAL_RULES 97\n- CRIME_HORROR_HYBRID 99\n- FOLKLORE_INTEGRATION 96\n- RESEARCH_TO_ATMOSPHERE 93\n- PLACE_INTEGRATION 92\n- READABILITY 92\n- PROCEDURAL_CRIME 88\n- DIALOGUE 80\n- DEEP_INTROSPECTION 60\n- ORNAMENTAL_PROSE 35\n- SUBTLE_VIOLENCE 35\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-michael-connelly",
+      "display_name": "Michael Connelly",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Michael Connelly",
+      "source_version": null,
+      "source_hash": "2eb59b4bc14fd25caa0b1c0b839a00afa0268656a79ecd2ad5017dcb4a2dc580",
+      "extracted_techniques": [
+        "EARNED_DETECTIVE_INSIGHT",
+        "EVIDENCE_BASED_RED_HERRING",
+        "EVIDENCE_CHAIN_INTEGRITY",
+        "EVIDENCE_INFERENCE_SEPARATION",
+        "EVIDENCE_PROVENANCE",
+        "FORENSIC_UNCERTAINTY",
+        "HYPOTHESIS_INVALIDATION",
+        "INVESTIGATION_RESIDUE",
+        "INVESTIGATIVE_GEOGRAPHY",
+        "INVESTIGATIVE_REASONING_LOOP",
+        "INVESTIGATOR_MORAL_ENGINE",
+        "PROCEDURAL_AUTHENTICITY",
+        "REINTERPRET_EXISTING_EVIDENCE",
+        "STRUCTURED_CASE_MODEL",
+        "VICTIM_HUMANIZATION"
+      ],
+      "genome": {
+        "pacing": 0.86,
+        "suspense": 0.91
+      },
+      "applicability_tags": [
+        "clue-logic",
+        "cold-case",
+        "earned-detective-insight",
+        "evidence-reasoning",
+        "investigative-realism",
+        "procedural-authenticity"
+      ],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          "investigative realism",
+          "evidence reasoning",
+          "procedural authenticity",
+          "clue logic",
+          "cold case",
+          "earned detective insight",
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "investigative_realism": 100,
+          "procedural_authenticity": 99,
+          "evidence_reasoning": 100,
+          "evidence_provenance": 99,
+          "hypothesis_testing": 98,
+          "clue_architecture": 97,
+          "evidence_based_red_herring": 97,
+          "cold_case_reasoning": 99,
+          "forensic_realism": 97,
+          "institutional_realism": 94,
+          "detective_competence": 98,
+          "earned_insight": 99,
+          "victim_humanization": 97,
+          "moral_mission": 96,
+          "city_as_context": 96,
+          "investigative_geography": 95,
+          "suspense": 91,
+          "pacing": 86,
+          "scene_economy": 91,
+          "dialogue": 88,
+          "character_psychology": 89,
+          "interiority": 83,
+          "description_density": 55,
+          "prose_complexity": 62,
+          "series_continuity": 98,
+          "commercial_readability": 97
+        },
+        "raw_profile_markdown": "# 7. MICHAEL CONNELLY\n\nStatus:\n- A+ / CORE PROFILE\n\nFunkcja:\n- investigative realism\n- evidence reasoning\n- procedural authenticity\n- clue logic\n- cold case\n- earned detective insight\n\nTechniki:\n- INVESTIGATIVE_REASONING_LOOP\n- STRUCTURED_CASE_MODEL\n- EVIDENCE_INFERENCE_SEPARATION\n- EVIDENCE_PROVENANCE\n- EVIDENCE_BASED_RED_HERRING\n- HYPOTHESIS_INVALIDATION\n- REINTERPRET_EXISTING_EVIDENCE\n- PROCEDURAL_AUTHENTICITY\n- EVIDENCE_CHAIN_INTEGRITY\n- FORENSIC_UNCERTAINTY\n- EARNED_DETECTIVE_INSIGHT\n- INVESTIGATOR_MORAL_ENGINE\n- VICTIM_HUMANIZATION\n- INVESTIGATIVE_GEOGRAPHY\n- INVESTIGATION_RESIDUE\n\nStyle Genome:\n- investigative_realism 100\n- procedural_authenticity 99\n- evidence_reasoning 100\n- evidence_provenance 99\n- hypothesis_testing 98\n- clue_architecture 97\n- evidence_based_red_herring 97\n- cold_case_reasoning 99\n- forensic_realism 97\n- institutional_realism 94\n- detective_competence 98\n- earned_insight 99\n- victim_humanization 97\n- moral_mission 96\n- city_as_context 96\n- investigative_geography 95\n- suspense 91\n- pacing 86\n- scene_economy 91\n- dialogue 88\n- character_psychology 89\n- interiority 83\n- description_density 55\n- prose_complexity 62\n- series_continuity 98\n- commercial_readability 97\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-dennis-lehane",
+      "display_name": "Dennis Lehane",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Dennis Lehane",
+      "source_version": null,
+      "source_hash": "deebc072fa22c6b63fed9e7636ded19aa1581249daf4ef17c08812cc5ec740c5",
+      "extracted_techniques": [],
+      "genome": {},
+      "applicability_tags": [
+        "character-contradiction",
+        "dialogue",
+        "emotional-pressure",
+        "moral-ambiguity",
+        "place-as-character",
+        "social-realism",
+        "trauma-consequence"
+      ],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          "dialogue",
+          "character contradiction",
+          "moral ambiguity",
+          "emotional pressure",
+          "social realism",
+          "place as character",
+          "trauma consequence",
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "dialogue": 95,
+          "character_complexity": 98,
+          "moral_ambiguity": 97,
+          "psychological_depth": 92,
+          "emotional_pressure": 94,
+          "social_realism": 96,
+          "place_as_character": 92
+        },
+        "raw_profile_markdown": "# 8. DENNIS LEHANE\n\nStatus:\n- A / CORE PROFILE\n\nFunkcja:\n- dialogue\n- character contradiction\n- moral ambiguity\n- emotional pressure\n- social realism\n- place as character\n- trauma consequence\n\nStyle Genome:\n- dialogue 95\n- character_complexity 98\n- moral_ambiguity 97\n- psychological_depth 92\n- emotional_pressure 94\n- social_realism 96\n- place_as_character 92\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-stephen-king",
+      "display_name": "Stephen King",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Stephen King",
+      "source_version": null,
+      "source_hash": "199e7ca6a731d14b90d933b780d2ab49e34f862b1278c8e20221c1b131add91d",
+      "extracted_techniques": [
+        "EMOTIONAL_STAKE_PRELOAD",
+        "NARRATIVE_DIRECTION",
+        "NARRATIVE_PROPULSION",
+        "OBJECT_PRESSURE_AMPLIFICATION",
+        "ORDINARY_TO_EXTRAORDINARY",
+        "PRESSURE_REVEALS_CHARACTER",
+        "REALITY_DISRUPTION_CURVE"
+      ],
+      "genome": {
+        "pacing": 0.84,
+        "suspense": 0.94
+      },
+      "applicability_tags": [
+        "emotional-stake-preload",
+        "immersion",
+        "narrative-propulsion",
+        "ordinary-world-grounding",
+        "pressure-reveals-character",
+        "reality-disruption"
+      ],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          "immersion",
+          "ordinary-world grounding",
+          "narrative propulsion",
+          "pressure reveals character",
+          "reality disruption",
+          "emotional stake preload",
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "reader_immersion": 98,
+          "ordinary_world_grounding": 99,
+          "reality_disruption": 98,
+          "slow_escalation": 96,
+          "atmospheric_tension": 96,
+          "threat_escalation": 97,
+          "suspense": 94,
+          "pacing": 84,
+          "psychological_depth": 91
+        },
+        "raw_profile_markdown": "# 9. STEPHEN KING\n\nStatus:\n- A+ / CORE PROFILE\n\nFunkcja:\n- immersion\n- ordinary-world grounding\n- narrative propulsion\n- pressure reveals character\n- reality disruption\n- emotional stake preload\n\nTechniki:\n- ORDINARY_TO_EXTRAORDINARY\n- NARRATIVE_PROPULSION\n- PRESSURE_REVEALS_CHARACTER\n- REALITY_DISRUPTION_CURVE\n- NARRATIVE_DIRECTION\n- OBJECT_PRESSURE_AMPLIFICATION\n- EMOTIONAL_STAKE_PRELOAD\n\nStyle Genome:\n- reader_immersion 98\n- ordinary_world_grounding 99\n- reality_disruption 98\n- slow_escalation 96\n- atmospheric_tension 96\n- threat_escalation 97\n- suspense 94\n- pacing 84\n- psychological_depth 91\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-michael-crichton",
+      "display_name": "Michael Crichton",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Michael Crichton",
+      "source_version": null,
+      "source_hash": "3a704790a447f5cafb11901b50e4a5ffe5c2138476a2caf81e5b74724e84053a",
+      "extracted_techniques": [
+        "BOUNDED_EXPERTISE",
+        "CAUSAL_ESCALATION",
+        "CONTROL_ILLUSION",
+        "DOCUMENTARY_REALISM",
+        "FUNCTIONAL_EXPOSITION",
+        "HIGH_CONCEPT_COMPRESSION",
+        "LAYERED_SYSTEM_ESCALATION",
+        "PLAUSIBILITY_BRIDGE",
+        "RESEARCH_TO_STORY_TRANSFORMATION",
+        "SPECULATIVE_REALISM",
+        "SYSTEMIC_ANTAGONISM"
+      ],
+      "genome": {},
+      "applicability_tags": [],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          null,
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "high_concept": 99,
+          "scientific_plausibility": 98,
+          "technical_credibility": 97,
+          "research_integration": 98,
+          "systemic_antagonism": 99,
+          "causal_escalation": 98
+        },
+        "raw_profile_markdown": "# 10. MICHAEL CRICHTON\n\nStatus:\n- A+ / CORE PROFILE\n\nTechniki:\n- PLAUSIBILITY_BRIDGE\n- HIGH_CONCEPT_COMPRESSION\n- FUNCTIONAL_EXPOSITION\n- DOCUMENTARY_REALISM\n- SYSTEMIC_ANTAGONISM\n- CAUSAL_ESCALATION\n- CONTROL_ILLUSION\n- LAYERED_SYSTEM_ESCALATION\n- BOUNDED_EXPERTISE\n- RESEARCH_TO_STORY_TRANSFORMATION\n- SPECULATIVE_REALISM\n\nStyle Genome:\n- high_concept 99\n- scientific_plausibility 98\n- technical_credibility 97\n- research_integration 98\n- systemic_antagonism 99\n- causal_escalation 98\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-tom-clancy",
+      "display_name": "Tom Clancy",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Tom Clancy",
+      "source_version": null,
+      "source_hash": "75670efb92461038960852351c334821c2bab270ba1d721eda95d6d06cfda9bf",
+      "extracted_techniques": [],
+      "genome": {},
+      "applicability_tags": [
+        "distributed-competence",
+        "geopolitical-scale",
+        "institutional-realism",
+        "operational-realism",
+        "strategic-reasoning",
+        "technical-authenticity"
+      ],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          "operational realism",
+          "technical authenticity",
+          "institutional realism",
+          "distributed competence",
+          "strategic reasoning",
+          "geopolitical scale",
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "operational_realism": 99,
+          "technical_authenticity": 98,
+          "procedural_detail": 98,
+          "institutional_realism": 97,
+          "distributed_competence": 97,
+          "strategic_reasoning": 97,
+          "geopolitical_scale": 98
+        },
+        "raw_profile_markdown": "# 11. TOM CLANCY\n\nStatus:\n- A / CORE PROFILE\n\nFunkcja:\n- operational realism\n- technical authenticity\n- institutional realism\n- distributed competence\n- strategic reasoning\n- geopolitical scale\n\nStyle Genome:\n- operational_realism 99\n- technical_authenticity 98\n- procedural_detail 98\n- institutional_realism 97\n- distributed_competence 97\n- strategic_reasoning 97\n- geopolitical_scale 98\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-frank-herbert",
+      "display_name": "Frank Herbert",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Frank Herbert",
+      "source_version": null,
+      "source_hash": "667c0414b4cd59423c02ab93949ac90ba8eea94d8a0cd9ba1917dda3dc26bee4",
+      "extracted_techniques": [],
+      "genome": {},
+      "applicability_tags": [
+        "deep-time-civilization",
+        "ecological-causality",
+        "factional-rationality",
+        "politics",
+        "religion",
+        "resource-power",
+        "systemic-worldbuilding"
+      ],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          "systemic worldbuilding",
+          "ecological causality",
+          "resource → power",
+          "factional rationality",
+          "politics",
+          "religion",
+          "deep-time civilization",
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "worldbuilding_depth": 99,
+          "systemic_worldbuilding": 99,
+          "ecological_causality": 99,
+          "political_depth": 98,
+          "factional_reasoning": 98,
+          "resource_power": 98,
+          "thematic_depth": 98
+        },
+        "raw_profile_markdown": "# 12. FRANK HERBERT\n\nStatus:\n- A+ / CORE PROFILE\n\nFunkcja:\n- systemic worldbuilding\n- ecological causality\n- resource → power\n- factional rationality\n- politics\n- religion\n- deep-time civilization\n\nStyle Genome:\n- worldbuilding_depth 99\n- systemic_worldbuilding 99\n- ecological_causality 99\n- political_depth 98\n- factional_reasoning 98\n- resource_power 98\n- thematic_depth 98\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-george-r-r-martin",
+      "display_name": "George R.R. Martin",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::George R.R. Martin",
+      "source_version": null,
+      "source_hash": "47932deecdd5bff95efe4b81132f6c64b1cfd8b050ed22c429d8ae72378dd49a",
+      "extracted_techniques": [
+        "CHARACTER_GENERATED_PLOT",
+        "CONSEQUENCE_PROPAGATION",
+        "CONSEQUENCE_SURPRISE",
+        "INDIRECT_CAUSAL_COLLISION",
+        "INFORMATION_PROPAGATION",
+        "MULTI_POV_CHARACTERIZATION",
+        "NARRATIVE_CONVERGENCE",
+        "PLOT_ARMOR_SUPPRESSION",
+        "POSTHUMOUS_CAUSALITY",
+        "POV_AS_SUBNOVEL"
+      ],
+      "genome": {},
+      "applicability_tags": [],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          null,
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "multi_pov": 99,
+          "character_generated_plot": 98,
+          "character_complexity": 98,
+          "consequence_propagation": 99,
+          "causal_depth": 98,
+          "plot_armor_suppression": 99,
+          "convergence": 98
+        },
+        "raw_profile_markdown": "# 13. GEORGE R.R. MARTIN\n\nStatus:\n- A+ / CORE PROFILE\n\nTechniki:\n- CHARACTER_GENERATED_PLOT\n- MULTI_POV_CHARACTERIZATION\n- PLOT_ARMOR_SUPPRESSION\n- CONSEQUENCE_PROPAGATION\n- POSTHUMOUS_CAUSALITY\n- POV_AS_SUBNOVEL\n- NARRATIVE_CONVERGENCE\n- INDIRECT_CAUSAL_COLLISION\n- INFORMATION_PROPAGATION\n- CONSEQUENCE_SURPRISE\n\nStyle Genome:\n- multi_pov 99\n- character_generated_plot 98\n- character_complexity 98\n- consequence_propagation 99\n- causal_depth 98\n- plot_armor_suppression 99\n- convergence 98\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-philip-k-dick",
+      "display_name": "Philip K. Dick",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Philip K. Dick",
+      "source_version": null,
+      "source_hash": "9e96c79b70864eae949cf449eac9884be8ba96b94168c47dba30bd2fb418cff1",
+      "extracted_techniques": [
+        "AUTHENTICITY_OVER_ORIGIN",
+        "DUAL_EXPLANATION_PARANOIA",
+        "EVIDENCE_CONTAMINATION",
+        "LAYERED_REALITY_STATE",
+        "MEMORY_UNCERTAINTY",
+        "MUNDANE_METAPHYSICS",
+        "ONTOLOGICAL_TECHNOLOGY",
+        "ONTOLOGICAL_TWIST",
+        "REALITY_CONTROL_AS_POWER",
+        "REALITY_DESTABILIZATION",
+        "REALITY_REVEAL_FAIR_PLAY",
+        "SELF_AS_MYSTERY",
+        "SELF_SURVEILLANCE_PARADOX",
+        "SHARED_EPISTEMIC_UNCERTAINTY"
+      ],
+      "genome": {},
+      "applicability_tags": [],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          null,
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "reality_destabilization": 100,
+          "ontological_uncertainty": 100,
+          "identity_uncertainty": 99,
+          "memory_manipulation": 99,
+          "false_memory": 98,
+          "paranoia": 100,
+          "reader_uncertainty": 99,
+          "perception_manipulation": 99,
+          "ontological_twist": 98,
+          "philosophical_depth": 98,
+          "conceptual_originality": 100,
+          "idea_propulsion": 100
+        },
+        "raw_profile_markdown": "# 14. PHILIP K. DICK\n\nStatus:\n- A+ / CORE PROFILE\n\nTechniki:\n- REALITY_DESTABILIZATION\n- LAYERED_REALITY_STATE\n- MEMORY_UNCERTAINTY\n- SELF_AS_MYSTERY\n- SHARED_EPISTEMIC_UNCERTAINTY\n- DUAL_EXPLANATION_PARANOIA\n- EVIDENCE_CONTAMINATION\n- ONTOLOGICAL_TECHNOLOGY\n- SELF_SURVEILLANCE_PARADOX\n- REALITY_CONTROL_AS_POWER\n- MUNDANE_METAPHYSICS\n- ONTOLOGICAL_TWIST\n- REALITY_REVEAL_FAIR_PLAY\n- AUTHENTICITY_OVER_ORIGIN\n\nStyle Genome:\n- reality_destabilization 100\n- ontological_uncertainty 100\n- identity_uncertainty 99\n- memory_manipulation 99\n- false_memory 98\n- paranoia 100\n- reader_uncertainty 99\n- perception_manipulation 99\n- ontological_twist 98\n- philosophical_depth 98\n- conceptual_originality 100\n- idea_propulsion 100\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-arthur-c-clarke",
+      "display_name": "Arthur C. Clarke",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Arthur C. Clarke",
+      "source_version": null,
+      "source_hash": "f44c9b37058dd86cdd68c1f3d1ef574699af0d483728487ccc67459f283cd422",
+      "extracted_techniques": [
+        "ANSWER_EXPANDS_MYSTERY",
+        "ANTHROPOCENTRIC_DECENTERING",
+        "ARTIFACT_DISCOVERY_LADDER",
+        "CONCEPTUAL_TECHNICAL_ELEGANCE",
+        "COSMIC_MYSTERY_PRESERVATION",
+        "COSMIC_SCALE_REVEAL",
+        "DEEP_TIME_PERSPECTIVE",
+        "ELEGANT_HIGH_CONCEPT",
+        "INDIRECT_FIRST_CONTACT",
+        "NONHUMAN_INTELLIGENCE_DISTANCE",
+        "SCIENTIFIC_AWE",
+        "SPECIES_LEVEL_ARC",
+        "TECHNOLOGICAL_TRANSCENDENCE"
+      ],
+      "genome": {},
+      "applicability_tags": [],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          null,
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "sense_of_wonder": 100,
+          "cosmic_scale": 100,
+          "deep_time": 99,
+          "scientific_plausibility": 96,
+          "conceptual_elegance": 99,
+          "high_concept": 99,
+          "cosmic_mystery": 100,
+          "alienness": 98,
+          "nonhuman_intelligence": 99,
+          "technological_transcendence": 99,
+          "scientific_awe": 100
+        },
+        "raw_profile_markdown": "# 15. ARTHUR C. CLARKE\n\nStatus:\n- A+ / CORE PROFILE\n\nTechniki:\n- COSMIC_SCALE_REVEAL\n- ELEGANT_HIGH_CONCEPT\n- TECHNOLOGICAL_TRANSCENDENCE\n- NONHUMAN_INTELLIGENCE_DISTANCE\n- COSMIC_MYSTERY_PRESERVATION\n- ANSWER_EXPANDS_MYSTERY\n- ANTHROPOCENTRIC_DECENTERING\n- SCIENTIFIC_AWE\n- CONCEPTUAL_TECHNICAL_ELEGANCE\n- SPECIES_LEVEL_ARC\n- DEEP_TIME_PERSPECTIVE\n- ARTIFACT_DISCOVERY_LADDER\n- INDIRECT_FIRST_CONTACT\n\nStyle Genome:\n- sense_of_wonder 100\n- cosmic_scale 100\n- deep_time 99\n- scientific_plausibility 96\n- conceptual_elegance 99\n- high_concept 99\n- cosmic_mystery 100\n- alienness 98\n- nonhuman_intelligence 99\n- technological_transcendence 99\n- scientific_awe 100\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-liu-cixin",
+      "display_name": "Liu Cixin",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Liu Cixin",
+      "source_version": null,
+      "source_hash": "e35427ee2a24551880e49a5dbe3afb7f05a3b46eed99980d6756dd195f688e1a",
+      "extracted_techniques": [
+        "ASYMMETRIC_RISK_LOGIC",
+        "CIVILIZATION_AS_AGENT",
+        "CIVILIZATION_PSYCHOLOGY",
+        "CIVILIZATIONAL_CAUSALITY",
+        "CONCEPTUAL_REVEAL_SCENE",
+        "DELAYED_STRATEGIC_CAUSALITY",
+        "EARNED_MEGA_SCALE_SPECTACLE",
+        "EXISTENTIAL_UNCERTAINTY",
+        "PARADIGM_SHIFT_PLOT",
+        "PHYSICS_DRIVEN_STRATEGY",
+        "SCALE_ESCALATION_LADDER",
+        "SECOND_ORDER_SPECULATION",
+        "TECHNOLOGICAL_POWER_DISCONTINUITY"
+      ],
+      "genome": {},
+      "applicability_tags": [],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          null,
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "mega_scale": 100,
+          "civilization_scale": 100,
+          "conceptual_ambition": 100,
+          "idea_escalation": 100,
+          "civilization_strategy": 99,
+          "existential_risk": 100,
+          "second_order_speculation": 100,
+          "idea_propulsion": 100
+        },
+        "raw_profile_markdown": "# 16. LIU CIXIN\n\nStatus:\n- A+ / CORE PROFILE\n\nTechniki:\n- SCALE_ESCALATION_LADDER\n- CIVILIZATIONAL_CAUSALITY\n- CIVILIZATION_AS_AGENT\n- EXISTENTIAL_UNCERTAINTY\n- ASYMMETRIC_RISK_LOGIC\n- TECHNOLOGICAL_POWER_DISCONTINUITY\n- PARADIGM_SHIFT_PLOT\n- PHYSICS_DRIVEN_STRATEGY\n- SECOND_ORDER_SPECULATION\n- DELAYED_STRATEGIC_CAUSALITY\n- CIVILIZATION_PSYCHOLOGY\n- CONCEPTUAL_REVEAL_SCENE\n- EARNED_MEGA_SCALE_SPECTACLE\n\nStyle Genome:\n- mega_scale 100\n- civilization_scale 100\n- conceptual_ambition 100\n- idea_escalation 100\n- civilization_strategy 99\n- existential_risk 100\n- second_order_speculation 100\n- idea_propulsion 100\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-andy-weir",
+      "display_name": "Andy Weir",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Andy Weir",
+      "source_version": null,
+      "source_hash": "06e26102a1bb71744220202240b741c06c14323cdd0e9659a73ebc684941580e",
+      "extracted_techniques": [
+        "DEPLETING_TIME_RESOURCE",
+        "EXPERIMENTAL_NARRATIVE_LOOP",
+        "HUMOR_AS_COPING",
+        "INFORMATIVE_FAILURE",
+        "ITERATIVE_PROBLEM_SOLVING",
+        "PARTICIPATORY_COMPETENCE",
+        "RESEARCH_COMPRESSION",
+        "RESOURCE_CONSTRAINED_PROBLEM",
+        "RESOURCE_REPURPOSING",
+        "SCIENCE_AS_PLOT_MECHANISM",
+        "SOLUTION_GENERATED_COMPLICATION",
+        "SURVIVAL_DEPENDENCY_GRAPH",
+        "TENSION_PRESERVING_HUMOR",
+        "VISIBLE_REASONING_CHAIN"
+      ],
+      "genome": {},
+      "applicability_tags": [],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          null,
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "problem_solving": 100,
+          "visible_reasoning": 99,
+          "iterative_solution_design": 100,
+          "resource_constraints": 99,
+          "informative_failure": 98,
+          "science_as_plot": 100,
+          "competence_reward": 99,
+          "technical_accessibility": 99,
+          "commercial_readability": 98
+        },
+        "raw_profile_markdown": "# 17. ANDY WEIR\n\nStatus:\n- A+ / CORE PROFILE\n\nTechniki:\n- ITERATIVE_PROBLEM_SOLVING\n- RESOURCE_CONSTRAINED_PROBLEM\n- RESOURCE_REPURPOSING\n- VISIBLE_REASONING_CHAIN\n- EXPERIMENTAL_NARRATIVE_LOOP\n- INFORMATIVE_FAILURE\n- RESEARCH_COMPRESSION\n- SCIENCE_AS_PLOT_MECHANISM\n- PARTICIPATORY_COMPETENCE\n- HUMOR_AS_COPING\n- TENSION_PRESERVING_HUMOR\n- DEPLETING_TIME_RESOURCE\n- SOLUTION_GENERATED_COMPLICATION\n- SURVIVAL_DEPENDENCY_GRAPH\n\nStyle Genome:\n- problem_solving 100\n- visible_reasoning 99\n- iterative_solution_design 100\n- resource_constraints 99\n- informative_failure 98\n- science_as_plot 100\n- competence_reward 99\n- technical_accessibility 99\n- commercial_readability 98\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-blake-crouch",
+      "display_name": "Blake Crouch",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Blake Crouch",
+      "source_version": null,
+      "source_hash": "83604150d9c899797ccc7c3ce28139142ffaf8404307d69aa34f33227f55bd18",
+      "extracted_techniques": [
+        "ABSTRACT_TO_ACTIONABLE_PROBLEM",
+        "CONCEPT_GENERATED_THEME",
+        "CONCEPT_TO_PERSONAL_STAKE",
+        "DISCOVERY_CHAIN",
+        "EMOTIONAL_CONCEPT_ANCHOR",
+        "IDENTITY_UNDER_VARIATION",
+        "INFORMATION_VELOCITY",
+        "INTIMATE_TO_GLOBAL_ESCALATION",
+        "JUST_IN_TIME_EXPOSITION",
+        "PERSONAL_TO_SYSTEMIC_ANOMALY",
+        "SELF_AS_ANTAGONIST",
+        "SEMANTIC_CLIFFHANGER",
+        "SHORT_SCENE_PROPULSION",
+        "SIMPLE_NARRATIVE_VECTOR",
+        "STATE_OF_UNDERSTANDING_CHANGE",
+        "TECHNOLOGY_COST_MATRIX"
+      ],
+      "genome": {},
+      "applicability_tags": [],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          null,
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "high_concept": 99,
+          "concept_to_personal_stake": 99,
+          "thriller_pacing": 98,
+          "forward_momentum": 99,
+          "information_velocity": 99,
+          "discovery_chain": 98,
+          "scene_economy": 97,
+          "chapter_propulsion": 99,
+          "commercial_readability": 99
+        },
+        "raw_profile_markdown": "# 18. BLAKE CROUCH\n\nStatus:\n- A+ / CORE PROFILE\n\nTechniki:\n- CONCEPT_TO_PERSONAL_STAKE\n- ABSTRACT_TO_ACTIONABLE_PROBLEM\n- DISCOVERY_CHAIN\n- INFORMATION_VELOCITY\n- STATE_OF_UNDERSTANDING_CHANGE\n- IDENTITY_UNDER_VARIATION\n- PERSONAL_TO_SYSTEMIC_ANOMALY\n- INTIMATE_TO_GLOBAL_ESCALATION\n- EMOTIONAL_CONCEPT_ANCHOR\n- SHORT_SCENE_PROPULSION\n- SEMANTIC_CLIFFHANGER\n- SIMPLE_NARRATIVE_VECTOR\n- JUST_IN_TIME_EXPOSITION\n- TECHNOLOGY_COST_MATRIX\n- SELF_AS_ANTAGONIST\n- CONCEPT_GENERATED_THEME\n\nStyle Genome:\n- high_concept 99\n- concept_to_personal_stake 99\n- thriller_pacing 98\n- forward_momentum 99\n- information_velocity 99\n- discovery_chain 98\n- scene_economy 97\n- chapter_propulsion 99\n- commercial_readability 99\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-harlan-coben",
+      "display_name": "Harlan Coben",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Harlan Coben",
+      "source_version": null,
+      "source_hash": "4ec764cf7f5e18ecc0065f396176f895ec86fc9bc1dd675948122aa27c6beb87",
+      "extracted_techniques": [
+        "ACCESSIBLE_COMPLEXITY",
+        "DOMESTIC_PROXIMITY_THREAT",
+        "EMOTIONAL_TWIST_AFTERSHOCK",
+        "INFORMATION_VALUE_ARCHITECTURE",
+        "ORDINARY_PERSON_EXTREME_SITUATION",
+        "PAST_INTRUSION",
+        "PERSONAL_CERTAINTY_COLLAPSE",
+        "PRE_EXISTING_LIFE_VALUE",
+        "PREPLANNED_ORGANIC_TWIST",
+        "RETROACTIVE_REINTERPRETATION",
+        "REVEAL_DECISION_PROPULSION",
+        "REVEAL_REOPENS_MYSTERY",
+        "STATE_CHANGE_HOOK",
+        "TRUTH_ACQUISITION_COST"
+      ],
+      "genome": {},
+      "applicability_tags": [],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          null,
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "page_turner_strength": 100,
+          "commercial_readability": 100,
+          "hook_strength": 99,
+          "chapter_propulsion": 99,
+          "revelation_pacing": 99,
+          "secret_architecture": 99,
+          "reader_curiosity": 100
+        },
+        "raw_profile_markdown": "# 19. HARLAN COBEN\n\nStatus:\n- A+ / CORE PROFILE\n\nTechniki:\n- ORDINARY_PERSON_EXTREME_SITUATION\n- PERSONAL_CERTAINTY_COLLAPSE\n- REVEAL_REOPENS_MYSTERY\n- PREPLANNED_ORGANIC_TWIST\n- RETROACTIVE_REINTERPRETATION\n- STATE_CHANGE_HOOK\n- INFORMATION_VALUE_ARCHITECTURE\n- PAST_INTRUSION\n- PRE_EXISTING_LIFE_VALUE\n- DOMESTIC_PROXIMITY_THREAT\n- TRUTH_ACQUISITION_COST\n- REVEAL_DECISION_PROPULSION\n- EMOTIONAL_TWIST_AFTERSHOCK\n- ACCESSIBLE_COMPLEXITY\n\nStyle Genome:\n- page_turner_strength 100\n- commercial_readability 100\n- hook_strength 99\n- chapter_propulsion 99\n- revelation_pacing 99\n- secret_architecture 99\n- reader_curiosity 100\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-tana-french",
+      "display_name": "Tana French",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Tana French",
+      "source_version": null,
+      "source_hash": "ef5a0f0dcd293957c88a06d036c3fadc3f14c1441f95aa11c0604a368501d435",
+      "extracted_techniques": [
+        "ASYMMETRIC_RESOLUTION",
+        "CASE_CHARACTER_RESONANCE",
+        "CLOSED_GROUP_SOCIAL_DYNAMICS",
+        "COMPETENT_BUT_BIASED_INVESTIGATOR",
+        "INVESTIGATION_AS_SELF_EXPOSURE",
+        "INVESTIGATION_RELATIONSHIP_COUPLING",
+        "LIVED_IN_ATMOSPHERE",
+        "MEMORY_CANON_SEPARATION",
+        "POV_RECONTEXTUALIZED_CHARACTER",
+        "PSYCHOLOGICAL_DIALOGUE_POSITIONING",
+        "PSYCHOLOGICALLY_ACTIVE_SETTING",
+        "SELECTIVE_MYSTERY_RESOLUTION",
+        "SINCERE_UNRELIABILITY",
+        "SUBJECTIVE_TRUTH_FILTER",
+        "TRUTH_WITH_PSYCHOLOGICAL_COST"
+      ],
+      "genome": {},
+      "applicability_tags": [],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          null,
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "deep_pov": 99,
+          "subjective_truth": 100,
+          "unreliable_perception": 98,
+          "psychological_depth": 100,
+          "character_complexity": 99,
+          "atmosphere": 99,
+          "place_psychology": 98,
+          "literary_depth": 99
+        },
+        "raw_profile_markdown": "# 20. TANA FRENCH\n\nStatus:\n- A+ / CORE PROFILE\n\nTechniki:\n- SUBJECTIVE_TRUTH_FILTER\n- SINCERE_UNRELIABILITY\n- INVESTIGATION_AS_SELF_EXPOSURE\n- CASE_CHARACTER_RESONANCE\n- PSYCHOLOGICALLY_ACTIVE_SETTING\n- LIVED_IN_ATMOSPHERE\n- PSYCHOLOGICAL_DIALOGUE_POSITIONING\n- CLOSED_GROUP_SOCIAL_DYNAMICS\n- POV_RECONTEXTUALIZED_CHARACTER\n- ASYMMETRIC_RESOLUTION\n- SELECTIVE_MYSTERY_RESOLUTION\n- MEMORY_CANON_SEPARATION\n- COMPETENT_BUT_BIASED_INVESTIGATOR\n- INVESTIGATION_RELATIONSHIP_COUPLING\n- TRUTH_WITH_PSYCHOLOGICAL_COST\n\nStyle Genome:\n- deep_pov 99\n- subjective_truth 100\n- unreliable_perception 98\n- psychological_depth 100\n- character_complexity 99\n- atmosphere 99\n- place_psychology 98\n- literary_depth 99\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-donna-tartt",
+      "display_name": "Donna Tartt",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Donna Tartt",
+      "source_version": null,
+      "source_hash": "667bf16236681c09bef5d5bc8269c876af402892a5383ea4c0c85c5cd1853c1b",
+      "extracted_techniques": [
+        "AESTHETIC_SEDUCTION",
+        "BELONGING_BIAS",
+        "CLOSED_GROUP_GRAVITY",
+        "INVERTED_MYSTERY_SUSPENSE",
+        "LONG_FORM_OBJECT_ANCHOR",
+        "MATERIAL_IMMERSION",
+        "MORAL_AFTERSHOCK_CHAIN",
+        "MORAL_CORROSION_ARC",
+        "READER_COMPLICITY",
+        "RETROSPECTIVE_DOUBLE_CONSCIOUSNESS",
+        "RETROSPECTIVE_SELF_BLINDNESS",
+        "SLOW_BURN_PRESSURE"
+      ],
+      "genome": {},
+      "applicability_tags": [],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          null,
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "immersive_atmosphere": 99,
+          "psychological_depth": 97,
+          "obsession": 99,
+          "moral_corrosion": 99,
+          "closed_group_dynamics": 99,
+          "aesthetic_seduction": 100,
+          "slow_burn_tension": 99,
+          "literary_depth": 99
+        },
+        "raw_profile_markdown": "# 21. DONNA TARTT\n\nStatus:\n- A+ / CORE PROFILE\n\nTechniki:\n- INVERTED_MYSTERY_SUSPENSE\n- MORAL_CORROSION_ARC\n- CLOSED_GROUP_GRAVITY\n- BELONGING_BIAS\n- AESTHETIC_SEDUCTION\n- READER_COMPLICITY\n- RETROSPECTIVE_DOUBLE_CONSCIOUSNESS\n- RETROSPECTIVE_SELF_BLINDNESS\n- SLOW_BURN_PRESSURE\n- MATERIAL_IMMERSION\n- LONG_FORM_OBJECT_ANCHOR\n- MORAL_AFTERSHOCK_CHAIN\n\nStyle Genome:\n- immersive_atmosphere 99\n- psychological_depth 97\n- obsession 99\n- moral_corrosion 99\n- closed_group_dynamics 99\n- aesthetic_seduction 100\n- slow_burn_tension 99\n- literary_depth 99\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-cormac-mccarthy",
+      "display_name": "Cormac McCarthy",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Cormac McCarthy",
+      "source_version": null,
+      "source_hash": "dc27c35c6fcfda8cc412885284f2ec234e0ef97dd6144f3308e2620081b6635a",
+      "extracted_techniques": [
+        "BEHAVIOR_OVER_EXPLANATION",
+        "CONSEQUENTIAL_VIOLENCE",
+        "EMBODIED_WORLDVIEW",
+        "EXISTENTIAL_LANDSCAPE",
+        "EXPLANATION_WITHHOLDING",
+        "FUNCTIONAL_REPETITION",
+        "HUMAN_SCALE_REDUCTION",
+        "IDEOLOGICAL_ANTAGONISM",
+        "MATERIAL_CONCRETENESS",
+        "MEANINGFUL_SILENCE",
+        "MORAL_NONCOMMENTARY",
+        "REGISTER_GEAR_SHIFT",
+        "RHYTHMIC_SYNTAX",
+        "SIMPLE_EMOTIONAL_CORE",
+        "SUBTEXT_BY_OMISSION",
+        "UNGLAMORIZED_VIOLENCE"
+      ],
+      "genome": {},
+      "applicability_tags": [],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          null,
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "linguistic_force": 100,
+          "sentence_rhythm": 100,
+          "exposition_restraint": 99,
+          "meaningful_silence": 99,
+          "material_concreteness": 100,
+          "landscape_power": 100,
+          "violence_consequence": 100,
+          "moral_weight": 100,
+          "existential_depth": 100,
+          "literary_depth": 100
+        },
+        "raw_profile_markdown": "# 22. CORMAC McCARTHY\n\nStatus:\n- A+ / CORE PROFILE\n\nWażne:\nprofil ma co najmniej dwa rejestry:\n- COMPRESSION REGISTER\n- ELEVATED / MYTHIC REGISTER\n\nTechniki:\n- BEHAVIOR_OVER_EXPLANATION\n- SUBTEXT_BY_OMISSION\n- MEANINGFUL_SILENCE\n- MATERIAL_CONCRETENESS\n- CONSEQUENTIAL_VIOLENCE\n- UNGLAMORIZED_VIOLENCE\n- EXISTENTIAL_LANDSCAPE\n- HUMAN_SCALE_REDUCTION\n- MORAL_NONCOMMENTARY\n- IDEOLOGICAL_ANTAGONISM\n- EMBODIED_WORLDVIEW\n- REGISTER_GEAR_SHIFT\n- RHYTHMIC_SYNTAX\n- FUNCTIONAL_REPETITION\n- EXPLANATION_WITHHOLDING\n- SIMPLE_EMOTIONAL_CORE\n\nStyle Genome:\n- linguistic_force 100\n- sentence_rhythm 100\n- exposition_restraint 99\n- meaningful_silence 99\n- material_concreteness 100\n- landscape_power 100\n- violence_consequence 100\n- moral_weight 100\n- existential_depth 100\n- literary_depth 100\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-raymond-chandler",
+      "display_name": "Raymond Chandler",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Raymond Chandler",
+      "source_version": null,
+      "source_hash": "fb0ddf6512804a5b3c3ff65eac3d9b72e1c2972cd5304779eb3982b279fc8228",
+      "extracted_techniques": [
+        "BEHAVIORAL_MORAL_CODE",
+        "BRIGHT_SURFACE_DARK_SYSTEM",
+        "CHARACTERIZED_OBSERVATION",
+        "CYNICISM_WITH_CODE",
+        "DIALOGUE_POWER_REVERSAL",
+        "FUNCTIONAL_WIT",
+        "INVESTIGATION_AS_SOCIAL_TRAVERSAL",
+        "MORAL_LONELINESS",
+        "MULTIFUNCTIONAL_FIGURATIVE_LANGUAGE",
+        "POV_GENERATED_METAPHOR",
+        "SOCIAL_DETAIL_COMPRESSION",
+        "SOCIAL_TOPOGRAPHY",
+        "STATUS_COMBAT_DIALOGUE",
+        "TONAL_CONTRAST_NOIR",
+        "VOICE_DRIVEN_IMMERSION"
+      ],
+      "genome": {},
+      "applicability_tags": [],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          null,
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "narrative_voice": 100,
+          "metaphoric_originality": 100,
+          "dialogue": 99,
+          "functional_wit": 99,
+          "city_as_system": 99,
+          "urban_atmosphere": 100,
+          "noir_tonal_control": 100,
+          "prose_distinctiveness": 100
+        },
+        "raw_profile_markdown": "# 23. RAYMOND CHANDLER\n\nStatus:\n- A+ / CORE PROFILE\n\nTechniki:\n- CHARACTERIZED_OBSERVATION\n- POV_GENERATED_METAPHOR\n- MULTIFUNCTIONAL_FIGURATIVE_LANGUAGE\n- CYNICISM_WITH_CODE\n- BEHAVIORAL_MORAL_CODE\n- SOCIAL_TOPOGRAPHY\n- INVESTIGATION_AS_SOCIAL_TRAVERSAL\n- SOCIAL_DETAIL_COMPRESSION\n- STATUS_COMBAT_DIALOGUE\n- FUNCTIONAL_WIT\n- DIALOGUE_POWER_REVERSAL\n- MORAL_LONELINESS\n- BRIGHT_SURFACE_DARK_SYSTEM\n- TONAL_CONTRAST_NOIR\n- VOICE_DRIVEN_IMMERSION\n\nStyle Genome:\n- narrative_voice 100\n- metaphoric_originality 100\n- dialogue 99\n- functional_wit 99\n- city_as_system 99\n- urban_atmosphere 100\n- noir_tonal_control 100\n- prose_distinctiveness 100\n\n---"
+      }
+    },
+    {
+      "profile_id": "STYLE-LIB-AUTHOR-dashiell-hammett",
+      "display_name": "Dashiell Hammett",
+      "source_ref": "AGENTPRO_STYLE_LIBRARY_24_PROFILE_2026-09-16::Dashiell Hammett",
+      "source_version": null,
+      "source_hash": "7186bd9027f95d66621c173b2b1799b8fac305395a8a3bd575479efd35cecd66",
+      "extracted_techniques": [
+        "BEHAVIORAL_CHARACTERIZATION",
+        "CHARACTER_PRESSURE_CURRENCY",
+        "CRIMINAL_ECOSYSTEM",
+        "DEADPAN_INTENSITY",
+        "DECEPTION_GRAPH",
+        "DISTRIBUTED_ANTAGONISM",
+        "EXTERNALIZED_PSYCHOLOGY",
+        "INCENTIVE_BASED_CHARACTER_LOGIC",
+        "INFORMATION_AS_LEVERAGE",
+        "INTEREST_COLLISION_PLOT",
+        "INVESTIGATOR_AS_CATALYST",
+        "KINETIC_PROSE_ECONOMY",
+        "POWER_GEOGRAPHY",
+        "PROFESSIONAL_CODE",
+        "RATIONAL_BETRAYAL",
+        "TRANSACTIONAL_WORLD_MODEL",
+        "UNROMANTIC_COMPETENCE",
+        "VIOLENCE_AS_SYSTEM_CHANGE"
+      ],
+      "genome": {},
+      "applicability_tags": [],
+      "version": 1,
+      "source_metadata": {
+        "status": [
+          "A+ / CORE PROFILE"
+        ],
+        "segment": [
+          null
+        ],
+        "functions": [
+          null,
+          null,
+          null,
+          null
+        ],
+        "risks": [
+          null
+        ],
+        "source_ratings": {
+          "prose_economy": 99,
+          "behavioral_characterization": 100,
+          "externalized_psychology": 98,
+          "understatement": 99,
+          "criminal_systems": 100,
+          "corruption_modeling": 99,
+          "interest_collision": 100,
+          "betrayal_logic": 99,
+          "professional_code": 98,
+          "dialogue_economy": 98,
+          "commercial_readability": 96
+        },
+        "raw_profile_markdown": "# 24. DASHIELL HAMMETT\n\nStatus:\n- A+ / CORE PROFILE\n\nTechniki:\n- BEHAVIORAL_CHARACTERIZATION\n- EXTERNALIZED_PSYCHOLOGY\n- INCENTIVE_BASED_CHARACTER_LOGIC\n- CRIMINAL_ECOSYSTEM\n- DISTRIBUTED_ANTAGONISM\n- INVESTIGATOR_AS_CATALYST\n- INFORMATION_AS_LEVERAGE\n- CHARACTER_PRESSURE_CURRENCY\n- RATIONAL_BETRAYAL\n- DECEPTION_GRAPH\n- PROFESSIONAL_CODE\n- UNROMANTIC_COMPETENCE\n- KINETIC_PROSE_ECONOMY\n- DEADPAN_INTENSITY\n- VIOLENCE_AS_SYSTEM_CHANGE\n- POWER_GEOGRAPHY\n- TRANSACTIONAL_WORLD_MODEL\n- INTEREST_COLLISION_PLOT\n\nStyle Genome:\n- prose_economy 99\n- behavioral_characterization 100\n- externalized_psychology 98\n- understatement 99\n- criminal_systems 100\n- corruption_modeling 99\n- interest_collision 100\n- betrayal_logic 99\n- professional_code 98\n- dialogue_economy 98\n- commercial_readability 96\n\n---"
+      }
+    }
+  ]
+}

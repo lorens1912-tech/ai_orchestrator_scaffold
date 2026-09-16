@@ -15,6 +15,9 @@ from app.p20_core.project_repository import (
     SeriesRepository, StorageResolver, SystemRepository,
 )
 from app.p20_core.canon_service import operator_proposal_review, record_operator_decision, commit_canonical_proposal
+from app.p20_core.adaptive_style import AdaptiveStyleError, StyleRepository
+from app.p20_core.project_repository import ProjectStorageError
+from app.p20_core.style_library_catalog import seed_curated_style_library
 
 router = APIRouter(prefix="/operator", tags=["local operator"])
 bearer = HTTPBearer(auto_error=False)
@@ -98,6 +101,76 @@ def _proposal_target(registry, project_id: str, proposal_id: str):
 @router.get("/identity")
 def identity(principal=Depends(authenticated_operator)):
     return _with_operator(principal, lambda operator, registry: operator.to_dict())
+
+
+def _style_library_profile_response(profile):
+    value = profile.to_dict()
+    # The raw curation excerpt remains persisted provenance. Operator listing
+    # exposes its stable hash and structured metadata without repeating the
+    # full embedded source document in every response.
+    metadata = dict(value["source_metadata"])
+    metadata.pop("raw_profile_markdown", None)
+    value["source_metadata"] = metadata
+    return value
+
+
+def _style_library_operation(principal, operation):
+    try:
+        return _with_operator(principal, operation)
+    except AdaptiveStyleError as exc:
+        raise HTTPException(422, str(exc)) from None
+    except ProjectStorageError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
+@router.post("/projects/{project_id}/style-library/seed")
+def seed_style_library(project_id: str, principal=Depends(authenticated_operator)):
+    def operation(_operator, registry):
+        return seed_curated_style_library(StyleRepository(_project(registry, project_id)))
+    return _style_library_operation(principal, operation)
+
+
+@router.get("/projects/{project_id}/style-library")
+def list_style_library(project_id: str, principal=Depends(authenticated_operator)):
+    def operation(_operator, registry):
+        repository = StyleRepository(_project(registry, project_id))
+        return {
+            "profiles": [
+                _style_library_profile_response(profile)
+                for profile in repository.list_library_profiles()
+            ]
+        }
+    return _style_library_operation(principal, operation)
+
+
+@router.get("/projects/{project_id}/style-library/by-name/{display_name}")
+def get_style_library_profile_by_name(
+    project_id: str,
+    display_name: str,
+    principal=Depends(authenticated_operator),
+):
+    def operation(_operator, registry):
+        repository = StyleRepository(_project(registry, project_id))
+        profile = repository.get_library_profile_by_name(display_name)
+        if profile is None:
+            raise HTTPException(404, "STYLE_LIBRARY_PROFILE_NOT_FOUND")
+        return _style_library_profile_response(profile)
+    return _style_library_operation(principal, operation)
+
+
+@router.get("/projects/{project_id}/style-library/by-id/{profile_id}")
+def get_style_library_profile_by_id(
+    project_id: str,
+    profile_id: str,
+    principal=Depends(authenticated_operator),
+):
+    def operation(_operator, registry):
+        repository = StyleRepository(_project(registry, project_id))
+        profile = repository.get_library_profile(profile_id)
+        if profile is None:
+            raise HTTPException(404, "STYLE_LIBRARY_PROFILE_NOT_FOUND")
+        return _style_library_profile_response(profile)
+    return _style_library_operation(principal, operation)
 
 
 @router.get("/projects/{project_id}/proposals/{proposal_id}")

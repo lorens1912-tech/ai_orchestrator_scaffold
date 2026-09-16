@@ -33,12 +33,12 @@ StyleLibraryProfile {
   id
   source_ref            // abstrakcja referencji autorskiej, zgodnie z v1.2
   extracted_techniques[]  // np. free indirect discourse, short-burst dialogue
-  genome: StyleGenome    // patrz 2.2
+  genome: StyleGenome    // może być sparse; patrz 2.2
   applicability_tags[]   // scene_type / genre / tone, do czego się nadaje
   version
 }
 ```
-Wejście do Composera. Nigdy nie jest modyfikowany w runtime — tylko przez proces kuracji biblioteki (offline).
+Wejście do Composera. Nigdy nie jest modyfikowany w runtime — tylko przez proces kuracji biblioteki (offline). W profilu bibliotecznym brak wartości cechy oznacza wyłącznie `UNKNOWN / NOT OBSERVED`; nie jest zastępowany zerem, wartością neutralną, średnią, DNA ani inferencją. Techniki i applicability pozostają użyteczne niezależnie od kompletności części liczbowej.
 
 ### 2.2 `StyleGenome`
 Parametryczny wektor cech stylu — wspólny format dla `StyleLibraryProfile`, `BookStyleDNA` i `SceneStyleRecipe`.
@@ -57,6 +57,8 @@ StyleGenome {
 }
 ```
 Kluczowe: `StyleGenome` to **format**, nie encja sama w sobie. Zawsze występuje jako pole wewnątrz innego kontraktu.
+
+`StyleLibraryProfile.genome` może być częściowy (sparse), ponieważ opisuje wyłącznie udokumentowane obserwacje źródłowe. Composer rozpatruje każdą cechę osobno i uwzględnia dla niej tylko profile, które mają tę konkretną wartość. Brak sygnału bibliotecznego nie jest błędem i nie mutuje profilu; wynik jest wtedy wyprowadzany z `BookStyleDNA` oraz prawidłowo dopasowanej historii wykonania. Artefakty wykonawcze — w szczególności `SceneStyleRecipe.target_genome`, `StyleEvaluation.achieved_genome` i `StylePerformanceRecord.achieved_genome` — wymagają kompletnego genomu. Provenance recepty wskazuje wybrane profile, źródła technik oraz profile dostarczające sygnału dla każdej użytej cechy.
 
 ### 2.3 `BookStyleDNA`
 Nadrzędny, stabilny zakres dopuszczalnego stylu książki. Nie jest pojedynczym punktem w przestrzeni genomu — jest **przedziałem dopuszczalnym** per cecha.

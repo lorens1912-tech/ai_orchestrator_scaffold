@@ -72,26 +72,65 @@ def _non_negative_number(value: Any, name: str) -> float:
 
 @dataclass(frozen=True)
 class StyleGenome:
-    pacing: float
-    dialogue_density: float
-    suspense: float
-    syntax_variation: float
-    sentence_length_mean: float
-    sentence_length_variance: float
-    lexical_register: str
-    figurative_density: float
-    pov_intimacy: float
+    """Style feature vector.
+
+    Library profiles may be sparse: ``None`` means UNKNOWN / NOT OBSERVED.
+    Runtime artifacts call ``require_complete`` and therefore retain the
+    original complete-genome contract.
+    """
+
+    pacing: float | None = None
+    dialogue_density: float | None = None
+    suspense: float | None = None
+    syntax_variation: float | None = None
+    sentence_length_mean: float | None = None
+    sentence_length_variance: float | None = None
+    lexical_register: str | None = None
+    figurative_density: float | None = None
+    pov_intimacy: float | None = None
 
     def __post_init__(self) -> None:
         for name in NUMERIC_STYLE_FEATURES:
-            object.__setattr__(self, name, _unit(getattr(self, name), name))
-        register = _text(self.lexical_register, "lexical_register").upper()
-        if register not in LEXICAL_REGISTERS:
-            raise AdaptiveStyleError(f"unsupported lexical_register: {register}")
-        object.__setattr__(self, "lexical_register", register)
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _unit(value, name))
+        if self.lexical_register is not None:
+            register = _text(self.lexical_register, "lexical_register").upper()
+            if register not in LEXICAL_REGISTERS:
+                raise AdaptiveStyleError(f"unsupported lexical_register: {register}")
+            object.__setattr__(self, "lexical_register", register)
+
+    @property
+    def observed_features(self) -> tuple[str, ...]:
+        features = tuple(
+            name for name in NUMERIC_STYLE_FEATURES
+            if getattr(self, name) is not None
+        )
+        if self.lexical_register is not None:
+            return features + ("lexical_register",)
+        return features
+
+    @property
+    def missing_features(self) -> tuple[str, ...]:
+        return tuple(
+            name for name in (*NUMERIC_STYLE_FEATURES, "lexical_register")
+            if getattr(self, name) is None
+        )
+
+    def require_complete(self, owner: str) -> "StyleGenome":
+        missing = self.missing_features
+        if missing:
+            raise AdaptiveStyleError(
+                f"{owner} requires complete StyleGenome; missing: {', '.join(missing)}"
+            )
+        return self
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            name: getattr(self, name)
+            for name in (*NUMERIC_STYLE_FEATURES, "lexical_register")
+            if getattr(self, name) is not None
+        }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "StyleGenome":
@@ -133,6 +172,10 @@ class StyleLibraryProfile:
     genome: StyleGenome
     applicability_tags: tuple[str, ...]
     version: int
+    display_name: str | None = None
+    source_version: str | None = None
+    source_hash: str | None = None
+    source_metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "profile_id", _text(self.profile_id, "profile_id"))
@@ -140,6 +183,17 @@ class StyleLibraryProfile:
         if re.search(r"\bwrite\s+like\b", source, re.IGNORECASE):
             raise AdaptiveStyleError("source_ref must be an abstract reference, not a runtime imitation instruction")
         object.__setattr__(self, "source_ref", source)
+        object.__setattr__(self, "display_name", _text(self.display_name or source, "display_name"))
+        if self.source_version is not None:
+            object.__setattr__(self, "source_version", _text(self.source_version, "source_version"))
+        if self.source_hash is not None:
+            source_hash = str(self.source_hash).strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", source_hash):
+                raise AdaptiveStyleError("source_hash must be sha256")
+            object.__setattr__(self, "source_hash", source_hash)
+        if not isinstance(self.source_metadata, Mapping):
+            raise AdaptiveStyleError("source_metadata must be an object")
+        object.__setattr__(self, "source_metadata", json.loads(_canonical_json(self.source_metadata)))
         object.__setattr__(self, "version", _version(self.version))
         object.__setattr__(self, "extracted_techniques", tuple(sorted({_text(x, "technique") for x in self.extracted_techniques})))
         object.__setattr__(self, "applicability_tags", tuple(sorted({_text(x, "applicability_tag") for x in self.applicability_tags})))
@@ -147,7 +201,18 @@ class StyleLibraryProfile:
             raise AdaptiveStyleError("genome must be StyleGenome")
 
     def to_dict(self) -> dict[str, Any]:
-        return {**asdict(self), "genome": self.genome.to_dict()}
+        return {
+            "profile_id": self.profile_id,
+            "source_ref": self.source_ref,
+            "extracted_techniques": list(self.extracted_techniques),
+            "genome": self.genome.to_dict(),
+            "applicability_tags": list(self.applicability_tags),
+            "version": self.version,
+            "display_name": self.display_name,
+            "source_version": self.source_version,
+            "source_hash": self.source_hash,
+            "source_metadata": dict(self.source_metadata),
+        }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "StyleLibraryProfile":
@@ -155,6 +220,10 @@ class StyleLibraryProfile:
         data["genome"] = StyleGenome.from_dict(data["genome"])
         data["extracted_techniques"] = tuple(data.get("extracted_techniques", ()))
         data["applicability_tags"] = tuple(data.get("applicability_tags", ()))
+        data.setdefault("display_name", None)
+        data.setdefault("source_version", None)
+        data.setdefault("source_hash", None)
+        data.setdefault("source_metadata", {})
         return cls(**data)
 
 
@@ -195,6 +264,7 @@ class BookStyleDNA:
         )
 
     def bounds_genome(self, genome: StyleGenome) -> StyleGenome:
+        genome.require_complete("BookStyleDNA.bounds_genome")
         values = {
             name: (
                 self.genome_bounds[name].target
@@ -207,6 +277,7 @@ class BookStyleDNA:
         return StyleGenome(**values)
 
     def contains(self, genome: StyleGenome) -> bool:
+        genome.require_complete("BookStyleDNA.contains")
         return genome.lexical_register == self.lexical_register and all(
             self.genome_bounds[name].minimum <= getattr(genome, name) <= self.genome_bounds[name].maximum
             and (name not in self.locked_identity_markers or getattr(genome, name) == self.genome_bounds[name].target)
@@ -275,6 +346,9 @@ class SceneStyleRecipe:
         object.__setattr__(self, "recipe_id", _text(self.recipe_id, "recipe_id"))
         object.__setattr__(self, "scene_id", _text(self.scene_id, "scene_id"))
         object.__setattr__(self, "book_style_dna_version", _version(self.book_style_dna_version, "book_style_dna_version"))
+        if not isinstance(self.target_genome, StyleGenome):
+            raise AdaptiveStyleError("target_genome must be StyleGenome")
+        self.target_genome.require_complete("SceneStyleRecipe.target_genome")
         object.__setattr__(self, "selected_techniques", tuple(sorted({_text(x, "technique") for x in self.selected_techniques})))
         object.__setattr__(self, "rationale", _text(self.rationale, "rationale"))
         object.__setattr__(self, "provenance", tuple(sorted({_text(x, "provenance") for x in self.provenance})))
@@ -334,6 +408,9 @@ class StyleEvaluation:
             object.__setattr__(self, name, _text(getattr(self, name), name))
         if not re.fullmatch(r"[0-9a-f]{64}", self.artifact_hash):
             raise AdaptiveStyleError("artifact_hash must be sha256")
+        if not isinstance(self.achieved_genome, StyleGenome):
+            raise AdaptiveStyleError("achieved_genome must be StyleGenome")
+        self.achieved_genome.require_complete("StyleEvaluation.achieved_genome")
         object.__setattr__(self, "deviation_from_target", _unit(self.deviation_from_target, "deviation_from_target"))
         object.__setattr__(self, "style_score", _unit(self.style_score, "style_score"))
         if not isinstance(self.dna_compliance, bool):
@@ -380,6 +457,9 @@ class StylePerformanceRecord:
             raise AdaptiveStyleError("performance DNA version and SceneIndexKey version differ")
         if not re.fullmatch(r"[0-9a-f]{64}", self.accepted_artifact_hash):
             raise AdaptiveStyleError("accepted_artifact_hash must be sha256")
+        if not isinstance(self.achieved_genome, StyleGenome):
+            raise AdaptiveStyleError("achieved_genome must be StyleGenome")
+        self.achieved_genome.require_complete("StylePerformanceRecord.achieved_genome")
         if self.status != "ACCEPTED":
             raise AdaptiveStyleError("StylePerformanceRecord status must be ACCEPTED")
 
@@ -424,13 +504,93 @@ class StyleRepository:
             )
 
     def save_library_profile(self, profile: StyleLibraryProfile) -> None:
-        self._write("style_library_profiles", ("profile_id", "version"), (profile.profile_id, profile.version), profile.to_dict())
+        """Persist one immutable curated profile.
+
+        Profile identity and human-readable name are both stable within a
+        version. This prevents an operator typo or a later import from making
+        name-based selection ambiguous.
+        """
+        self.project_repository.initialize()
+        payload_json = _canonical_json(profile.to_dict())
+        scope_id = self.project_repository.scope.scope_id
+        with self.project_repository.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT profile_id, version, payload_json FROM style_library_profiles "
+                "WHERE scope_type='PROJECT' AND scope_id=?",
+                (scope_id,),
+            ).fetchall()
+            for row in rows:
+                stored = StyleLibraryProfile.from_dict(json.loads(row["payload_json"]))
+                same_identity = stored.profile_id == profile.profile_id and stored.version == profile.version
+                same_name_version = (
+                    stored.display_name.casefold() == profile.display_name.casefold()
+                    and stored.version == profile.version
+                )
+                if same_identity:
+                    if str(row["payload_json"]) != payload_json:
+                        raise ProjectStorageError(
+                            "style_library_profiles identity already exists with different content"
+                        )
+                    return
+                if same_name_version:
+                    raise ProjectStorageError(
+                        "style library display name and version already belong to a different profile"
+                    )
+            conn.execute(
+                "INSERT INTO style_library_profiles"
+                "(scope_type,scope_id,profile_id,version,payload_json) VALUES('PROJECT',?,?,?,?)",
+                (scope_id, profile.profile_id, profile.version, payload_json),
+            )
 
     def list_library_profiles(self) -> tuple[StyleLibraryProfile, ...]:
         self.project_repository.initialize()
         with self.project_repository.connect() as conn:
             rows = conn.execute("SELECT payload_json FROM style_library_profiles WHERE scope_type='PROJECT' AND scope_id=? ORDER BY profile_id, version", (self.project_repository.scope.scope_id,)).fetchall()
         return tuple(StyleLibraryProfile.from_dict(json.loads(row["payload_json"])) for row in rows)
+
+    def get_library_profile(self, profile_id: str, version: int | None = None) -> StyleLibraryProfile | None:
+        profile_id = _text(profile_id, "profile_id")
+        matches = tuple(
+            item for item in self.list_library_profiles()
+            if item.profile_id == profile_id and (version is None or item.version == version)
+        )
+        if not matches:
+            return None
+        return max(matches, key=lambda item: item.version)
+
+    def get_library_profile_by_name(self, display_name: str, version: int | None = None) -> StyleLibraryProfile | None:
+        normalized = _text(display_name, "display_name").casefold()
+        matches = tuple(
+            item for item in self.list_library_profiles()
+            if item.display_name.casefold() == normalized and (version is None or item.version == version)
+        )
+        if not matches:
+            return None
+        latest_version = max(item.version for item in matches)
+        latest = tuple(item for item in matches if item.version == latest_version)
+        if len(latest) != 1:
+            raise ProjectStorageError("style library display name is ambiguous")
+        return latest[0]
+
+    def select_library_profiles(
+        self,
+        *,
+        names: Iterable[str] = (),
+        profile_ids: Iterable[str] = (),
+    ) -> tuple[StyleLibraryProfile, ...]:
+        selected: dict[tuple[str, int], StyleLibraryProfile] = {}
+        for name in names:
+            profile = self.get_library_profile_by_name(name)
+            if profile is None:
+                raise AdaptiveStyleError(f"unknown Style Library profile name: {name}")
+            selected[(profile.profile_id, profile.version)] = profile
+        for profile_id in profile_ids:
+            profile = self.get_library_profile(profile_id)
+            if profile is None:
+                raise AdaptiveStyleError(f"unknown Style Library profile id: {profile_id}")
+            selected[(profile.profile_id, profile.version)] = profile
+        return tuple(selected[key] for key in sorted(selected))
 
     def save_book_style_dna(self, dna: BookStyleDNA) -> None:
         if dna.book_id != self.project_repository.context.book_id:
@@ -528,11 +688,17 @@ class StyleComposer:
         low_confidence = not bool(exact)
         matching_profiles = tuple(profile for profile in profiles if not profile.applicability_tags or scene_index_key.scene_type in profile.applicability_tags or scene_index_key.narrative_function in profile.applicability_tags)
         values: dict[str, Any] = {}
+        feature_sources: dict[str, tuple[StyleLibraryProfile, ...]] = {}
         for name in NUMERIC_STYLE_FEATURES:
             target = dna.genome_bounds[name].target
             components = [(target, 0.6)]
-            if matching_profiles:
-                components.append((sum(getattr(item.genome, name) for item in matching_profiles) / len(matching_profiles), 0.2))
+            numeric_profiles = tuple(
+                item for item in matching_profiles
+                if getattr(item.genome, name) is not None
+            )
+            feature_sources[name] = numeric_profiles
+            if numeric_profiles:
+                components.append((sum(getattr(item.genome, name) for item in numeric_profiles) / len(numeric_profiles), 0.2))
             weighted_history = [(getattr(item.achieved_genome, name), item.decayed_weight(dna.version)) for item in selected_history]
             if weighted_history and sum(weight for _value, weight in weighted_history) > 0:
                 history_weight = min(
@@ -547,7 +713,25 @@ class StyleComposer:
         if not dna.contains(target_genome):
             raise AdaptiveStyleError("composer produced a recipe outside BookStyleDNA")
         techniques = tuple(sorted({technique for profile in matching_profiles for technique in profile.extracted_techniques}))
-        provenance = (f"BookStyleDNA:{dna.book_id}:v{dna.version}",) + tuple(f"StyleLibraryProfile:{p.profile_id}:v{p.version}" for p in matching_profiles) + tuple(f"StylePerformanceRecord:{r.performance_id}:weight={r.decayed_weight(dna.version)}" for r in selected_history)
+        provenance = (
+            (f"BookStyleDNA:{dna.book_id}:v{dna.version}",)
+            + tuple(f"StyleLibraryProfile:{p.profile_id}:v{p.version}" for p in matching_profiles)
+            + tuple(
+                f"StyleTechnique:{technique}:from={profile.profile_id}:v{profile.version}"
+                for profile in matching_profiles
+                for technique in profile.extracted_techniques
+            )
+            + tuple(
+                f"StyleFeature:{name}:from="
+                + ",".join(f"{profile.profile_id}:v{profile.version}" for profile in feature_sources[name])
+                for name in NUMERIC_STYLE_FEATURES
+                if feature_sources[name]
+            )
+            + tuple(
+                f"StylePerformanceRecord:{r.performance_id}:weight={r.decayed_weight(dna.version)}"
+                for r in selected_history
+            )
+        )
         semantic = {"scene_id": scene_id, "dna_version": dna.version, "target_genome": target_genome.to_dict(), "techniques": techniques, "scene_index_key": scene_index_key.to_dict(), "provenance": provenance, "low_confidence": low_confidence}
         digest = _hash(semantic)
         return SceneStyleRecipe(recipe_id=f"STYLE-RECIPE-{digest[:24]}", scene_id=scene_id, book_style_dna_version=dna.version, target_genome=target_genome, selected_techniques=techniques, rationale="deterministic bounded composition from DNA, applicable library profiles, and indexed performance history", scene_index_key=scene_index_key, provenance=provenance, low_confidence=low_confidence)
@@ -558,6 +742,7 @@ class StyleCritic:
         artifact_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         achieved_was_reported = achieved_genome is not None
         achieved = achieved_genome or recipe.target_genome
+        achieved.require_complete("StyleCritic.achieved_genome")
         deviations = [abs(getattr(achieved, name) - getattr(recipe.target_genome, name)) for name in NUMERIC_STYLE_FEATURES]
         deviation = round(sum(deviations) / len(deviations), 6)
         compliant = achieved_was_reported and dna.contains(achieved)
@@ -653,7 +838,32 @@ def prepare_adaptive_style_session(
     if recipe is not None and recipe.scene_index_key != key:
         raise AdaptiveStyleError("technical retry scene context does not match persisted recipe")
     if recipe is None:
-        recipe = StyleComposer().compose(dna=dna, scene_id=scene_id, scene_index_key=key, library=style_repository.list_library_profiles(), history=style_repository.list_performance())
+        selector_keys = {"library_profile_names", "library_profile_ids"}
+        has_selection = any(name in config for name in selector_keys)
+        selected_library: tuple[StyleLibraryProfile, ...]
+        if has_selection:
+            raw_names = config.get("library_profile_names", ())
+            raw_ids = config.get("library_profile_ids", ())
+            if (
+                not isinstance(raw_names, (list, tuple))
+                or isinstance(raw_names, (str, bytes))
+                or not isinstance(raw_ids, (list, tuple))
+                or isinstance(raw_ids, (str, bytes))
+            ):
+                raise AdaptiveStyleError("Style Library selectors must be arrays")
+            selected_library = style_repository.select_library_profiles(
+                names=tuple(_text(item, "library_profile_name") for item in raw_names),
+                profile_ids=tuple(_text(item, "library_profile_id") for item in raw_ids),
+            )
+        else:
+            selected_library = style_repository.list_library_profiles()
+        recipe = StyleComposer().compose(
+            dna=dna,
+            scene_id=scene_id,
+            scene_index_key=key,
+            library=selected_library,
+            history=style_repository.list_performance(),
+        )
     style_repository.save_recipe(recipe)
     if operation_id is not None:
         style_repository.bind_recipe_operation(operation_id, recipe)

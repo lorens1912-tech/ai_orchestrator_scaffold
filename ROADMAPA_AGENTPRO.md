@@ -273,7 +273,14 @@ kontekst, audit/artifacts/API i bezpieczne odtwarzanie wyniku.
 Zachowano reguły modeli, authority oraz zamrożone hashe; odmowa STRICT jest
 egzekwowana przed SDK. Pełna regresja: 695 passed, 1 skipped.
 Kontrakt i dowody: docs/GAP016_MODEL_PROVENANCE.md, docs/GAP016_REPORT.md.
-LIVE ADAPTER SMOKE = NOT RUN. GAP-017 = NOT STARTED.
+LIVE ADAPTER SMOKE = NOT RUN.
+
+STATUS OPERACYJNY (2026-09-23): GAP-017 = CLOSED.
+Wdrożono trwałe EvaluationRecord w project.db oraz idempotentne REEVALUATE z
+pełnym bindingiem artifact/context/criteria, recovery operatora i fencingiem.
+Phase 5: niezależny audyt = ACCEPT; pełna regresja: 838 passed, 1 skipped.
+Dowody: docs/GAP017_FINAL_REAUDIT_R01.md.
+LIVE PROVIDER = NOT TESTED. PHYSICAL POWER LOSS = NOT TESTED.
 
 CEL:
 Ustabilizować role i wymienność modeli.

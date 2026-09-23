@@ -778,6 +778,14 @@ class AdaptiveStyleSession:
         if quality_decision != "ACCEPT" or quality_artifact_hash != artifact_hash or evaluation is None or evaluation.style_status != "COMPLIANT" or evaluation.artifact_hash != artifact_hash or evaluation.artifact_id != artifact_id:
             return None
         performance_id = "STYLE-PERF-" + _hash({"recipe_id": self.recipe.recipe_id, "artifact_hash": artifact_hash})[:24]
+        for existing in self.repository.list_performance():
+            if existing.performance_id == performance_id:
+                if (existing.recipe_id != self.recipe.recipe_id
+                        or existing.accepted_artifact_hash != artifact_hash
+                        or existing.accepted_artifact_id != artifact_id
+                        or existing.style_evaluation_id != evaluation.style_evaluation_id):
+                    raise ProjectStorageError("historical style performance binding conflict")
+                return existing  # Reevaluation must not repoint the original ACCEPT effect.
         record = StylePerformanceRecord(performance_id=performance_id, recipe_id=self.recipe.recipe_id, scene_index_key=self.recipe.scene_index_key, quality_score=quality_score, dna_version=self.dna.version, style_evaluation_id=evaluation.style_evaluation_id, quality_evaluation_id=quality_evaluation_id, accepted_artifact_id=artifact_id, accepted_artifact_hash=artifact_hash, achieved_genome=evaluation.achieved_genome)
         self.repository.save_performance(record)
         return record

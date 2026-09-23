@@ -1188,7 +1188,24 @@ class ProjectRepository:
         # owners only need to verify the already-established mode.
         current_journal_mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
         if current_journal_mode != "wal":
-            conn.execute("PRAGMA journal_mode = WAL")
+            # Concurrent first opens can both observe the pre-WAL mode. SQLite
+            # may then return SQLITE_BUSY immediately while one connection
+            # changes the journal, despite the configured busy_timeout. No
+            # domain transaction has started, so retry only this idempotent
+            # connection initialization step.
+            import time
+            deadline = time.monotonic() + _DOMAIN_DB_BUSY_TIMEOUT_MS / 1000
+            while True:
+                try:
+                    conn.execute("PRAGMA journal_mode = WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if (
+                        getattr(exc, "sqlite_errorcode", None) != sqlite3.SQLITE_BUSY
+                        or time.monotonic() >= deadline
+                    ):
+                        raise
+                    time.sleep(0.01)
         try:
             yield conn
             conn.commit()
@@ -1200,6 +1217,10 @@ class ProjectRepository:
 
     def initialize(self) -> None:
         with self.connect() as conn:
+            # Schema creation and its version marker are one initialization
+            # transaction. Concurrent first opens must not observe the user
+            # tables before schema_version is committed.
+            conn.execute("BEGIN IMMEDIATE")
             _initialize_schema_version(
                 conn,
                 required_version=PROJECT_DB_SCHEMA_VERSION,
@@ -1347,6 +1368,366 @@ class ProjectRepository:
             if run_id is None or item["run_id"] == run_id:
                 result.append(item)
         return result
+
+    @contextmanager
+    def evaluation_transaction(self, operation_id: str, *, connection=None):
+        """Serialize one project-owned GAP-017 evaluation envelope."""
+        if connection is None:
+            self.initialize()
+            with self.connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                with self.evaluation_transaction(operation_id, connection=conn) as state:
+                    yield state
+            return
+        if not isinstance(operation_id, str) or not operation_id.strip():
+            raise ProjectStorageError("evaluation operation_id required")
+        key = "evaluation.v1:" + operation_id
+        row = connection.execute(
+            "SELECT value FROM project_metadata WHERE key=?", (key,)
+        ).fetchone()
+        try:
+            state = {} if row is None else json.loads(row["value"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ProjectStorageError("evaluation envelope is not valid JSON") from exc
+
+        def validate_scope() -> None:
+            if state.get("project_id") not in {None, self.scope.scope_id}:
+                raise ProjectStorageError("evaluation project scope mismatch")
+            if state.get("book_id") not in {None, self.context.book_id}:
+                raise ProjectStorageError("evaluation book scope mismatch")
+
+        validate_scope()
+        yield state
+        validate_scope()
+        if state:
+            connection.execute(
+                "INSERT INTO project_metadata(key,value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (
+                    key,
+                    json.dumps(
+                        state,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=True,
+                        allow_nan=False,
+                    ),
+                ),
+            )
+
+            # START and its recoverable envelope become durable together. A
+            # request reservation is not an Evaluation execution_status.
+            self.checkpoint_reevaluation_request(
+                connection, operation_id, "evaluations", state.get("evaluation_id")
+            )
+
+    def get_evaluation_envelope(self, operation_id: str) -> dict | None:
+        self.initialize()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM project_metadata WHERE key=?",
+                ("evaluation.v1:" + str(operation_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            value = json.loads(row["value"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ProjectStorageError("evaluation envelope is not valid JSON") from exc
+        if value.get("project_id") != self.scope.scope_id:
+            raise ProjectStorageError("evaluation project scope mismatch")
+        if value.get("book_id") != self.context.book_id:
+            raise ProjectStorageError("evaluation book scope mismatch")
+        return value
+
+    def list_evaluation_envelopes(self, *, run_id: str | None = None) -> list[dict]:
+        self.initialize()
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT value FROM project_metadata WHERE key LIKE ? ORDER BY key",
+                ("evaluation.v1:%",),
+            ).fetchall()
+        result = []
+        for row in rows:
+            try:
+                item = json.loads(row["value"])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ProjectStorageError("evaluation envelope is not valid JSON") from exc
+            if item.get("project_id") != self.scope.scope_id:
+                raise ProjectStorageError("evaluation project scope mismatch")
+            if item.get("book_id") != self.context.book_id:
+                raise ProjectStorageError("evaluation book scope mismatch")
+            if run_id is None or item.get("run_id") == run_id:
+                result.append(item)
+        return result
+
+    def claim_reevaluation_request(
+        self,
+        *,
+        request_identity: str,
+        run_id: str,
+        series_id: str | None,
+        reevaluation_of: str,
+        request_hash: str,
+        assigned_step_id: str,
+    ) -> dict[str, Any]:
+        """Atomically bind a stable REEVALUATE request to one new operation."""
+        identity = str(request_identity).strip()
+        if not identity:
+            raise ProjectStorageError("reevaluation request identity required")
+        run = str(run_id).strip()
+        source = str(reevaluation_of).strip()
+        fingerprint = str(request_hash).strip()
+        step_id = str(assigned_step_id).strip()
+        if not all((run, source, fingerprint, step_id)):
+            raise ProjectStorageError("reevaluation request binding is incomplete")
+
+        scope_preimage = json.dumps(
+            {
+                "request_identity": identity,
+                "run_id": run,
+                "series_id": series_id,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        key = "reevaluation_request.v1:" + hashlib.sha256(
+            scope_preimage.encode("utf-8")
+        ).hexdigest()
+        expected = {
+            "schema_version": "GAP017_REEVALUATION_REQUEST_V1",
+            "project_id": self.scope.scope_id,
+            "book_id": self.context.book_id,
+            "series_id": series_id,
+            "run_id": run,
+            "request_identity": identity,
+            "reevaluation_of": source,
+            "request_hash": fingerprint,
+        }
+
+        self.initialize()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT value FROM project_metadata WHERE key=?", (key,)
+            ).fetchone()
+            if row is not None:
+                try:
+                    stored = json.loads(row["value"])
+                except (TypeError, json.JSONDecodeError):
+                    stored = None
+                if isinstance(stored, dict) and stored.get("reservation_status") == "NEEDS_INTERVENTION":
+                    return {**stored, "request_reused": True}
+                reason = None
+                if not isinstance(stored, dict):
+                    stored = {"unreadable_binding": row["value"]}
+                    reason = "request binding is not a valid object"
+                elif any(name not in stored for name in expected):
+                    reason = "request binding is incomplete"
+                elif (not stored.get("assigned_step_id") or
+                      stored.get("assigned_operation_id") !=
+                      f"context:{self.scope.scope_id}:{run}:{stored['assigned_step_id']}"):
+                    reason = "assigned identifiers are unprovable"
+                if reason is not None:
+                    stored.update(reservation_status="NEEDS_INTERVENTION",
+                                  intervention_reason=reason)
+                    stored.setdefault("audit", []).append({
+                        "event": "NEEDS_INTERVENTION", "reason": reason,
+                    })
+                    self._write_reevaluation_request(connection, key, stored)
+                    return {**stored, "request_reused": True}
+                if any(stored.get(name) != value for name, value in expected.items()):
+                    raise ProjectStorageError(
+                        "reevaluation request identity is already bound to different inputs"
+                    )
+                return {**stored, "request_reused": True}
+
+            assigned_operation_id = (
+                f"context:{self.scope.scope_id}:{run}:{step_id}"
+            )
+            stored = {
+                **expected,
+                "assigned_step_id": step_id,
+                "assigned_operation_id": assigned_operation_id,
+                "reservation_status": "RESERVED",
+                "input_hash": None,
+                "contexts": {},
+                "evaluations": {},
+                "audit": [{"event": "RESERVED"}],
+            }
+            connection.execute(
+                "INSERT INTO project_metadata(key,value) VALUES (?,?)",
+                (
+                    key,
+                    json.dumps(
+                        stored,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=True,
+                        allow_nan=False,
+                    ),
+                ),
+            )
+            return {**stored, "request_reused": False}
+
+    def _reevaluation_request_row(self, connection, operation_id: str):
+        """Find the reservation owning this root or child operation."""
+        rows = connection.execute(
+            "SELECT key,value FROM project_metadata WHERE key LIKE ?",
+            ("reevaluation_request.v1:%",),
+        ).fetchall()
+        for row in rows:
+            try:
+                value = json.loads(row["value"])
+            except (TypeError, json.JSONDecodeError):
+                continue  # The keyed claim path records malformed bindings.
+            if not isinstance(value, dict):
+                continue
+            root = value.get("assigned_operation_id")
+            if isinstance(root, str) and root and (operation_id == root or operation_id.startswith(root + ":")):
+                return row["key"], value
+        return None
+
+    @staticmethod
+    def _write_reevaluation_request(connection, key: str, value: dict) -> None:
+        connection.execute(
+            "UPDATE project_metadata SET value=? WHERE key=?",
+            (json.dumps(value, sort_keys=True, separators=(",", ":"),
+                        ensure_ascii=True, allow_nan=False), key),
+        )
+
+    def checkpoint_reevaluation_request(
+        self, connection, operation_id: str, checkpoint: str, value: str,
+    ) -> None:
+        """Checkpoint in the SAME short transaction as the owned data write."""
+        found = self._reevaluation_request_row(connection, operation_id)
+        if found is None:
+            return
+        key, request = found
+        # A checkpoint write is not a migration. In particular, completed
+        # reads and operator recovery must not partially upgrade a legacy
+        # reservation to STARTED without its existing context bindings.
+        # The runtime validates/adopts the complete legacy state on re-entry.
+        if "reservation_status" not in request:
+            return
+        if not isinstance(value, str) or not value:
+            raise ProjectStorageError("reevaluation initialization checkpoint is incomplete")
+        if request.get("reservation_status") == "NEEDS_INTERVENTION":
+            from app.p20_core.evaluation import EvaluationNeedsIntervention
+            raise EvaluationNeedsIntervention("REEVALUATION_REQUEST_NEEDS_INTERVENTION")
+        if checkpoint == "input_hash":
+            previous = request.get(checkpoint)
+            request[checkpoint] = value
+        else:
+            previous = request.setdefault(checkpoint, {}).get(operation_id)
+            request[checkpoint][operation_id] = value
+        if previous is not None and previous != value:
+            raise ProjectStorageError("reevaluation initialization checkpoint changed")
+        if checkpoint == "evaluations":
+            request["reservation_status"] = "STARTED"
+        if previous is None:
+            request.setdefault("audit", []).append({
+                "event": "BOUND_" + checkpoint.upper(), "operation_id": operation_id,
+            })
+        self._write_reevaluation_request(connection, key, request)
+
+    def reevaluation_request_requires_retry(
+        self, operation_id: str, *, allow_unreserved_retry: bool = False,
+    ) -> bool:
+        """Validate durable initialization under the caller's book/run locks.
+
+        No execution right is granted here: Evaluation START still atomically
+        claims the attempt with its complete binding and fencing token.
+        """
+        from app.p20_core.evaluation import EvaluationNeedsIntervention, EvaluationIntegrityError
+        self.initialize()
+        reason = None
+        started = False
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            found = self._reevaluation_request_row(connection, operation_id)
+            if found is None:
+                if allow_unreserved_retry:
+                    # Ordinary P20 operations and unkeyed REEVALUATE have no
+                    # request reservation; retain their existing retry path.
+                    return True
+                raise EvaluationNeedsIntervention("REEVALUATION_REQUEST_BINDING_NOT_RECORDED")
+            key, request = found
+            input_row = connection.execute(
+                "SELECT value FROM project_metadata WHERE key=?",
+                ("p20_execution_input.v1:" + operation_id,),
+            ).fetchone()
+            input_hash = (hashlib.sha256(input_row["value"].encode("utf-8")).hexdigest()
+                          if input_row is not None else None)
+            packages = connection.execute(
+                "SELECT operation_id,context_hash,payload_json FROM context_packages "
+                "WHERE substr(operation_id,1,?)=?",
+                (len(operation_id) + 1, operation_id + ":"),
+            ).fetchall()
+            evaluations = connection.execute(
+                "SELECT value FROM project_metadata WHERE substr(key,1,?)=?",
+                (len("evaluation.v1:" + operation_id + ":"),
+                 "evaluation.v1:" + operation_id + ":"),
+            ).fetchall()
+            try:
+                contexts = {}
+                for row in packages:
+                    package = self._decode_context_package(row["payload_json"])
+                    if (package.project_id != self.context.project_id
+                            or package.book_id != self.context.book_id
+                            or package.run_id != request["run_id"]
+                            or package.context_hash != row["context_hash"]):
+                        raise ValueError("context identity mismatch")
+                    contexts[row["operation_id"]] = package.context_hash
+                envelopes = [json.loads(row["value"]) for row in evaluations]
+                actual_evaluations = {item["operation_id"]: item["evaluation_id"]
+                                      for item in envelopes}
+                # Older reservations had no initialization checkpoints. Adopt
+                # only a provable started envelope; absence cannot prove that
+                # the former implementation never started an attempt.
+                if request.get("reservation_status") is None:
+                    from app.p20_core.evaluation import _binding_from_envelope
+                    if input_hash is None or not envelopes:
+                        raise ValueError("legacy reservation has no execution proof")
+                    for envelope in envelopes:
+                        binding = _binding_from_envelope(envelope)
+                        if (binding.project_id != self.context.project_id
+                                or binding.book_id != self.context.book_id
+                                or binding.run_id != request["run_id"]
+                                or binding.reevaluation_of != request["reevaluation_of"]
+                                or contexts.get(binding.operation_id) != binding.context_hash):
+                            raise ValueError("legacy binding mismatch")
+                    request.update(reservation_status="STARTED", input_hash=input_hash,
+                                   contexts=contexts, evaluations=actual_evaluations)
+                    request.setdefault("audit", []).append({"event": "LEGACY_STARTED_VERIFIED"})
+                status = request.get("reservation_status")
+                if status not in {"RESERVED", "STARTED"}:
+                    raise ValueError("reservation state unknown or intervention required")
+                if (request.get("input_hash") != input_hash
+                        or request.get("contexts") != contexts
+                        or request.get("evaluations") != actual_evaluations
+                        or (contexts and input_hash is None)
+                        or (status == "STARTED") != bool(envelopes)):
+                    raise ValueError("initialization checkpoint does not match durable data")
+                started = status == "STARTED"
+            except (ValueError, TypeError, KeyError, EvaluationIntegrityError) as exc:
+                reason = str(exc)
+                if request.get("reservation_status") != "NEEDS_INTERVENTION":
+                    request["reservation_status"] = "NEEDS_INTERVENTION"
+                    request["intervention_reason"] = reason
+                    request.setdefault("audit", []).append({
+                        "event": "NEEDS_INTERVENTION", "reason": reason,
+                    })
+            self._write_reevaluation_request(connection, key, request)
+        # Raise after commit, so operators can read the reason without an
+        # EvaluationRecord. Never fabricate an evaluation to enable recovery.
+        if reason is not None:
+            raise EvaluationNeedsIntervention("REEVALUATION_REQUEST_NEEDS_INTERVENTION")
+        # An explicit technical retry must never become an unbound first
+        # start. RESERVED first entry still requires the keyed request/hash.
+        return started or allow_unreserved_retry
 
     def set_scoped_metadata(self, scope: StorageScope, key: str, value: str) -> None:
         self.require_scope(scope)
@@ -1785,6 +2166,7 @@ class ProjectRepository:
         self.initialize()
         payload_json = package.to_json()
         with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             existing = conn.execute(
                 "SELECT payload_json FROM context_packages "
                 "WHERE scope_type = ? AND scope_id = ? AND operation_id = ?",
@@ -1813,6 +2195,9 @@ class ProjectRepository:
                     package.context_hash,
                     payload_json,
                 ),
+            )
+            self.checkpoint_reevaluation_request(
+                conn, operation_id, "contexts", package.context_hash
             )
         return package
 

@@ -187,7 +187,8 @@ def _evaluation_ref(
 ) -> dict[str, Any]:
     payload = _result_payload(step)
     decision = payload.get("DECISION") or payload.get("decision")
-    return {
+    durable = step.get("evaluation_record")
+    reference = {
         "mode": str(step.get("mode") or "").upper(),
         "run_id": step.get("run_id"),
         "step_id": step.get("step_id"),
@@ -199,6 +200,17 @@ def _evaluation_ref(
         "effective_model": step.get("effective_model"),
         "decision": None if decision is None else str(decision).upper(),
     }
+    if isinstance(durable, Mapping):
+        reference.update({
+            "evaluation_id": durable.get("evaluation_id"),
+            "evaluation_record_hash": durable.get("record_hash"),
+            "evaluation_operation_id": durable.get("operation_id"),
+            "evaluated_artifact_id": durable.get("artifact_id"),
+            "evaluated_artifact_hash": durable.get("artifact_hash"),
+            "evaluation_execution_status": durable.get("execution_status"),
+            "evaluation_validation_status": durable.get("validation_status"),
+        })
+    return reference
 
 
 def _load_operation_steps(
@@ -318,7 +330,10 @@ def _build_chapter_document(
         (
             dict(evaluation)
             for evaluation in reversed(evaluations)
-            if evaluation["mode"] == "QUALITY"
+            if (
+                evaluation["mode"] == "QUALITY"
+                and evaluation.get("evaluated_artifact_hash") == latest["artifact_hash"]
+            )
         ),
         None,
     )

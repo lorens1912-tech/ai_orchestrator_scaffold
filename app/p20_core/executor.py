@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import copy
 import hashlib
 import json
 import os
@@ -22,6 +23,13 @@ from app.p20_core.adaptive_style import (
     prepare_adaptive_style_session,
 )
 from app.p20_core.project_repository import ProjectRepository, StorageResolver
+from app.p20_core.evaluation import (
+    EvaluationBinding,
+    EvaluationConflict,
+    canonical_hash as evaluation_hash,
+    finalize_evaluation,
+    start_evaluation,
+)
 
 
 TEXT_MODES = {
@@ -145,10 +153,86 @@ def _iso() -> str:
 
 
 def _atomic_write_json(path: Path, data: Any) -> None:
+    if (isinstance(data, dict) and data.get("project_id") and data.get("step_id")
+            and data.get("mode") in TOOLS and data.get("context_package_id")):
+        from app.p20_core.cross_store_recovery import (
+            ArtifactRoot, CrossStoreOperationPlan, CrossStoreRecoveryService,
+        )
+        repo = ProjectRepository(StorageResolver().resolve_project(
+            data["project_id"], book_id=data["book_id"]))
+        relative = path.resolve().relative_to(get_runs_root().resolve()).as_posix()
+        CrossStoreRecoveryService(repo).execute(CrossStoreOperationPlan(
+            operation_id="gap017-step-" + evaluation_hash("GAP017_STEP_PATH_V1", relative),
+            project_id=data["project_id"], book_id=data["book_id"],
+            run_id=data["run_id"], step_id=data["step_id"],
+            operation_type="GAP017_STEP_PROJECTION_V1", source_ref=data["context_package_id"],
+            artifact_root=ArtifactRoot.RUNS, artifact_relative_path=relative,
+            artifact_bytes=(json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+            expected_versions={"context_hash": data["context_hash"]},
+            provenance_refs=(data["context_package_id"],),
+        ))
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
+
+
+def _bind_execution_input(execution_context, payload, queue, preset):
+    """Pin the retry queue and caller inputs in the existing project owner."""
+    repository = ProjectRepository(StorageResolver().resolve_project(
+        execution_context.project_id, book_id=execution_context.book_id))
+    value = {
+        "queue": queue, "preset": preset,
+        "input": {k: v for k, v in payload.items()
+                  if k not in {"technical_retry", "evaluation_intent"}},
+    }
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    key = "p20_execution_input.v1:" + execution_context.operation_id
+    repository.initialize()
+    with repository.connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute("SELECT value FROM project_metadata WHERE key=?", (key,)).fetchone()
+        if row is not None:
+            if row["value"] != raw:
+                raise EvaluationConflict("evaluation binding changed for the same operation: execution inputs")
+        elif execution_context.technical_retry:
+            raise EvaluationConflict("technical retry execution inputs are not recorded")
+        else:
+            connection.execute("INSERT INTO project_metadata(key,value) VALUES (?,?)", (key, raw))
+        repository.checkpoint_reevaluation_request(
+            connection, execution_context.operation_id, "input_hash",
+            hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        )
+
+
+def _completed_step(repository, execution_context, tool_input):
+    """Replay an immutable step through its existing F-004 projection owner."""
+    from app.p20_core.cross_store_recovery import (
+        CrossStoreOperationPlan, CrossStoreRecoveryService, RecoveryInterventionRequired,
+    )
+    from app.p20_core.evaluation import EvaluationNeedsIntervention
+    matches = [item for item in repository.list_cross_store_operations()
+               if item.get("operation_type") == "GAP017_STEP_PROJECTION_V1"
+               and item.get("payload", {}).get("step_id") == execution_context.step_id
+               and item.get("payload", {}).get("run_id") == execution_context.run_id]
+    if not matches:
+        return None
+    # Every attempt is validated; a damaged older projection must not be bypassed.
+    documents = []
+    for item in matches:
+        try:
+            record = CrossStoreRecoveryService(repository).recover(item["operation_id"])
+        except RecoveryInterventionRequired as exc:
+            raise EvaluationNeedsIntervention("EVALUATION_PROJECTION_CONFLICT") from exc
+        plan = CrossStoreOperationPlan.from_record(record)
+        documents.append(json.loads(plan.artifact_bytes))
+    document = sorted(documents, key=lambda value: value["created_at"])[0]
+    ignored = {"technical_retry", "evaluation_intent", "_context_package"}
+    normalize = lambda value: {k: v for k, v in value.items() if k not in ignored}
+    if normalize(document["input"]) != normalize(tool_input):
+        raise EvaluationConflict("evaluation binding changed for the same operation: completed step input")
+    return copy.deepcopy(document)
 
 
 def _load_active_presets() -> List[Dict[str, Any]]:
@@ -325,6 +409,60 @@ def _quality_decision(result: Dict[str, Any]) -> str:
     if not isinstance(payload, dict):
         payload = {}
     return str(payload.get("DECISION") or payload.get("decision") or "").upper().strip()
+
+
+def _quality_reasons(result: Dict[str, Any]) -> tuple[list[str], list[dict[str, Any]]]:
+    payload = result.get("payload") if isinstance(result, dict) else None
+    if not isinstance(payload, dict):
+        return [], []
+    raw_reasons = payload.get("REASONS")
+    if raw_reasons is None:
+        raw_reasons = payload.get("REJECT_REASONS")
+    raw_must_fix = payload.get("MUST_FIX")
+    reasons = [str(value) for value in raw_reasons] if isinstance(raw_reasons, list) else []
+    must_fix = (
+        [dict(value) for value in raw_must_fix if isinstance(value, dict)]
+        if isinstance(raw_must_fix, list)
+        else []
+    )
+    return reasons, must_fix
+
+
+def _quality_contract(
+    tool_input: Dict[str, Any],
+    style_session: AdaptiveStyleSession | None,
+) -> tuple[str, str, dict[str, Any], dict[str, Any], dict[str, str]]:
+    if "min_words" in tool_input:
+        evaluator_id = "app.quality_rules.evaluate_quality"
+        evaluator_version = "QUALITY_RULES_V1"
+        configuration = {
+            "min_words": int(tool_input.get("min_words") or 200),
+            "forbid_lists": bool(tool_input.get("forbid_lists", True)),
+        }
+    else:
+        from app.quality_contract import _fq_extract_thresholds
+        evaluator_id = "app.quality_contract._fq_tool_quality"
+        evaluator_version = "FINAL_QUALITY_CANON_20260325_V4"
+        configuration = dict(_fq_extract_thresholds(tool_input))
+    criteria: dict[str, Any] = {
+        "decision_contract": ["ACCEPT", "REVISE", "REJECT"],
+        "evaluator": evaluator_id,
+        "version": evaluator_version,
+        "configuration": configuration,
+        "style_veto": "ADAPTIVE_STYLE_COMPLIANT_V1",
+    }
+    additional: dict[str, str] = {}
+    if style_session is not None:
+        criteria["style_recipe_id"] = style_session.recipe.recipe_id
+        additional["style_recipe"] = evaluation_hash(
+            "GAP017_STYLE_RECIPE_V1", style_session.recipe.to_dict()
+        )
+        if style_session.latest_evaluation is not None:
+            additional["style_evaluation"] = evaluation_hash(
+                "GAP017_STYLE_EVALUATION_V1",
+                style_session.latest_evaluation.to_dict(),
+            )
+    return evaluator_id, evaluator_version, criteria, configuration, additional
 
 
 def _quality_retry_steps(preset_doc: Dict[str, Any], decision: str, attempts_done: int) -> List[StepItem]:
@@ -684,6 +822,8 @@ def execute_p20(*args, **kwargs) -> List[str]:
 
     initial_queue = list(queue)
     initial_modes = _queue_modes(initial_queue)
+    if execution_context is not None:
+        _bind_execution_input(execution_context, payload_exec, initial_queue, preset_doc)
     _write_sequence_artifact(
         steps_dir=steps_dir,
         run_id=run_id,
@@ -765,7 +905,8 @@ def execute_p20(*args, **kwargs) -> List[str]:
             tool_input["requested_policy"] = requested_policy
 
         if mode_id in TEXT_MODES:
-            tool_input["text"] = latest_text if latest_text else str(tool_input.get("text") or "")
+            tool_input["text"] = latest_text if latest_text else str(
+                tool_input.get("text") or tool_input.get("input") or tool_input.get("content") or "")
         if style_session is not None and mode_id in {"WRITE", "EDIT", "REWRITE"}:
             # The writer receives only abstract, bounded features. Library source
             # references and author-like instructions never cross this boundary.
@@ -797,7 +938,72 @@ def execute_p20(*args, **kwargs) -> List[str]:
             else:
                 model_routing = json.loads(pinned_route)
 
-        if mode_id not in TOOLS:
+        prior_step = (_completed_step(route_repo, step_execution_context, tool_input)
+                      if step_execution_context is not None else None)
+        evaluation_binding = None
+        evaluation_start = None
+        evaluation_repository = None
+        evaluated_text = ""
+        evaluated_artifact_id = ""
+        evaluated_artifact_hash = ""
+        if (
+            mode_id == "QUALITY"
+            and step_execution_context is not None
+            and context_package is not None
+        ):
+            evaluated_text = str(tool_input.get("text") or "")
+            evaluated_artifact_id = (
+                latest_text_artifact_id
+                or f"{run_id}:input:{step_index:03d}:QUALITY"
+            )
+            evaluated_artifact_hash = hashlib.sha256(
+                evaluated_text.encode("utf-8")
+            ).hexdigest()
+            (
+                evaluator_id,
+                evaluator_version,
+                criteria,
+                configuration,
+                additional_input_hashes,
+            ) = _quality_contract(tool_input, style_session)
+            evaluation_binding = EvaluationBinding.local_deterministic(
+                project_id=step_execution_context.project_id,
+                book_id=step_execution_context.book_id,
+                series_id=step_execution_context.series_id,
+                run_id=step_execution_context.run_id,
+                step_id=step_execution_context.step_id,
+                operation_id=step_execution_context.operation_id,
+                artifact_id=evaluated_artifact_id,
+                artifact_version=evaluated_artifact_id,
+                artifact_hash=evaluated_artifact_hash,
+                criteria_version=evaluator_version,
+                criteria=criteria,
+                context_package_id=context_package.context_package_id,
+                context_hash=context_package.context_hash,
+                evaluator_id=evaluator_id,
+                evaluator_version=evaluator_version,
+                configuration=configuration,
+                additional_input_hashes=additional_input_hashes,
+                reevaluation_of=(
+                    str(payload_exec.get("reevaluation_of") or "").strip() or None
+                ),
+            )
+            evaluation_repository = route_repo
+            evaluation_start = start_evaluation(
+                evaluation_repository,
+                evaluation_binding,
+                claim_recovery=step_execution_context.technical_retry,
+            )
+
+        if evaluation_start is not None and evaluation_start.reused:
+            result = dict(evaluation_start.output or {})
+        elif (
+            prior_step is not None
+            and mode_id in {"WRITE", "EDIT", "REWRITE"}
+            and "QUALITY" in initial_modes
+        ):
+            result = copy.deepcopy(prior_step["result"])
+        elif mode_id not in TOOLS:
             result: Dict[str, Any] = {"ok": False, "error": f"UNKNOWN_MODE_TOOL: {mode_id}", "tool": mode_id}
         else:
             out = _call_tool_tolerant(TOOLS[mode_id], tool_input, run_dir)
@@ -817,6 +1023,8 @@ def execute_p20(*args, **kwargs) -> List[str]:
             latest_text = str(result_payload["text"])
 
         style_trace: Dict[str, Any] = {}
+        if mode_id in {"WRITE", "EDIT", "REWRITE"} and latest_text:
+            latest_text_artifact_id = f"{run_id}:{step_index:03d}:{mode_id}"
         if (
             style_session is not None
             and mode_id in {"WRITE", "EDIT", "REWRITE"}
@@ -840,16 +1048,18 @@ def execute_p20(*args, **kwargs) -> List[str]:
                 "evaluation": style_evaluation.to_dict(),
             }
 
-        if style_session is not None and mode_id == "QUALITY":
+        durable_evaluation = None
+        if mode_id == "QUALITY" and evaluation_start is not None:
             quality_decision = _quality_decision(result)
-            evaluation = style_session.latest_evaluation
-            quality_artifact_hash = hashlib.sha256(latest_text.encode("utf-8")).hexdigest()
-            quality_evaluation_id = f"QUALITY-EVAL-{run_id}:{step_index:03d}"
+            evaluation = (
+                style_session.latest_evaluation if style_session is not None else None
+            )
+            quality_evaluation_id = evaluation_start.evaluation_id
             if isinstance(result_payload, dict):
                 quality_meta = result_payload.setdefault("meta", {})
                 if isinstance(quality_meta, dict):
-                    quality_meta["artifact_id"] = latest_text_artifact_id
-                    quality_meta["artifact_hash"] = quality_artifact_hash
+                    quality_meta["artifact_id"] = evaluated_artifact_id
+                    quality_meta["artifact_hash"] = evaluated_artifact_hash
                     quality_meta["quality_evaluation_id"] = quality_evaluation_id
             if (
                 quality_decision == "ACCEPT"
@@ -858,34 +1068,65 @@ def execute_p20(*args, **kwargs) -> List[str]:
                 and isinstance(result_payload, dict)
             ):
                 result_payload["DECISION"] = "REVISE"
-                reasons = result_payload.setdefault("REJECT_REASONS", [])
+                reason_field = (
+                    "REASONS" if isinstance(result_payload.get("REASONS"), list)
+                    else "REJECT_REASONS"
+                )
+                reasons = result_payload.setdefault(reason_field, [])
                 if isinstance(reasons, list) and "STYLE_NOT_COMPLIANT" not in reasons:
                     reasons.append("STYLE_NOT_COMPLIANT")
                 quality_decision = "REVISE"
+            reasons, must_fix = _quality_reasons(result)
+            if evaluation_start.reused:
+                durable_evaluation = evaluation_start.record
+            else:
+                if evaluation_start.attempt_token is None or evaluation_binding is None:
+                    raise RuntimeError("evaluation attempt token is missing")
+                durable_evaluation = finalize_evaluation(
+                    evaluation_repository,
+                    evaluation_binding,
+                    attempt_token=evaluation_start.attempt_token,
+                    decision=quality_decision,
+                    reasons=reasons,
+                    must_fix=must_fix,
+                    output=result,
+                )
+            if isinstance(result_payload, dict) and durable_evaluation is not None:
+                quality_meta = result_payload.setdefault("meta", {})
+                if isinstance(quality_meta, dict):
+                    quality_meta["evaluation_record_hash"] = durable_evaluation.record_hash
+                    quality_meta["evaluation_reused"] = evaluation_start.reused
             quality_score_raw = result_payload.get("SCORE", 0) if isinstance(result_payload, dict) else 0
             try:
                 quality_score = float(quality_score_raw)
             except (TypeError, ValueError):
                 quality_score = 0.0
             quality_score = min(1.0, max(0.0, quality_score))
-            performance = style_session.finalize(
-                quality_decision=quality_decision,
-                quality_score=quality_score,
-                quality_evaluation_id=quality_evaluation_id,
-                quality_artifact_hash=quality_artifact_hash,
-                artifact_id=latest_text_artifact_id,
-                artifact_text=latest_text,
-            )
-            style_trace = {
-                "recipe": style_session.recipe.to_dict(),
-                "evaluation": (
-                    evaluation.to_dict() if evaluation is not None else None
-                ),
-                "quality_decision": quality_decision,
-                "performance_record": (
-                    performance.to_dict() if performance is not None else None
-                ),
-            }
+            if style_session is not None:
+                performance = style_session.finalize(
+                    quality_decision=quality_decision,
+                    quality_score=quality_score,
+                    quality_evaluation_id=quality_evaluation_id,
+                    quality_artifact_hash=evaluated_artifact_hash,
+                    artifact_id=evaluated_artifact_id,
+                    artifact_text=evaluated_text,
+                )
+                style_trace = {
+                    "recipe": style_session.recipe.to_dict(),
+                    "evaluation": (
+                        evaluation.to_dict() if evaluation is not None else None
+                    ),
+                    "quality_decision": quality_decision,
+                    "performance_record": (
+                        performance.to_dict() if performance is not None else None
+                    ),
+                    "performance_reused_from_evaluation": (
+                        performance.quality_evaluation_id
+                        if performance is not None
+                        and performance.quality_evaluation_id != quality_evaluation_id
+                        else None
+                    ),
+                }
 
         step_doc = {
             "run_id": run_id,
@@ -907,6 +1148,16 @@ def execute_p20(*args, **kwargs) -> List[str]:
         }
         if style_trace:
             step_doc["adaptive_style"] = style_trace
+        if durable_evaluation is not None:
+            step_doc["evaluation_record"] = durable_evaluation.to_dict()
+        bible_binding = payload_exec.get("_book_bible")
+        if isinstance(bible_binding, dict) and bible_binding:
+            step_doc["book_bible"] = dict(bible_binding)
+            step_doc["book_bible_path"] = bible_binding["path"]
+            step_doc["book_bible_sha256"] = bible_binding["sha256"]
+            result["book_bible"] = dict(bible_binding)
+            if isinstance(result.get("payload"), dict):
+                result["payload"]["book_bible"] = dict(bible_binding)
         if step_execution_context is not None and context_package is not None:
             from app.p20_core.model_provenance import public_trace
             step_doc["model_provenance"] = [

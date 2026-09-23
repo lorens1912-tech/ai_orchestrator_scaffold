@@ -19,6 +19,8 @@ class AgentStepRequest(BaseModel):
     run_id: Optional[str] = None
     step_id: Optional[str] = None
     technical_retry: Optional[bool] = None
+    evaluation_intent: Optional[str] = None
+    reevaluation_of: Optional[str] = None
     text: Optional[str] = None
     topic: Optional[str] = None
     content: Optional[str] = None

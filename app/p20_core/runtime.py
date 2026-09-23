@@ -54,7 +54,11 @@ from app.p20_core.lock_service import (
 )
 from app.p20_core.storage_paths import get_runs_root
 from app.p20_core.chapter_lineage import persist_chapter_lineage
-from app.p20_core.project_repository import ProjectRepository, StorageResolver
+from app.p20_core.project_repository import (
+    ProjectRepository,
+    ProjectStorageError,
+    StorageResolver,
+)
 
 MODES_FILE = Path(__file__).resolve().parents[1] / "modes.json"
 
@@ -171,6 +175,10 @@ def build_request_payload(req: AgentStepRequest) -> Dict[str, Any]:
         payload["step_id"] = req.step_id
     if req.technical_retry is not None and "technical_retry" not in payload:
         payload["technical_retry"] = req.technical_retry
+    if req.evaluation_intent and "evaluation_intent" not in payload:
+        payload["evaluation_intent"] = req.evaluation_intent
+    if req.reevaluation_of and "reevaluation_of" not in payload:
+        payload["reevaluation_of"] = req.reevaluation_of
     if req.text and not payload.get("text"):
         payload["text"] = req.text
     if req.content and not payload.get("content"):
@@ -265,10 +273,56 @@ def extract_input_text(payload: Dict[str, Any], req: AgentStepRequest) -> str:
         req.input,
         req.topic,
     ):
-        txt = coerce_text(value).strip()
-        if txt:
+        txt = coerce_text(value)
+        if txt.strip():
             return txt
     return ""
+
+
+def _reevaluation_request_hash(
+    payload: Dict[str, Any],
+    *,
+    project_id: str,
+    book_id: str,
+    series_id: str | None,
+    run_id: str,
+    modes: List[str],
+    reevaluation_of: str,
+) -> str:
+    material_payload = {
+        key: value
+        for key, value in payload.items()
+        if key
+        not in {
+            "book_id",
+            "domain_book_id",
+            "project_id",
+            "series_id",
+            "run_id",
+            "step_id",
+            "technical_retry",
+            "evaluation_intent",
+            "reevaluation_of",
+        }
+    }
+    preimage = {
+        "schema_version": "GAP017_REEVALUATION_REQUEST_V1",
+        "project_id": project_id,
+        "book_id": book_id,
+        "series_id": series_id,
+        "run_id": run_id,
+        "modes": list(modes),
+        "reevaluation_of": reevaluation_of,
+        "payload": material_payload,
+    }
+    encoded = json.dumps(
+        preimage,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(b"GAP017_REEVALUATION_REQUEST_V1\0" + encoded).hexdigest()
 
 
 def normalize_artifact_paths(result: Any) -> List[str]:
@@ -348,6 +402,83 @@ def _adaptive_style_trace(artifact_paths: List[str]) -> Dict[str, Any] | None:
     return trace
 
 
+def _validate_evaluation_projections(repository: ProjectRepository, run_id: str) -> None:
+    """Validate existing mutable projections before retry can replace them."""
+    from app.p20_core.evaluation import EvaluationIntegrityError, find_evaluation
+    if not repository.list_evaluation_envelopes(run_id=run_id):
+        return
+    for name in ("run_state.json", "audit.json"):
+        path = get_runs_root() / run_id / name
+        if not path.exists():
+            continue  # Runtime rebuilds missing projections from the durable steps/record.
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as exc:
+            raise EvaluationIntegrityError("EVALUATION_PROJECTION_INVALID_JSON") from exc
+        if not isinstance(document, dict):
+            raise EvaluationIntegrityError("EVALUATION_PROJECTION_INVALID_DOCUMENT")
+        projected = document.get("evaluation_record")
+        if projected is None:
+            continue  # A crash can occur during the pre-evaluation run-state write.
+        if not isinstance(projected, dict):
+            raise EvaluationIntegrityError("EVALUATION_PROJECTION_INVALID_RECORD")
+        binding, record, _ = find_evaluation(
+            repository, evaluation_id=projected.get("evaluation_id", ""))
+        if (record is None or record.to_dict() != projected or binding.run_id != run_id
+                or not binding.step_id.startswith(str(document.get("step_id")) + ":")):
+            raise EvaluationIntegrityError("EVALUATION_PROJECTION_CONFLICT")
+
+
+def _active_quality_evaluation(
+    repository: ProjectRepository,
+    *,
+    run_id: str,
+    root_step_id: str,
+    artifact_hash: str,
+    artifact_id: str | None = None,
+) -> tuple[Dict[str, Any] | None, bool]:
+    from app.p20_core.evaluation import (
+        EvaluationBinding,
+        EvaluationIntegrityError,
+        ExecutionStatus,
+        ValidationStatus,
+        load_completed_evaluation,
+    )
+    candidates: List[tuple[int, str, Dict[str, Any]]] = []
+    found_for_operation = False
+    prefix = root_step_id + ":"
+    for envelope in repository.list_evaluation_envelopes():
+        if (
+            envelope.get("run_id") != run_id
+            or not str(envelope.get("step_id") or "").startswith(prefix)
+        ):
+            continue
+        found_for_operation = True
+        binding_data = envelope.get("binding")
+        if not isinstance(binding_data, dict):
+            raise EvaluationIntegrityError("evaluation binding is missing")
+        binding = EvaluationBinding.from_dict(binding_data)
+        if (
+            binding.artifact_hash != artifact_hash
+            or (artifact_id is not None and binding.artifact_id != artifact_id)
+            or envelope.get("execution_status") != ExecutionStatus.COMPLETED.value
+            or envelope.get("validation_status") != ValidationStatus.VALID.value
+        ):
+            continue
+        record = load_completed_evaluation(repository, binding)
+        if record is None:
+            continue
+        try:
+            ordinal = int(binding.step_id[len(prefix):].split(":", 1)[0])
+        except (ValueError, IndexError):
+            ordinal = -1
+        candidates.append((ordinal, record.completed_at or "", record.to_dict()))
+    if not candidates:
+        return None, found_for_operation
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return candidates[-1][2], found_for_operation
+
+
 def _attach_execution_trace(
     doc: Dict[str, Any],
     execution_context: ProjectExecutionContext,
@@ -424,28 +555,113 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
     )
     payload["run_id"] = run_id
     technical_retry = bool(payload.get("technical_retry"))
+    evaluation_intent = str(payload.get("evaluation_intent") or "").upper().strip()
+    reevaluation_of = str(payload.get("reevaluation_of") or "").strip()
+    if evaluation_intent not in {"", "REEVALUATE"}:
+        raise ValueError("evaluation_intent must be REEVALUATE")
+    if technical_retry and evaluation_intent:
+        raise ValueError("technical retry cannot be combined with REEVALUATE")
+    if evaluation_intent == "REEVALUATE" and not reevaluation_of:
+        raise ValueError("REEVALUATE requires reevaluation_of")
+    if not evaluation_intent and reevaluation_of:
+        raise ValueError("reevaluation_of requires evaluation_intent=REEVALUATE")
     requested_step_id = str(payload.get("step_id") or "").strip()
     if technical_retry and not requested_step_id:
         raise ValueError("technical_retry requires step_id")
+    candidate_step_id = (
+        f"step-reevaluate-{uuid4().hex}"
+        if evaluation_intent == "REEVALUATE"
+        else requested_step_id or f"step-{uuid4().hex}"
+    )
     execution_context = ProjectExecutionContext.create(
         project_id=project_id,
         book_id=domain_book_id,
         series_id=series_id,
         run_id=run_id,
-        step_id=requested_step_id or f"step-{uuid4().hex}",
+        step_id=candidate_step_id,
         technical_retry=technical_retry,
     )
-    payload["project_id"] = execution_context.project_id
-    payload["domain_book_id"] = execution_context.book_id
-    payload["series_id"] = execution_context.series_id
-    payload["step_id"] = execution_context.step_id
+    execution_repository = ProjectRepository(
+        StorageResolver().resolve_project(
+            execution_context.project_id,
+            book_id=execution_context.book_id,
+        )
+    )
+    if evaluation_intent == "REEVALUATE":
+        from app.p20_core.evaluation import find_evaluation
+        previous_binding, previous_record, _previous_state = find_evaluation(
+            execution_repository,
+            evaluation_id=reevaluation_of,
+        )
+        if (
+            previous_record is None
+            or previous_binding.project_id != execution_context.project_id
+            or previous_binding.book_id != execution_context.book_id
+        ):
+            raise ValueError("REEVALUATE source evaluation is not valid in this project")
     _assert_run_execution_identity(
         run_id,
         execution_context,
         storage_book_id=book_id,
     )
-
     modes = resolve_modes(req, payload)
+    if evaluation_intent == "REEVALUATE" and requested_step_id:
+        from app.p20_core.evaluation import EvaluationConflict
+        try:
+            claim = execution_repository.claim_reevaluation_request(
+                request_identity=requested_step_id,
+                run_id=run_id,
+                series_id=execution_context.series_id,
+                reevaluation_of=reevaluation_of,
+                request_hash=_reevaluation_request_hash(
+                    payload,
+                    project_id=execution_context.project_id,
+                    book_id=execution_context.book_id,
+                    series_id=execution_context.series_id,
+                    run_id=run_id,
+                    modes=modes,
+                    reevaluation_of=reevaluation_of,
+                ),
+                assigned_step_id=candidate_step_id,
+            )
+        except ProjectStorageError as exc:
+            raise EvaluationConflict(str(exc)) from exc
+        if claim.get("reservation_status") == "NEEDS_INTERVENTION":
+            from app.p20_core.evaluation import EvaluationNeedsIntervention
+            raise EvaluationNeedsIntervention("REEVALUATION_REQUEST_NEEDS_INTERVENTION")
+        execution_context = ProjectExecutionContext.create(
+            project_id=project_id,
+            book_id=domain_book_id,
+            series_id=series_id,
+            run_id=run_id,
+            step_id=claim["assigned_step_id"],
+            # Reservation alone does not prove that Evaluation START occurred.
+            # Re-read durable checkpoints after acquiring the existing locks.
+            technical_retry=False,
+        )
+    payload["project_id"] = execution_context.project_id
+    payload["domain_book_id"] = execution_context.book_id
+    payload["series_id"] = execution_context.series_id
+    payload["step_id"] = execution_context.step_id
+    if technical_retry:
+        from app.p20_core.evaluation import EvaluationBinding, EvaluationConflict
+        retry_refs = set()
+        retry_prefix = execution_context.step_id + ":"
+        for envelope in execution_repository.list_evaluation_envelopes():
+            binding_data = envelope.get("binding")
+            if (
+                envelope.get("run_id") == run_id
+                and str(envelope.get("step_id") or "").startswith(retry_prefix)
+                and isinstance(binding_data, dict)
+            ):
+                binding = EvaluationBinding.from_dict(binding_data)
+                retry_refs.add(binding.reevaluation_of)
+        if len(retry_refs) > 1:
+            raise EvaluationConflict("technical retry has ambiguous reevaluation binding")
+        if retry_refs:
+            inherited_ref = next(iter(retry_refs))
+            if inherited_ref is not None:
+                payload["reevaluation_of"] = inherited_ref
     preset_id = str(payload.get("preset") or req.preset or "").upper().strip()
     preset_doc = _preset_doc(preset_id) if preset_id else {}
     preset_only_execution = bool(preset_id) and not _request_has_explicit_modes(req, payload)
@@ -463,16 +679,6 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             "contract_version": book_bible_contract["contract_version"],
         }
         payload["_book_bible"] = dict(book_bible_binding)
-
-    book_dir = ensure_book_dirs(
-        book_id,
-        project_id=execution_context.project_id,
-        domain_book_id=execution_context.book_id,
-    )
-    if not is_write:
-        loaded_book_bible = _json_load(book_dir / "book_bible.json", {})
-        if isinstance(loaded_book_bible, dict):
-            book_bible = loaded_book_bible
 
     book_lock_acquired = False
     run_lock_acquired = False
@@ -518,6 +724,26 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                 },
             )
 
+        if (evaluation_intent == "REEVALUATE" and requested_step_id) or technical_retry:
+            from dataclasses import replace
+            execution_context = replace(
+                execution_context,
+                technical_retry=execution_repository.reevaluation_request_requires_retry(
+                    execution_context.operation_id,
+                    allow_unreserved_retry=technical_retry,
+                ),
+            )
+
+        _validate_evaluation_projections(execution_repository, run_id)
+        book_dir = ensure_book_dirs(
+            book_id,
+            project_id=execution_context.project_id,
+            domain_book_id=execution_context.book_id,
+        )
+        if not is_write:
+            loaded_book_bible = _json_load(book_dir / "book_bible.json", {})
+            if isinstance(loaded_book_bible, dict):
+                book_bible = loaded_book_bible
         canon_snapshot, canon_snapshot_path = load_canon_snapshot(
             book_id,
             project_id=execution_context.project_id,
@@ -663,6 +889,8 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                     _p = _path_for_read(Path(_artifact_path))
                     if _p.exists():
                         _doc = json.loads(_p.read_text(encoding="utf-8"))
+                        if _doc.get("book_bible") == book_bible_binding:
+                            continue  # Real P20 persists the complete immutable step via F-004.
                         _doc["book_bible"] = dict(book_bible_binding)
                         _doc["book_bible_path"] = book_bible_binding["path"]
                         _doc["book_bible_sha256"] = book_bible_binding["sha256"]
@@ -682,30 +910,34 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                 break
         if not output_text:
             output_text = input_text
+        final_artifact_id = None
+        for path in artifact_paths:
+            step = _json_load(_path_for_read(Path(path)), {})
+            if step.get("mode") in {"WRITE", "EDIT", "REWRITE"}:
+                output_text = str(step.get("result", {}).get("payload", {}).get("text") or "")
+                final_artifact_id = f"{run_id}:{int(step['index']):03d}:{step['mode']}"
 
         post_report = run_canon_check(output_text, canon_snapshot, scene_ref)
         decision = "REJECT" if canon_blocks(post_report) else "ACCEPT"
         quality_decision = ""
         quality_reasons: List[str] = []
-
-        # QUALITY override (KANON)
-        for _ap in artifact_paths:
-            if str(_ap).upper().endswith("_QUALITY.JSON"):
-                try:
-                    _doc = _json_load(_path_for_read(Path(_ap)), {})
-                    _payload = _doc.get("result", {}).get("payload", {})
-                    _qd = str(_payload.get("DECISION") or "").upper()
-                    if _qd:
-                        quality_decision = _qd
-                        decision = _qd
-                    _raw_reasons = _payload.get("REASONS")
-                    if _raw_reasons is None:
-                        _raw_reasons = _payload.get("REJECT_REASONS")
-                    if isinstance(_raw_reasons, list):
-                        quality_reasons = [str(x) for x in _raw_reasons]
-                except Exception:
-                    pass
-                break
+        output_artifact_hash = hashlib.sha256(output_text.encode("utf-8")).hexdigest()
+        active_evaluation, quality_was_run = _active_quality_evaluation(
+            execution_repository,
+            run_id=run_id,
+            root_step_id=execution_context.step_id,
+            artifact_hash=output_artifact_hash,
+            artifact_id=final_artifact_id,
+        )
+        if active_evaluation is not None:
+            quality_decision = str(active_evaluation["decision"])
+            quality_reasons = [str(value) for value in active_evaluation.get("reasons", [])]
+            if not canon_blocks(post_report):
+                decision = quality_decision
+        elif quality_was_run:
+            quality_decision = "REVISE"
+            quality_reasons = ["FINAL_ARTIFACT_NOT_EVALUATED"]
+            decision = "REVISE"
 
         chapter_path = None
         chapter_lineage = None
@@ -808,6 +1040,8 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             state["book_bible"] = dict(book_bible_binding)
         if chapter_lineage is not None:
             state["chapter_lineage"] = dict(chapter_lineage)
+        if active_evaluation is not None:
+            state["evaluation_record"] = dict(active_evaluation)
         from app.p20_core.model_provenance import public_trace
         provenance_repository = ProjectRepository(StorageResolver().resolve_project(
             execution_context.project_id, book_id=execution_context.book_id))
@@ -838,10 +1072,14 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             context_packages=context_traces,
             chapter_lineage=chapter_lineage,
             adaptive_style=adaptive_style_trace,
+            evaluation_record=active_evaluation,
         )
 
-        execution_ok = (decision == "ACCEPT" or bool(quality_decision)) and not (canonical_failed or research_failed)
-        if quality_decision and decision != "ACCEPT":
+        execution_ok = (decision == "ACCEPT" or bool(quality_decision)) and not (
+            canonical_failed or research_failed or canon_blocks(post_report))
+        if canon_blocks(post_report):
+            quality_gate_reasons = ["post_write_canon_check_failed"]
+        elif quality_decision and decision != "ACCEPT":
             quality_gate_reasons = quality_reasons
         else:
             quality_gate_reasons = [] if decision == "ACCEPT" else ["post_write_canon_check_failed"]
@@ -894,6 +1132,7 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             "canonical_change": canonical_change,
             "context_packages": context_traces,
             "adaptive_style": adaptive_style_trace,
+            "evaluation_record": active_evaluation,
             "context_package_id": (
                 context_traces[-1]["context_package_id"] if context_traces else None
             ),

@@ -241,6 +241,55 @@ class ResearchQuestionRequest(BaseModel):
     related_entity_refs: list[str] = Field(default_factory=list)
 
 
+class EvaluationRecoveryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    evaluation_id: str
+    run_id: str
+    step_id: str
+    expected_attempt_token: str | None = None
+
+
+@router.post("/projects/{project_id}/evaluations/{operation_id}/recover")
+def recover_quality_evaluation(
+    project_id: str,
+    operation_id: str,
+    body: EvaluationRecoveryRequest,
+    principal=Depends(authenticated_operator),
+):
+    from app.p20_core.evaluation import (
+        EvaluationConflict,
+        EvaluationError,
+        EvaluationNeedsIntervention,
+        recover_evaluation_by_identity,
+    )
+
+    def operation(operator, registry):
+        result = recover_evaluation_by_identity(
+            _project(registry, project_id),
+            operation_id=operation_id,
+            evaluation_id=body.evaluation_id,
+            run_id=body.run_id,
+            step_id=body.step_id,
+            recovered_by=operator.operator_id,
+            expected_attempt_token=body.expected_attempt_token,
+        )
+        return {
+            "evaluation_id": result.evaluation_id,
+            "attempt_token": result.attempt_token,
+            "reused": result.reused,
+            "record": result.record.to_dict() if result.record is not None else None,
+        }
+
+    try:
+        return _with_operator(principal, operation)
+    except EvaluationConflict as exc:
+        raise HTTPException(409, str(exc)) from None
+    except EvaluationNeedsIntervention as exc:
+        raise HTTPException(422, str(exc)) from None
+    except (EvaluationError, ProjectStorageError) as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
 class ResearchSourceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     operation_id: str

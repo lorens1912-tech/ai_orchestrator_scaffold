@@ -64,6 +64,7 @@ class RecoveryStatus(str, Enum):
 class ArtifactRoot(str, Enum):
     PROJECT = "PROJECT"
     BOOKS = "BOOKS"
+    RUNS = "RUNS"
 
 
 def _utc_now() -> str:
@@ -167,7 +168,7 @@ class CrossStoreOperationPlan:
             )
         except ValueError as exc:
             raise CrossStoreRecoveryError(
-                "artifact_root must be PROJECT or BOOKS"
+                "artifact_root must be PROJECT, BOOKS or RUNS"
             ) from exc
         object.__setattr__(self, "artifact_root", artifact_root)
         if (self.series_id is None) != (self.series_snapshot is None):
@@ -315,6 +316,10 @@ class CrossStoreRecoveryService:
         self._validate_plan_scope(plan)
         if record["status"] == RecoveryStatus.COMMITTED.value:
             try:
+                if plan.operation_type == "GAP017_STEP_PROJECTION_V1":
+                    path = self._artifact_path(plan.artifact_relative_path, plan.artifact_root)
+                    if not path.exists():
+                        self._write_artifact(plan)
                 self._verify_committed(plan, record)
             except RecoveryInterventionRequired as exc:
                 self._record_error(
@@ -749,7 +754,9 @@ class CrossStoreRecoveryService:
         root = (
             self._project_repository.context.project_root
             if artifact_root == ArtifactRoot.PROJECT
-            else self._project_repository.context.storage_root / "books"
+            else self._project_repository.context.storage_root / (
+                "runs" if artifact_root == ArtifactRoot.RUNS else "books"
+            )
         ).resolve()
         resolved = (root / path).resolve()
         try:

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import types
+from collections.abc import Iterable as IterableABC
 from dataclasses import dataclass, fields
 from enum import Enum
-from typing import Any, Iterable
+from typing import Any, Iterable, get_args, get_origin, get_type_hints
 
 from app.p20_core.domain_records import (
     DomainContractError,
@@ -211,12 +213,323 @@ def validate_memory_model_result(role: ModelInvocationRole | str, result: Any) -
     allowed = required | {"precision_reasons", "completeness_reasons", "must_fix"}
     if not required.issubset(result) or set(result) - allowed:
         raise MemoryExtractionError("verifier result does not match its contract")
-    _coerce_enum(VerificationAxisStatus, result["precision_status"], "precision_status")
-    _coerce_enum(VerificationAxisStatus, result["completeness_status"], "completeness_status")
+    precision_status = _coerce_enum(
+        VerificationAxisStatus, result["precision_status"], "precision_status"
+    )
+    completeness_status = _coerce_enum(
+        VerificationAxisStatus, result["completeness_status"], "completeness_status"
+    )
     for field_name in ("precision_reasons", "completeness_reasons", "must_fix"):
         if field_name in result:
             _text_tuple(result[field_name], field_name)
+    must_fix = tuple(result.get("must_fix") or ())
+    if VerificationAxisStatus.REVISE in {precision_status, completeness_status} and not must_fix:
+        raise MemoryExtractionError("REVISE verifier result requires at least one must_fix item")
+    if (
+        precision_status == VerificationAxisStatus.ACCEPT
+        and completeness_status == VerificationAxisStatus.ACCEPT
+        and must_fix
+    ):
+        raise MemoryExtractionError("ACCEPT verifier result cannot contain must_fix items")
     return dict(result)
+
+
+_DOMAIN_ID_FIELD_PATTERNS = {
+    "fact_id": r"^FACT-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "project_id": r"^PROJ-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "state_id": r"^CONTEXT-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "character_id": r"^CHAR-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "event_id": r"^EVENT-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "knowledge_event_id": r"^KNOWLEDGE-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "thread_id": r"^THREAD-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "setup_id": r"^SETUP-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "payoff_id": r"^PAYOFF-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "relationship_change_id": r"^REL-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "source_scene_id": r"^SCENE-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "established_scene_id": r"^SCENE-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "learned_at_scene_id": r"^SCENE-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "opened_scene_id": r"^SCENE-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "closed_scene_id": r"^SCENE-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "created_scene_id": r"^SCENE-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "actual_payoff_scene_id": r"^SCENE-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "completed_scene_id": r"^SCENE-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "source_event_id": r"^EVENT-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "established_event_id": r"^EVENT-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "learned_at_event_id": r"^EVENT-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "actual_payoff_ref": r"^PAYOFF-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "learned_from_character_id": r"^CHAR-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "subject_character_id": r"^CHAR-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "object_character_id": r"^CHAR-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+    "location_id": r"^PLACE-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+}
+_ANY_DOMAIN_ID_PATTERN = (
+    r"^(PROJ|SERIES|BOOK|ACT|SEQ|CHAPTER|SCENE|CHAR|VOICE|ARC|REL|PLACE|ROUTE|ORG|"
+    r"OBJECT|FACT|EVENT|THREAD|SETUP|PAYOFF|KNOWLEDGE|SOURCE|RESEARCH|CLAIM|TERM|"
+    r"DECISION|CONFLICT|EVALUATION|CONTEXT)-[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+)
+_DOMAIN_ID_LIST_FIELD_PATTERNS = {
+    "participant_ids": _ANY_DOMAIN_ID_PATTERN,
+    "cause_refs": _DOMAIN_ID_FIELD_PATTERNS["event_id"],
+    "effect_refs": _DOMAIN_ID_FIELD_PATTERNS["event_id"],
+}
+
+
+def _schema_for_annotation(annotation: Any) -> dict[str, Any]:
+    """Describe the existing dataclass contract without coercing its values."""
+    if annotation is Any:
+        return {"description": "Any JSON value allowed by the typed domain contract."}
+    if annotation is type(None):
+        return {"type": "null"}
+    if annotation in {DomainId, str}:
+        return {"type": "string"}
+    if annotation is bool:
+        return {"type": "boolean"}
+    if annotation is int:
+        return {"type": "integer"}
+    if annotation is float:
+        return {"type": "number"}
+    origin = get_origin(annotation)
+    if origin in {types.UnionType}:
+        variants = []
+        for item in get_args(annotation):
+            schema = _schema_for_annotation(item)
+            if schema not in variants:
+                variants.append(schema)
+        return variants[0] if len(variants) == 1 else {"anyOf": variants}
+    if origin in {Iterable, IterableABC, list, tuple}:
+        args = get_args(annotation)
+        return {
+            "type": "array",
+            "items": _schema_for_annotation(args[0] if args else Any),
+        }
+    if origin is dict or annotation is dict:
+        return {"type": "object"}
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        return {"type": "string", "enum": [item.value for item in annotation]}
+    return {"description": f"JSON value for {annotation!s}."}
+
+
+def _schema_for_record(
+    record_type: type,
+    *,
+    project_id: str | None = None,
+    source_artifact_ref: str | None = None,
+    source_scene_id: str | None = None,
+) -> dict[str, Any]:
+    hints = get_type_hints(record_type)
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for field in fields(record_type):
+        name = field.name
+        schema = _schema_for_annotation(hints[name])
+        if name == "object_value":
+            # FactRecord accepts arbitrary JSON.  Structured Outputs cannot
+            # express an object with arbitrary keys in strict mode, so the
+            # provider is constrained to a lossless scalar/list subset that is
+            # already valid under the existing Any contract.
+            schema = {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "number"},
+                    {"type": "boolean"},
+                    {"type": "null"},
+                    {"type": "array", "items": {"type": "string"}},
+                ]
+            }
+        elif name == "state_payload":
+            # CharacterState also owns an open JSON value.  Keep the domain
+            # contract unchanged while asking the provider for one closed,
+            # auditable object shape accepted by that contract.
+            schema = {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "summary": {"type": "string"},
+                    "attributes": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "name": {"type": "string"},
+                                "value": {"type": "string"},
+                            },
+                            "required": ["name", "value"],
+                        },
+                    },
+                },
+                "required": ["summary", "attributes"],
+            }
+        if name in {"frozen", "author_locked"}:
+            # Canonical promotion requires an explicit protection decision even
+            # for legacy dataclasses whose read contract still permits None.
+            schema = {"type": "boolean"}
+        if name == "project_id" and project_id:
+            schema = {"type": "string", "enum": [project_id]}
+        elif name in {"source_scene_id", "established_scene_id"} and source_scene_id:
+            if "anyOf" in schema:
+                schema = {
+                    "anyOf": [
+                        {"type": "string", "enum": [source_scene_id]},
+                        {"type": "null"},
+                    ]
+                }
+            else:
+                schema = {"type": "string", "enum": [source_scene_id]}
+        elif name == "source_artifact_ref" and source_artifact_ref:
+            if "anyOf" in schema:
+                schema = {
+                    "anyOf": [
+                        {"type": "string", "enum": [source_artifact_ref]},
+                        {"type": "null"},
+                    ]
+                }
+            else:
+                schema = {"type": "string", "enum": [source_artifact_ref]}
+        pattern = _DOMAIN_ID_FIELD_PATTERNS.get(name)
+        if pattern is not None:
+            if schema.get("type") == "string":
+                schema = {**schema, "pattern": pattern}
+            elif "anyOf" in schema:
+                schema = {
+                    "anyOf": [
+                        ({**variant, "pattern": pattern}
+                         if variant.get("type") == "string" else variant)
+                        for variant in schema["anyOf"]
+                    ]
+                }
+        elif name in {"subject_id", "object_id"}:
+            if schema.get("type") == "string":
+                schema = {**schema, "pattern": _ANY_DOMAIN_ID_PATTERN}
+            elif "anyOf" in schema:
+                schema = {
+                    "anyOf": [
+                        ({**variant, "pattern": _ANY_DOMAIN_ID_PATTERN}
+                         if variant.get("type") == "string" else variant)
+                        for variant in schema["anyOf"]
+                    ]
+                }
+        list_pattern = _DOMAIN_ID_LIST_FIELD_PATTERNS.get(name)
+        if list_pattern is not None and schema.get("type") == "array":
+            schema = {**schema, "items": {"type": "string", "pattern": list_pattern}}
+        if name in {"version", "canon_version"}:
+            schema = {"type": "integer", "minimum": 1}
+        elif name == "narrative_order":
+            schema = {"type": "integer", "minimum": 0}
+        elif name == "confidence":
+            schema = {"type": "number", "minimum": 0, "maximum": 1}
+        properties[name] = schema
+        required.append(name)
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": properties,
+        "required": required,
+    }
+
+
+def _require_non_null_property(schema: dict[str, Any], field_name: str) -> dict[str, Any]:
+    """Return a closed schema variant with one nullable property made concrete."""
+    variant = json.loads(json.dumps(schema, sort_keys=True, separators=(",", ":")))
+    field_schema = variant["properties"][field_name]
+    non_null = [item for item in field_schema.get("anyOf", ()) if item.get("type") != "null"]
+    if not non_null:
+        raise MemoryExtractionError(f"{field_name} has no non-null schema variant")
+    variant["properties"][field_name] = (
+        non_null[0] if len(non_null) == 1 else {"anyOf": non_null}
+    )
+    return variant
+
+
+def memory_model_response_format(
+    role: ModelInvocationRole | str,
+    *,
+    project_id: str | None = None,
+    source_artifact_ref: str | None = None,
+    source_scene_id: str | None = None,
+) -> dict[str, Any]:
+    """Return the provider response format for the frozen memory result contract.
+
+    Extracted record payloads contain two domain-owned ``Any`` fields.  The
+    provider receives closed shapes that are valid values of those unchanged
+    domain fields, while every surrounding record field and envelope is closed
+    and required.  Strict Structured Outputs enforces that generated subset;
+    the existing typed decoder remains authoritative for all domain invariants.
+    The verifier contract is closed and can therefore use strict Structured
+    Outputs without narrowing the accepted domain model.
+    """
+    resolved_role = _coerce_enum(ModelInvocationRole, role, "role")
+    if resolved_role == ModelInvocationRole.EXTRACTOR:
+        record_variants = []
+        for record_name, record_type in sorted(memory_record_types().items()):
+            payload = _schema_for_record(
+                record_type,
+                project_id=project_id,
+                source_artifact_ref=source_artifact_ref,
+                source_scene_id=source_scene_id,
+            )
+            payload_variants = [payload]
+            if record_name == "KNOWLEDGE_EVENT":
+                # The existing domain contract requires at least one binding.
+                # Two full closed variants express the OR without coercion.
+                payload_variants = [
+                    _require_non_null_property(payload, "fact_id"),
+                    _require_non_null_property(payload, "event_id"),
+                ]
+            for payload_variant in payload_variants:
+                record_variants.append({
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "record_type": {"type": "string", "enum": [record_name]},
+                        "payload": payload_variant,
+                    },
+                    "required": ["record_type", "payload"],
+                })
+        return {
+            "name": "agentpro_memory_extractor_v1",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "records": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"anyOf": record_variants},
+                    },
+                },
+                "required": ["records"],
+            },
+        }
+    return {
+        "name": "agentpro_memory_verifier_v1",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "precision_status": {
+                    "type": "string",
+                    "enum": [status.value for status in VerificationAxisStatus],
+                },
+                "completeness_status": {
+                    "type": "string",
+                    "enum": [status.value for status in VerificationAxisStatus],
+                },
+                "precision_reasons": {"type": "array", "items": {"type": "string"}},
+                "completeness_reasons": {"type": "array", "items": {"type": "string"}},
+                "must_fix": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": [
+                "precision_status",
+                "completeness_status",
+                "precision_reasons",
+                "completeness_reasons",
+                "must_fix",
+            ],
+        },
+    }
 
 
 def _record_sort_key(record: Any) -> tuple[str, str]:
@@ -783,6 +1096,7 @@ def verify_memory_extraction_candidate(
     precision_reasons: Iterable[str] = (),
     completeness_reasons: Iterable[str] = (),
     must_fix: Iterable[str] = (),
+    canonical_integrity_mismatches: Iterable[str] = (),
     policy: MemoryExtractionPolicy = DEFAULT_MEMORY_EXTRACTION_POLICY,
 ) -> MemoryExtractionVerification:
     if not isinstance(candidate, StructuredMemoryExtractionCandidate):
@@ -803,6 +1117,9 @@ def verify_memory_extraction_candidate(
     resolved_precision_reasons = list(_text_tuple(precision_reasons, "precision_reasons"))
     resolved_completeness_reasons = list(_text_tuple(completeness_reasons, "completeness_reasons"))
     resolved_must_fix = list(_text_tuple(must_fix, "must_fix"))
+    integrity_mismatches = _text_tuple(
+        canonical_integrity_mismatches, "canonical_integrity_mismatches"
+    )
 
     provenance_mismatches = (
         *_candidate_source_mismatches(candidate, source),
@@ -812,6 +1129,16 @@ def verify_memory_extraction_candidate(
         precision = VerificationAxisStatus.REJECT
         resolved_precision_reasons.extend(provenance_mismatches)
         resolved_must_fix.extend(provenance_mismatches)
+
+    # References are a deterministic whole-set property.  They are checked in
+    # addition to the independent model review and become content-revision
+    # feedback while another extraction attempt is available.  The same
+    # references are checked again at the canonical commit boundary.
+    if integrity_mismatches:
+        if precision == VerificationAxisStatus.ACCEPT:
+            precision = VerificationAxisStatus.REVISE
+        resolved_precision_reasons.extend(integrity_mismatches)
+        resolved_must_fix.extend(integrity_mismatches)
 
     decision = _decision_from_axes(precision, completeness)
     memory_status, escalation_required = _status_for_decision(

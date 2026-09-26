@@ -38,6 +38,16 @@ def digest(value):
                                     ensure_ascii=True, allow_nan=False).encode()).hexdigest()
 
 
+def _ledger_reason_code(value: object) -> str:
+    from app.p20_core.memory_ledger import _EVENT_REASON_CODES
+    candidate = str(value).strip()
+    return (
+        candidate
+        if candidate in _EVENT_REASON_CODES["RESEARCH_RESULT_RECORDED"]
+        else "UNKNOWN_FAILURE"
+    )
+
+
 def now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -206,12 +216,25 @@ def citations(state, values):
 def _save_command(repo, operation_id, request, table, record):
     if not operation_id or not isinstance(operation_id, str):
         raise ResearchError("operation_id required")
-    with repo.research_transaction() as state:
+    with repo.research_transaction(include_writer=True) as (state, connection):
         previous = state["operations"].get(operation_id)
         if previous:
             if previous["request_hash"] != digest(request):
                 raise ResearchError("operation identity conflict")
-            return previous["result"]
+            classification = repo.classify_required_memory_event(
+                operation_namespace="RESEARCH_COMMAND",
+                operation_id=operation_id,
+                event_slot=("command",),
+                baseline_locator="metadata:research.v1",
+                baseline_identity=("operations", operation_id),
+                connection=connection,
+            )
+            if classification == "RECORDED":
+                return previous["result"]
+            if classification == "LEGACY_BEFORE_LEDGER":
+                return {**previous["result"], "memory_coverage": classification}
+            previous["memory_ledger_status"] = classification
+            return {"status": classification, "operation_id": operation_id}
         key = record.get("research_id") if table == "records" else record["source_id"]
         existing = state[table].get(key, [])
         if record["version"] != len(existing) + 1:
@@ -219,6 +242,19 @@ def _save_command(repo, operation_id, request, table, record):
         state[table].setdefault(key, []).append(record)
         state["operations"][operation_id] = {"request_hash": digest(request), "result": record,
                                             "status": "COMPLETED"}
+        result_identity = record.get("research_id") or record.get("source_id")
+        repo.record_memory_event(
+            connection,
+            operation_namespace="RESEARCH_COMMAND", operation_id=operation_id,
+            event_slot=("command",), event_type="RESEARCH_COMMAND_RECORDED",
+            actor={"kind": "SYSTEM", "id": "P20_RESEARCH_SERVICE", "evidence_ref": None},
+            structured_payload={
+                "command": request["kind"],
+                "action": "CREATE" if table == "records" else "IMPORT",
+                "result_refs": [result_identity + ":v" + str(record["version"])],
+                "outcome": "COMPLETED",
+            },
+        )
     return record
 
 
@@ -313,13 +349,28 @@ def run_research(repo, *, execution, operation_id, research_id, action, source_r
                    book_id=execution.book_id, run_id=execution.run_id, step_id=execution.step_id)
     if execution.project_id != repo.scope.scope_id or execution.book_id != repo.context.book_id:
         raise ResearchError("research execution scope mismatch")
-    with repo.research_transaction() as state:
+    with repo.research_transaction(include_writer=True) as (state, connection):
         previous = state["operations"].get(operation_id)
         if previous:
             if previous["request_hash"] != digest(request):
                 raise ResearchError("operation identity conflict")
             if previous["status"] == "COMPLETED":
-                return previous["result"]
+                ordinal = len(previous.get("attempts", [])) + 1
+                classification = repo.classify_required_memory_event(
+                    operation_namespace="RESEARCH_OPERATION",
+                    operation_id=operation_id,
+                    event_slot=("result", str(ordinal)),
+                    baseline_locator="metadata:research.v1",
+                    baseline_identity=("operations", operation_id),
+                    connection=connection,
+                )
+                if classification == "RECORDED":
+                    return previous["result"]
+                if classification == "LEGACY_BEFORE_LEDGER":
+                    return {**previous["result"], "memory_coverage": classification}
+                previous["memory_ledger_status"] = classification
+                return {"execution_status": classification, "canonical_commit": False,
+                        "operation_id": operation_id}
             if previous["status"] == "RUNNING":
                 raise ResearchError("operation in progress or interrupted; explicit recovery required")
             inputs = previous["inputs"]
@@ -412,6 +463,23 @@ def run_research(repo, *, execution, operation_id, research_id, action, source_r
                 criteria_hash=digest(VERIFICATION_CRITERIA))
             from app.p20_core.model_provenance import mark_validation
             mark_validation(repo, call_execution.operation_id, "VALID", connection=connection)
+            operation = state["operations"][operation_id]
+            ordinal = len(operation.get("attempts", [])) + 1
+            repo.record_memory_event(
+                connection,
+                operation_namespace="RESEARCH_OPERATION", operation_id=operation_id,
+                event_slot=("result", str(ordinal)), event_type="RESEARCH_RESULT_RECORDED",
+                actor={"kind": "SYSTEM", "id": "P20_RESEARCH_SERVICE", "evidence_ref": None},
+                run_id=request["run_id"], step_id=request["step_id"],
+                structured_payload={
+                    "action": action, "claim_refs": [
+                        claim["claim_id"] + ":v" + str(claim["version"])
+                        for claim in result_claims
+                    ],
+                    "result_refs": ["research.v1/operations/" + operation_id],
+                    "outcome": "COMPLETED",
+                },
+            )
         return result
     except (ValueError, TypeError, KeyError, RuntimeError) as exc:
         from app.p20_core.model_provenance import mark_validation
@@ -425,6 +493,20 @@ def run_research(repo, *, execution, operation_id, research_id, action, source_r
             if state["operations"][operation_id].get("attempt_id") == attempt_id:
                 state["operations"][operation_id].update(status="FAILED", failure=failure)
                 mark_validation(repo, call_execution.operation_id, "INVALID", connection=connection)
+                operation = state["operations"][operation_id]
+                ordinal = len(operation.get("attempts", [])) + 1
+                repo.record_memory_event(
+                    connection,
+                    operation_namespace="RESEARCH_OPERATION", operation_id=operation_id,
+                    event_slot=("result", str(ordinal)), event_type="RESEARCH_RESULT_RECORDED",
+                    actor={"kind": "SYSTEM", "id": "P20_RESEARCH_SERVICE", "evidence_ref": None},
+                    run_id=request["run_id"], step_id=request["step_id"],
+                    structured_payload={
+                        "action": action,
+                        "result_refs": ["research.v1/operations/" + operation_id],
+                        "outcome": "FAILED", "reason_code": _ledger_reason_code(failure["reason"]),
+                    },
+                )
         raise
 
 
@@ -437,6 +519,21 @@ def recover_operation(repo, operation_id, *, recovered_by):
         if op["status"] == "RUNNING":
             op.update(status="FAILED", failure="OPERATOR_RECOVERY", recovered_at=now(),
                       recovered_by=recovered_by, attempt_id=None)
+            request = op.get("request", {})
+            ordinal = len(op.get("attempts", [])) + 1
+            repo.record_memory_event(
+                connection,
+                operation_namespace="RESEARCH_OPERATION", operation_id=operation_id,
+                event_slot=("result", str(ordinal)), event_type="RESEARCH_RESULT_RECORDED",
+                actor={"kind": "OPERATOR", "id": recovered_by,
+                       "evidence_ref": "research-recovery:" + operation_id},
+                run_id=request.get("run_id"), step_id=request.get("step_id"),
+                structured_payload={
+                    "action": request.get("action", "RECOVERY"),
+                    "result_refs": ["research.v1/operations/" + operation_id],
+                    "outcome": "FAILED", "reason_code": "OPERATOR_RECOVERY",
+                },
+            )
         request = op.get("request", {})
         call_id = (f"context:{repo.scope.scope_id}:{request.get('run_id')}:{request.get('step_id')}"
                    + ":research:" + digest(operation_id)[:20])
@@ -552,8 +649,8 @@ def validate_promotion_evidence(proposal, state):
             raise ResearchError("mutation exceeds verified claim")
 
 
-def research_context(repo, research_id, *, include_sources):
-    state = repo.read_research_state()
+def research_context(repo, research_id, *, include_sources, connection=None):
+    state = repo.read_research_state(connection)
     research = latest(state, "records", research_id)
     claims = [v[-1] for v in state["claims"].values() if v[-1]["research_id"] == research_id]
     sources = {r["source_id"] + ":" + str(r["version"]): versioned(state, "sources", r["source_id"], r["version"])

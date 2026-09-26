@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import fields
 from types import SimpleNamespace
 
 import pytest
@@ -9,14 +10,19 @@ from openai.resources.chat.completions.completions import Completions
 from openai.resources.responses.responses import Responses
 
 import app.llm_provider_openai as openai_transport
+import app.p20_core.memory_extraction as memory_extraction
 import app.tools as tools
 from app.main import app
 from app.operator_dpapi import read_secret
 from app.p20_core.book_bible_test_helper import ensure_test_book_bible
 from app.p20_core.local_operator import initialize_operator
-from app.p20_core.memory_extraction import SUPPORTED_MEMORY_RECORD_TYPES
+from app.p20_core.memory_extraction import (
+    SUPPORTED_MEMORY_RECORD_TYPES,
+    memory_record_types,
+    memory_model_response_format,
+)
 from app.p20_core.project_repository import ProjectRepository, StorageResolver, ensure_system_repository
-from app.p20_core.storage_paths import get_runs_root
+from app.p20_core.storage_paths import get_runs_root, get_storage_root
 from tests.test_canonical_pipeline import BOOK, FACT, PROJECT, fact, proposal_record
 from tests.test_canonical_project_records import mixed_records
 from tests.test_p20_runtime_context_integration import _register_series_member
@@ -29,20 +35,32 @@ PRODUCTION_MEMORY_PROVIDER = tools.memory_integrity_provider
 
 
 @pytest.fixture
-def production_pipeline(isolated_agentpro_storage):
+def production_pipeline(isolated_agentpro_storage, monkeypatch):
     del isolated_agentpro_storage
     ensure_test_book_bible(BOOK)
     ensure_system_repository().bind_project(PROJECT, BOOK)
     repo = ProjectRepository(StorageResolver().resolve_project(PROJECT, book_id=BOOK))
     repo.initialize()
     assert tools.memory_integrity_provider is PRODUCTION_MEMORY_PROVIDER
+    # These tests isolate the extraction/verifier transport. WRITE transport is
+    # covered separately and must not consume or perturb their SDK call matrix.
+    def controlled_writer(payload):
+        return {
+            "tool": "WRITE",
+            "payload": {"text": (
+            "A neutral observer crossed the quiet square and left a sealed note by the fountain. "
+            "The recipient arrived before dusk, recognized the mark, and carried the note away.\n\n"
+            + str(payload.get("input") or payload.get("text") or "")
+            )},
+        }
+    monkeypatch.setitem(tools.TOOLS, "WRITE", controlled_writer)
     with TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 51001)) as client:
         yield client, repo
 
 
 def _step(client, *, run: str, step_id: str, technical_retry: bool = False,
           series_id: str | None = None, project_id: str = PROJECT,
-          book_id: str = BOOK) -> dict:
+          book_id: str = BOOK, instruction: str = "Write neutral transport proof data.") -> dict:
     request = {
         "mode": "WRITE",
         "project_id": project_id,
@@ -50,8 +68,8 @@ def _step(client, *, run: str, step_id: str, technical_retry: bool = False,
         "run_id": run,
         "step_id": step_id,
         "payload": {
-            "text": "Write neutral transport proof data.",
-            "input": "Write neutral transport proof data.",
+            "text": instruction,
+            "input": instruction,
             "model": REQUESTED_MODEL,
             "technical_retry": technical_retry,
             "scope_type": "PROJECT",
@@ -131,11 +149,30 @@ def _install_sdk_boundary(monkeypatch, behavior: str = "accept", records_factory
 
     def create(_self, **kwargs):
         nonlocal verifier_calls
-        prompt = json.loads(kwargs["input"])
+        raw_prompt = kwargs["input"]
+        prompt = json.loads(raw_prompt)
+        if prompt.get("protocol") == "AGENTPRO_P20_WRITER_V1":
+            return SimpleNamespace(
+                output_text=(
+                    "A neutral observer crossed the quiet square and placed a sealed note beside the fountain. "
+                    "A second observer arrived before dusk, checked the mark on the envelope, and compared it "
+                    "with a plain entry in a field notebook. Neither person guessed at hidden causes. They spoke "
+                    "briefly, recorded the time, and agreed to preserve the note until the next controlled review.\n\n"
+                    "The first observer closed the notebook and stored both items in a dry cabinet. The second "
+                    "observer checked the latch, copied the cabinet number, and left by the same empty street. "
+                    "Their actions remained limited to the supplied task and introduced no unrelated facts."
+                ),
+                model=kwargs["model"],
+                output=[],
+                id="response-writer-memory-transport-test",
+                _request_id="request-writer-memory-transport-test",
+                usage=SimpleNamespace(input_tokens=120, output_tokens=140, total_tokens=260),
+            )
         context_package = prompt["context_package"]
         payload = _task_input(context_package)
         role = payload["role"]
-        calls.append({"kwargs": kwargs, "prompt": prompt, "payload": payload})
+        calls.append({"kwargs": kwargs, "prompt": prompt, "raw_prompt": raw_prompt,
+                      "payload": payload})
         if behavior == "transport_error":
             raise RuntimeError("synthetic SDK boundary failure")
         if role == "EXTRACTOR":
@@ -145,6 +182,11 @@ def _install_sdk_boundary(monkeypatch, behavior: str = "accept", records_factory
                 text = '{"records":'
             elif behavior == "wrong_schema":
                 text = json.dumps({"answer": "not an extraction"})
+            elif behavior == "top_level_array":
+                source = payload["source"]
+                record = fact(project=payload["project_id"], source=source, version=1,
+                              value="bare arrays remain invalid at the provider boundary")
+                text = json.dumps([{"record_type": "FACT", "payload": record.to_dict()}])
             elif behavior == "refusal":
                 source = payload["source"]
                 record = fact(project=payload["project_id"], source=source, version=1,
@@ -169,12 +211,27 @@ def _install_sdk_boundary(monkeypatch, behavior: str = "accept", records_factory
                 text = json.dumps({"precision_status": "ACCEPT"})
             elif behavior == "verifier_reject":
                 text = json.dumps({"precision_status": "REJECT", "completeness_status": "ACCEPT",
-                                   "precision_reasons": ["synthetic mismatch"]})
+                                   "precision_reasons": ["synthetic mismatch"],
+                                   "completeness_reasons": [], "must_fix": []})
             elif behavior == "revise_then_accept" and verifier_calls == 1:
                 text = json.dumps({"precision_status": "REVISE", "completeness_status": "ACCEPT",
                                    "must_fix": ["synthetic retry"]})
+            elif behavior == "verifier_revise_without_must_fix":
+                text = json.dumps({
+                    "precision_status": "REVISE",
+                    "completeness_status": "ACCEPT",
+                    "precision_reasons": ["synthetic ungrounded revision"],
+                    "completeness_reasons": [],
+                    "must_fix": [],
+                })
             else:
-                text = json.dumps({"precision_status": "ACCEPT", "completeness_status": "ACCEPT"})
+                text = json.dumps({
+                    "precision_status": "ACCEPT",
+                    "completeness_status": "ACCEPT",
+                    "precision_reasons": [],
+                    "completeness_reasons": [],
+                    "must_fix": [],
+                })
         output = []
         if behavior == "refusal":
             output = [
@@ -187,6 +244,74 @@ def _install_sdk_boundary(monkeypatch, behavior: str = "accept", records_factory
 
     monkeypatch.setattr(Responses, "create", create)
     return calls
+
+
+def test_extractor_response_schema_describes_existing_typed_contract_without_coercion():
+    response_format = memory_model_response_format("EXTRACTOR")
+    assert response_format["strict"] is True
+    schema = response_format["schema"]
+    assert schema["type"] == "object"
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == ["records"]
+    variants = {
+        item["properties"]["record_type"]["enum"][0]: item
+        for item in schema["properties"]["records"]["items"]["anyOf"]
+    }
+    assert set(variants) == SUPPORTED_MEMORY_RECORD_TYPES
+    knowledge_variants = [
+        item["properties"]["payload"]
+        for item in schema["properties"]["records"]["items"]["anyOf"]
+        if item["properties"]["record_type"]["enum"] == ["KNOWLEDGE_EVENT"]
+    ]
+    assert len(knowledge_variants) == 2
+    assert knowledge_variants[0]["properties"]["fact_id"].get("type") == "string"
+    assert knowledge_variants[1]["properties"]["event_id"].get("type") == "string"
+    fact_payload = variants["FACT"]["properties"]["payload"]
+    assert fact_payload["additionalProperties"] is False
+    assert set(fact_payload["required"]) == {
+        field.name for field in fields(memory_record_types()["FACT"])
+    }
+    assert fact_payload["properties"]["fact_id"]["pattern"].startswith("^FACT-")
+    assert fact_payload["properties"]["project_id"]["pattern"].startswith("^PROJ-")
+    assert fact_payload["properties"]["frozen"] == {"type": "boolean"}
+    assert fact_payload["properties"]["author_locked"] == {"type": "boolean"}
+    assert fact_payload["properties"]["version"] == {"type": "integer", "minimum": 1}
+    assert {item["type"] for item in fact_payload["properties"]["object_value"]["anyOf"]} == {
+        "string", "number", "boolean", "null", "array",
+    }
+    state_payload = variants["CHARACTER_STATE"]["properties"]["payload"]
+    generated_state = state_payload["properties"]["state_payload"]
+    assert generated_state["type"] == "object"
+    assert generated_state["additionalProperties"] is False
+    assert generated_state["required"] == ["summary", "attributes"]
+    event_payload = variants["EVENT"]["properties"]["payload"]["properties"]
+    assert event_payload["location_id"]["anyOf"][0]["pattern"].startswith("^PLACE-")
+    assert event_payload["participant_ids"]["items"]["pattern"] == (
+        memory_extraction._ANY_DOMAIN_ID_PATTERN
+    )
+    assert event_payload["cause_refs"]["items"]["pattern"].startswith("^EVENT-")
+
+    bound = memory_model_response_format(
+        "EXTRACTOR", project_id=PROJECT,
+        source_artifact_ref="synthetic:source",
+        source_scene_id="SCENE-synthetic-source",
+    )["schema"]["properties"]["records"]["items"]["anyOf"]
+    bound_fact = next(
+        item["properties"]["payload"] for item in bound
+        if item["properties"]["record_type"]["enum"] == ["FACT"]
+    )
+    assert bound_fact["properties"]["established_scene_id"] == {
+        "anyOf": [
+            {
+                "type": "string",
+                "enum": ["SCENE-synthetic-source"],
+                "pattern": memory_extraction._DOMAIN_ID_FIELD_PATTERNS[
+                    "established_scene_id"
+                ],
+            },
+            {"type": "null"},
+        ]
+    }
 
 
 def test_full_mixed_project_e2e_uses_only_sdk_boundary_and_survives_reopen(
@@ -227,13 +352,20 @@ def test_full_mixed_project_e2e_uses_only_sdk_boundary_and_survives_reopen(
     assert {mutation["target_entity_type"] for mutation in created_mutations} == SUPPORTED_MEMORY_RECORD_TYPES
 
     controls["version"] = 2
-    pending = _step(
+    pending_response = _step(
         client,
         run="run-sdk-mixed-update",
         step_id="step-sdk-mixed-update",
         series_id=SERIES,
-    )["canonical_change"]
+    )
+    pending = pending_response["canonical_change"]
     assert pending["status"] == "AWAITING_USER_APPROVAL", pending
+    assert pending_response["decision"] == "AWAITING_USER_APPROVAL"
+    assert pending_response["chapter_path"] is None
+    assert pending_response["run_state"]["chapter_path"] is None
+    chapters_dir = get_storage_root() / "books" / BOOK / "chapters"
+    chapters_before_approval = tuple(chapters_dir.glob("chapter_*.json"))
+    assert len(chapters_before_approval) == 1
     assert [call["payload"]["role"] for call in calls] == [
         "EXTRACTOR", "VERIFIER", "EXTRACTOR", "VERIFIER"]
     assert {json.loads(value)["version"] for value in repo.list_structured_memory_records().values()} == {1}
@@ -277,14 +409,20 @@ def test_full_mixed_project_e2e_uses_only_sdk_boundary_and_survives_reopen(
     calls_before_retry = len(calls)
     contexts_before_retry = tuple(
         package.to_dict() for package in reopened.list_context_packages())
-    replay = _step(
+    replay_response = _step(
         client,
         run="run-sdk-mixed-update",
         step_id="step-sdk-mixed-update",
         technical_retry=True,
         series_id=SERIES,
-    )["canonical_change"]
+    )
+    replay = replay_response["canonical_change"]
     assert replay == receipt
+    assert replay_response["decision"] == "ACCEPT"
+    assert replay_response["chapter_path"] is not None
+    assert replay_response["run_state"]["chapter_path"] == replay_response["chapter_path"]
+    chapters_after_approval = tuple(chapters_dir.glob("chapter_*.json"))
+    assert len(chapters_after_approval) == 2
     assert len(calls) == calls_before_retry
     assert tuple(package.to_dict() for package in reopened.list_context_packages()) == contexts_before_retry
     for mutation in reopened_record["proposal"]["proposed_mutations"]:
@@ -335,6 +473,38 @@ def test_api_p20_reaches_existing_transport_with_distinct_calls_context_audit_an
     assert calls[0]["payload"]["candidate"] is None
     assert calls[1]["payload"]["candidate"] is not None
     assert calls[0]["payload"]["source"] == calls[1]["payload"]["source"]
+    assert all(
+        call["payload"]["author_instruction"] == "Write neutral transport proof data."
+        for call in calls
+    )
+    assert all(
+        call["prompt"]["author_instruction"] == call["payload"]["author_instruction"]
+        for call in calls
+    )
+    assert all(
+        "explicit true or false declaration exactly" in call["prompt"]["protection_requirement"]
+        for call in calls
+    )
+    assert all(call["payload"]["current_canonical_versions"] == {} for call in calls)
+    assert all(call["prompt"]["current_canonical_versions"] == {} for call in calls)
+    assert all(call["prompt"]["expected_candidate_versions"] == {} for call in calls)
+    assert all(call["prompt"]["explicit_existing_identities"] == {} for call in calls)
+    assert all(
+        "Every identity absent from that map is new" in call["prompt"]["version_requirement"]
+        for call in calls
+    )
+    assert all(
+        "digits or suffixes in an ID never imply a version" in call["prompt"]["version_requirement"]
+        for call in calls
+    )
+    assert "copy explicit frozen/author_locked declarations" in calls[0]["payload"]["instruction"]
+    assert "Protection checks compare" in calls[1]["payload"]["instruction"]
+    assert "Treat record identities as opaque values" in calls[1]["payload"]["instruction"]
+    assert "belong to the downstream DomainMutationGuard" in calls[1]["payload"]["instruction"]
+    assert "must not decide mutation authorization" in calls[1]["prompt"]["verifier_scope_requirement"]
+    assert calls[0]["raw_prompt"].index('"author_instruction"') < calls[0]["raw_prompt"].index(
+        '"response_contract"'
+    )
     source_text = calls[0]["payload"]["source"]["text"]
     assert source_text != "Write neutral transport proof data."
     assert "Write neutral transport proof data." in source_text
@@ -342,6 +512,41 @@ def test_api_p20_reaches_existing_transport_with_distinct_calls_context_audit_an
     assert all(call["kwargs"]["model"] == EFFECTIVE_MODEL for call in calls)
     assert all("temperature" not in call["kwargs"] for call in calls)
     assert all(call["prompt"]["protocol"] == "AGENTPRO_MEMORY_INTEGRITY_V1" for call in calls)
+    for call in calls:
+        role = call["payload"]["role"]
+        expected_format = memory_model_response_format(
+            role,
+            project_id=call["payload"]["project_id"],
+            source_artifact_ref=call["payload"]["source"]["artifact_ref"],
+            source_scene_id=call["payload"]["source"]["scene_id"],
+        )
+        assert call["kwargs"]["text"]["format"] == {
+            "type": "json_schema",
+            **expected_format,
+        }
+        assert call["prompt"]["response_contract"] == expected_format["schema"]
+        assert call["prompt"]["output_requirement"].startswith(
+            "Return exactly one JSON object"
+        )
+    assert calls[0]["kwargs"]["text"]["format"]["strict"] is True
+    assert calls[0]["kwargs"]["text"]["format"]["schema"]["required"] == ["records"]
+    extractor_variants = calls[0]["kwargs"]["text"]["format"]["schema"][
+        "properties"
+    ]["records"]["items"]["anyOf"]
+    fact_schema = next(
+        item["properties"]["payload"]
+        for item in extractor_variants
+        if item["properties"]["record_type"]["enum"] == ["FACT"]
+    )
+    assert fact_schema["properties"]["project_id"]["enum"] == [PROJECT]
+    artifact_options = fact_schema["properties"]["source_artifact_ref"]["anyOf"]
+    assert {
+        tuple(item.get("enum", [])) for item in artifact_options
+    } == {
+        (),
+        (calls[0]["payload"]["source"]["artifact_ref"],),
+    }
+    assert calls[1]["kwargs"]["text"]["format"]["strict"] is True
 
     record = proposal_record(repo, change)
     extractor = record["pipeline"]["extractor"]
@@ -397,7 +602,9 @@ def test_content_revision_uses_new_independent_transport_calls_without_duplicate
     _use_production_provider(monkeypatch)
     calls = _install_sdk_boundary(monkeypatch, "revise_then_accept")
     body = _step(client, run="run-memory-revise", step_id="step-memory-revise")
-    assert body["canonical_change"]["canonical_commit"] is True, body
+    assert body["canonical_change"]["canonical_commit"] is True, json.dumps(
+        body["canonical_change"], indent=2
+    )
     assert [call["payload"]["role"] for call in calls] == [
         "EXTRACTOR", "VERIFIER", "EXTRACTOR", "VERIFIER"]
     assert len({call["prompt"]["context_package"]["context_package_id"] for call in calls}) == 4
@@ -407,8 +614,186 @@ def test_content_revision_uses_new_independent_transport_calls_without_duplicate
     assert len(json.loads(repo.get_metadata("canonical_versions.v1:FACT:" + FACT))) == 1
 
 
+def test_unresolved_candidate_reference_becomes_bounded_revision_feedback(
+        production_pipeline, monkeypatch):
+    client, repo = production_pipeline
+    _use_production_provider(monkeypatch)
+
+    def records(payload):
+        complete = mixed_records(payload, 1)
+        if payload["revision_feedback"]:
+            return complete
+        return [
+            item for item in complete
+            if item["payload"].get("character_id") != "CHAR-bo"
+        ]
+
+    calls = _install_sdk_boundary(monkeypatch, records_factory=records)
+    body = _step(client, run="run-memory-reference-revise",
+                 step_id="step-memory-reference-revise")
+
+    assert body["canonical_change"]["canonical_commit"] is True, json.dumps(
+        body["canonical_change"], indent=2
+    )
+    assert [call["payload"]["role"] for call in calls] == [
+        "EXTRACTOR", "VERIFIER", "EXTRACTOR", "VERIFIER"]
+    extractor_calls = [call["payload"] for call in calls if call["payload"]["role"] == "EXTRACTOR"]
+    assert extractor_calls[0]["revision_feedback"] == []
+    assert any("CHAR-bo" in item for item in extractor_calls[1]["revision_feedback"])
+    assert calls[0]["prompt"]["revision_feedback"] == []
+    assert "every explicit durable object attribute" in calls[0]["payload"]["instruction"]
+    assert "entire accepted source" in calls[1]["payload"]["instruction"]
+    assert calls[0]["prompt"]["task_instruction"] == calls[0]["payload"]["instruction"]
+    assert calls[1]["prompt"]["task_instruction"] == calls[1]["payload"]["instruction"]
+    assert calls[2]["prompt"]["revision_feedback"] == extractor_calls[1]["revision_feedback"]
+    assert "complete replacement records set" in calls[2]["prompt"]["revision_requirement"]
+    assert "requires a CHARACTER_STATE" in calls[2]["prompt"]["revision_requirement"]
+    assert calls[2]["raw_prompt"].index('"revision_feedback"') < calls[2]["raw_prompt"].index(
+        '"response_contract"'
+    )
+    assert calls[2]["raw_prompt"].index('"task_instruction"') < calls[2]["raw_prompt"].index(
+        '"response_contract"'
+    )
+    attempts = _pipeline_state(repo)["attempts"]
+    assert [attempt["verification"]["decision"] for attempt in attempts] == [
+        "REVISE", "ACCEPT"]
+    assert attempts[0]["canonical_integrity_mismatches"]
+    assert attempts[1]["canonical_integrity_mismatches"] == []
+    assert len(repo.list_structured_memory_records()) == 9
+
+
+def test_unresolved_candidate_reference_escalates_without_partial_state_after_max_attempts(
+        production_pipeline, monkeypatch):
+    client, repo = production_pipeline
+    _use_production_provider(monkeypatch)
+
+    def records(payload):
+        return [
+            item for item in mixed_records(payload, 1)
+            if item["payload"].get("character_id") != "CHAR-bo"
+        ]
+
+    calls = _install_sdk_boundary(monkeypatch, records_factory=records)
+    body = _step(client, run="run-memory-reference-escalate",
+                 step_id="step-memory-reference-escalate")
+
+    assert body["canonical_change"]["status"] == "ESCALATED", body
+    assert body["canonical_change"]["canonical_commit"] is False
+    assert body["chapter_path"] is None
+    assert body["run_state"]["chapter_path"] is None
+    assert [call["payload"]["role"] for call in calls] == [
+        "EXTRACTOR", "VERIFIER", "EXTRACTOR", "VERIFIER"]
+    assert all(
+        any("CHAR-bo" in item for item in call["payload"]["revision_feedback"])
+        for call in calls[2:3]
+    )
+    attempts = _pipeline_state(repo)["attempts"]
+    assert [attempt["verification"]["decision"] for attempt in attempts] == [
+        "REVISE", "REVISE"]
+    assert attempts[-1]["verification"]["escalation_required"] is True
+    assert repo.list_structured_memory_records() == {}
+    assert list((get_storage_root() / "books" / BOOK / "chapters").glob(
+        "chapter_*.json"
+    )) == []
+
+
+def test_existing_record_version_mismatch_uses_revision_feedback_and_commits_once(
+        production_pipeline, monkeypatch):
+    client, repo = production_pipeline
+    _use_production_provider(monkeypatch)
+
+    def records(payload):
+        is_update = payload["run_id"] == "run-memory-version-update"
+        version = 2 if is_update and payload["revision_feedback"] else 1
+        record = fact(
+            project=payload["project_id"], source=payload["source"],
+            version=version, value=f"version {version} after bounded revision",
+        )
+        return [{"record_type": "FACT", "payload": record.to_dict()}]
+
+    calls = _install_sdk_boundary(monkeypatch, records_factory=records)
+    created = _step(client, run="run-memory-version-create",
+                    step_id="step-memory-version-create")
+    assert created["canonical_change"]["canonical_commit"] is True
+
+    updated = _step(client, run="run-memory-version-update",
+                    step_id="step-memory-version-update",
+                    instruction=f"Update the explicitly named existing record {FACT}.")
+    assert updated["canonical_change"]["canonical_commit"] is True, updated
+    update_calls = [
+        call["payload"] for call in calls
+        if call["payload"]["run_id"] == "run-memory-version-update"
+    ]
+    assert [call["role"] for call in update_calls] == [
+        "EXTRACTOR", "VERIFIER", "EXTRACTOR", "VERIFIER"]
+    assert any("must be 2; received 1" in item
+               for item in update_calls[2]["revision_feedback"])
+    assert all(
+        call["current_canonical_versions"] == {"FACT:" + FACT: 1}
+        for call in update_calls
+    )
+    sdk_update_calls = [
+        call for call in calls
+        if call["payload"]["run_id"] == "run-memory-version-update"
+    ]
+    assert all(
+        call["prompt"]["expected_candidate_versions"] == {"FACT:" + FACT: 2}
+        for call in sdk_update_calls
+    )
+    assert all(
+        call["prompt"]["explicit_existing_identities"] == {"FACT:" + FACT: 2}
+        for call in sdk_update_calls
+    )
+    assert all(
+        "never with a new alternative ID" in call["prompt"]["version_requirement"]
+        for call in sdk_update_calls
+    )
+    attempts = [
+        value for value in repo.list_metadata().values()
+        if '"attempts"' in value and '"run_id": "run-memory-version-update"' in value
+    ]
+    assert len(attempts) == 1
+    parsed_attempts = json.loads(attempts[0])["attempts"]
+    assert [item["verification"]["decision"] for item in parsed_attempts] == [
+        "REVISE", "ACCEPT"]
+    history = json.loads(repo.get_metadata("canonical_versions.v1:FACT:" + FACT))
+    assert [item["version"] for item in history] == [1, 2]
+
+
+def test_new_record_version_mismatch_uses_revision_feedback_before_ledger_commit(
+        production_pipeline, monkeypatch):
+    client, repo = production_pipeline
+    _use_production_provider(monkeypatch)
+
+    def records(payload):
+        version = 1 if payload["revision_feedback"] else 2
+        record = fact(
+            project=payload["project_id"], source=payload["source"],
+            version=version, value="new record version is validated before persistence",
+        )
+        return [{"record_type": "FACT", "payload": record.to_dict()}]
+
+    calls = _install_sdk_boundary(monkeypatch, records_factory=records)
+    body = _step(client, run="run-memory-new-version",
+                 step_id="step-memory-new-version")
+
+    assert body["canonical_change"]["canonical_commit"] is True, body
+    extractor_calls = [call for call in calls if call["payload"]["role"] == "EXTRACTOR"]
+    assert len(extractor_calls) == 2
+    assert any(
+        "new FACT:" + FACT + " must be 1; received 2" in item
+        for item in extractor_calls[1]["payload"]["revision_feedback"]
+    )
+    assert extractor_calls[1]["prompt"]["revision_feedback"] == (
+        extractor_calls[1]["payload"]["revision_feedback"]
+    )
+    assert all(call["payload"]["current_canonical_versions"] == {} for call in calls)
+    history = json.loads(repo.get_metadata("canonical_versions.v1:FACT:" + FACT))
+    assert [item["version"] for item in history] == [1]
+
+
 @pytest.mark.parametrize("behavior", [
-    "plain_text", "malformed_json", "wrong_schema", "refusal", "empty_records",
+    "plain_text", "malformed_json", "wrong_schema", "top_level_array", "refusal", "empty_records",
     "duplicate_keys", "non_finite",
 ])
 def test_invalid_extractor_transport_output_never_creates_canon(
@@ -429,6 +814,78 @@ def test_invalid_extractor_transport_output_never_creates_canon(
     assert metadata["raw_type"] == "responses"
 
 
+def test_extractor_failure_cannot_publish_chapter_and_retry_is_idempotent(
+        production_pipeline, monkeypatch):
+    client, repo = production_pipeline
+    _use_production_provider(monkeypatch)
+    failed_calls = _install_sdk_boundary(monkeypatch, "top_level_array")
+
+    failed = _step(
+        client,
+        run="run-memory-atomic-failure",
+        step_id="step-memory-atomic-failure",
+    )
+    _assert_failed_execution(failed, repo, "MemoryTransportResponseError")
+    assert failed["chapter_path"] is None
+    assert failed["chapter_lineage"] is None
+    assert failed["canon_memory"] is None
+    assert failed["run_state"]["chapter_path"] is None
+    chapters_dir = get_storage_root() / "books" / BOOK / "chapters"
+    assert list(chapters_dir.glob("chapter_*.json")) == []
+    assert repo.list_structured_memory_records() == {}
+    assert not any(
+        key.startswith("canonical_commit.v1:")
+        for key in repo.list_metadata()
+    )
+
+    reopened = ProjectRepository(
+        StorageResolver().resolve_project(PROJECT, book_id=BOOK)
+    )
+    assert reopened.list_structured_memory_records() == {}
+    failed_state = _pipeline_state(reopened)
+    failed_call_count = len(failed_calls)
+    replay = _step(
+        client,
+        run="run-memory-atomic-failure",
+        step_id="step-memory-atomic-failure",
+        technical_retry=True,
+    )
+    assert replay["canonical_change"] == failed["canonical_change"]
+    assert replay["chapter_path"] is None
+    assert replay["run_state"]["chapter_path"] is None
+    assert _pipeline_state(reopened) == failed_state
+    assert len(failed_calls) == failed_call_count
+    assert list(chapters_dir.glob("chapter_*.json")) == []
+
+    success_calls = _install_sdk_boundary(monkeypatch, "accept")
+    completed = _step(
+        client,
+        run="run-memory-atomic-success",
+        step_id="step-memory-atomic-success",
+    )
+    assert completed["canonical_change"]["canonical_commit"] is True
+    assert completed["chapter_path"] is not None
+    assert completed["chapter_lineage"]["recovery_status"] == "COMMITTED"
+    assert len(reopened.list_structured_memory_records()) == 1
+    persisted_chapters = list(chapters_dir.glob("chapter_*.json"))
+    assert len(persisted_chapters) == 1
+    assert json.loads(persisted_chapters[0].read_text(encoding="utf-8"))["status"] == "ACCEPTED"
+
+    successful_call_count = len(success_calls)
+    successful_records = reopened.list_structured_memory_records()
+    successful_replay = _step(
+        client,
+        run="run-memory-atomic-success",
+        step_id="step-memory-atomic-success",
+        technical_retry=True,
+    )
+    assert successful_replay["canonical_change"] == completed["canonical_change"]
+    assert successful_replay["chapter_path"] == completed["chapter_path"]
+    assert len(success_calls) == successful_call_count
+    assert reopened.list_structured_memory_records() == successful_records
+    assert list(chapters_dir.glob("chapter_*.json")) == persisted_chapters
+
+
 def test_invalid_verifier_schema_and_valid_reject_never_create_canon(
         production_pipeline, monkeypatch):
     client, repo = production_pipeline
@@ -447,15 +904,42 @@ def test_invalid_verifier_schema_and_valid_reject_never_create_canon(
     assert metadata["failure_phase"] == "RESPONSE_VALIDATION"
 
 
+def test_verifier_revise_without_actionable_feedback_is_invalid(
+        production_pipeline, monkeypatch):
+    client, repo = production_pipeline
+    _use_production_provider(monkeypatch)
+    calls = _install_sdk_boundary(monkeypatch, "verifier_revise_without_must_fix")
+    body = _step(client, run="run-memory-verifier-empty-revise",
+                 step_id="step-memory-verifier-empty-revise")
+    state = _assert_failed_execution(body, repo, "MemoryTransportResponseError")
+    assert [call["payload"]["role"] for call in calls] == ["EXTRACTOR", "VERIFIER"]
+    assert repo.list_structured_memory_records() == {}
+    assert not any(key.startswith("canonical_proposal.v1:") for key in repo.list_metadata())
+    metadata = _assert_failed_invocation(
+        repo, state["last_verifier"], role="VERIFIER",
+        reason="MemoryTransportResponseError", boundary_reached=True,
+    )
+    assert metadata["failure_phase"] == "RESPONSE_VALIDATION"
+
+
 def test_valid_verifier_reject_from_transport_never_creates_canon(
         production_pipeline, monkeypatch):
     client, repo = production_pipeline
     _use_production_provider(monkeypatch)
     calls = _install_sdk_boundary(monkeypatch, "verifier_reject")
-    result = _step(client, run="run-memory-verifier-reject",
-                   step_id="step-memory-verifier-reject")["canonical_change"]
+    body = _step(client, run="run-memory-verifier-reject",
+                 step_id="step-memory-verifier-reject")
+    result = body["canonical_change"]
     assert result["status"] == "REJECT"
     assert result["canonical_commit"] is False
+    assert body["decision"] == "REJECT"
+    assert body["chapter_path"] is None
+    assert body["chapter_lineage"] is None
+    assert body["canon_memory"] is None
+    assert body["run_state"]["chapter_path"] is None
+    assert list((get_storage_root() / "books" / BOOK / "chapters").glob(
+        "chapter_*.json"
+    )) == []
     assert [call["payload"]["role"] for call in calls] == ["EXTRACTOR", "VERIFIER"]
     assert repo.list_structured_memory_records() == {}
     assert not any(key.startswith("canonical_proposal.v1:") for key in repo.list_metadata())

@@ -24,6 +24,7 @@ from app.p20_core.adaptive_style import (
 )
 from app.p20_core.book_bible_test_helper import ensure_test_book_bible
 from app.p20_core.project_repository import (
+    PROJECT_DB_SCHEMA_VERSION,
     ProjectRepository,
     ProjectStorageError,
     StorageResolver,
@@ -294,10 +295,20 @@ def test_project_schema_v4_migrates_to_adaptive_style_storage(isolated_agentpro_
             "style_performance_records",
         ):
             connection.execute(f"DROP TABLE {table}")
+        connection.execute("DROP TABLE memory_event_entities")
+        connection.execute("DROP TABLE memory_events")
+        connection.execute(
+            "DELETE FROM project_metadata WHERE key='memory_ledger_control.v1'"
+        )
         connection.execute("UPDATE schema_version SET version=4 WHERE id=1")
         connection.execute("UPDATE project_identity SET schema_version=4 WHERE id=1")
     assert repo.inspect_schema().current_version == 4
-    assert repo.migrate_schema().current_version == 5
+    assert repo.migrate_schema(target_version=5).current_version == 5
+    assert repo.migrate_schema(
+        backup_path=isolated_agentpro_storage / "gap014-ledger.backup",
+        maintenance_confirmed=True,
+        release_head="TEST-HEAD",
+    ).current_version == PROJECT_DB_SCHEMA_VERSION
     assert repo.get_metadata("preserved") == "yes"
     StyleRepository(repo).save_book_style_dna(dna("BOOK-style-migration"))
     assert StyleRepository(repo).get_active_book_style_dna().version == 1

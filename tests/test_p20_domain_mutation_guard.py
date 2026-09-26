@@ -30,6 +30,7 @@ from app.p20_core.project_repository import ProjectRepository, ProjectStorageErr
 
 STAMP = "2026-09-11T00:00:00Z"
 PROJECT_ID = "PROJ-gap009"
+BOOK_ID = "BOOK-gap009"
 SCENE_ID = "SCENE-gap009"
 ARTIFACT_REF = "books/gap009/chapters/chapter_001.json"
 
@@ -266,7 +267,7 @@ def test_ordinary_update_cannot_change_stable_domain_id() -> None:
 def test_cross_project_mutation_is_rejected_by_project_repository(
     isolated_agentpro_storage,
 ) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID))
+    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID, book_id=BOOK_ID))
     _reset_sqlite_file(repo.db_path)
 
     with pytest.raises(ProjectStorageError, match="record scope does not match"):
@@ -286,7 +287,7 @@ def test_structured_memory_automation_cannot_overwrite_protected_fact_record(
     isolated_agentpro_storage,
     locked_record,
 ) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID))
+    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID, book_id=BOOK_ID))
     _reset_sqlite_file(repo.db_path)
     _commit(repo, locked_record)
     proposed = locked_record.with_updates(version=2, object_value="model overwrite")
@@ -301,7 +302,7 @@ def test_structured_memory_automation_cannot_overwrite_protected_fact_record(
 def test_verifier_accept_and_candidate_commit_do_not_bypass_mutation_guard(
     isolated_agentpro_storage,
 ) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID))
+    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID, book_id=BOOK_ID))
     _reset_sqlite_file(repo.db_path)
     locked_record = _fact(fact_id="FACT-gap009-accept-bypass", frozen=True, version=1)
     _commit(repo, locked_record)
@@ -317,7 +318,7 @@ def test_verifier_accept_and_candidate_commit_do_not_bypass_mutation_guard(
 def test_batch_mutation_rolls_back_when_one_record_is_denied(
     isolated_agentpro_storage,
 ) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID))
+    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID, book_id=BOOK_ID))
     _reset_sqlite_file(repo.db_path)
     locked = _fact(fact_id="FACT-gap009-z-locked", frozen=True, version=1)
     _commit(repo, locked)

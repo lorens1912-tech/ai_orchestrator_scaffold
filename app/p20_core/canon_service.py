@@ -26,34 +26,108 @@ def _evidence_hash(value: dict) -> str:
                                     separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
+def _ledger_reason_code(value: object) -> str:
+    from app.p20_core.memory_ledger import _EVENT_REASON_CODES
+    candidate = str(value).strip()
+    allowed = (
+        _EVENT_REASON_CODES["EXTRACTION_FINISHED"]
+        | _EVENT_REASON_CODES["PROPOSAL_STATE_RECORDED"]
+    )
+    return candidate if candidate in allowed else "UNKNOWN_FAILURE"
+
+
 @contextmanager
 def _canonical_transaction(repository, proposal_id: str, *, series_access=None,
-                           include_writer: bool = False):
+                           include_writer: bool = False, read_only: bool = False):
     from app.p20_core.project_repository import SeriesRepository
     if isinstance(repository, SeriesRepository):
         with repository.canonical_proposal_transaction(
-            series_access, proposal_id, include_writer=include_writer,
+            series_access, proposal_id, include_writer=include_writer, read_only=read_only,
         ) as transaction:
             yield transaction
     else:
         with repository.canonical_proposal_transaction(
-            proposal_id, include_writer=include_writer,
+            proposal_id, include_writer=include_writer, read_only=read_only,
         ) as transaction:
             yield transaction
 
 
 @contextmanager
-def _pipeline_transaction(repository, operation_id: str, *, series_access=None):
+def _pipeline_transaction(repository, operation_id: str, *, series_access=None,
+                          include_writer: bool = False):
     from app.p20_core.project_repository import SeriesRepository
     if isinstance(repository, SeriesRepository):
-        with repository.canonical_pipeline_operation(series_access, operation_id) as state:
+        with repository.canonical_pipeline_operation(
+            series_access, operation_id, include_writer=include_writer,
+        ) as state:
             yield state
     else:
-        with repository.canonical_pipeline_operation(operation_id) as state:
+        with repository.canonical_pipeline_operation(
+            operation_id, include_writer=include_writer,
+        ) as state:
             yield state
 
 
-def _validate_review_proposal(repository, proposal: dict, *, series_access=None) -> None:
+def _record_memory_event(repository, connection, *, operation_namespace: str,
+                         operation_id: str, event_slot, event_type: str,
+                         structured_payload: dict, run_id: str | None = None,
+                         step_id: str | None = None, series_access=None,
+                         book_id: str | None = None, actor: dict | None = None,
+                         entity_refs=(), parent_refs=(), artifact_refs=(), source_refs=()):
+    """Append through the current owner transaction; never opens another DB."""
+    from app.p20_core.project_repository import SeriesRepository
+    values = dict(
+        operation_namespace=operation_namespace,
+        operation_id=operation_id,
+        event_slot=event_slot,
+        event_type=event_type,
+        actor=actor or {"kind": "SYSTEM", "id": "P20_CANON_SERVICE", "evidence_ref": None},
+        structured_payload=structured_payload,
+        run_id=run_id,
+        step_id=step_id,
+        entity_refs=entity_refs,
+        parent_refs=parent_refs,
+        artifact_refs=artifact_refs,
+        source_refs=source_refs,
+    )
+    if isinstance(repository, SeriesRepository):
+        return repository.record_memory_event(
+            connection, access=series_access, book_id=book_id, **values,
+        )
+    return repository.record_memory_event(connection, **values)
+
+
+def _canonical_receipt_replay(repository, connection, record: dict, *, series_access=None) -> dict:
+    """Return a terminal receipt only when its event or exact legacy baseline is proven."""
+    from app.p20_core.project_repository import SeriesRepository
+    proposal = record["proposal"]
+    receipt = record["receipt"]
+    values = dict(
+        operation_namespace="CANONICAL_PROPOSAL",
+        operation_id=proposal["proposal_id"],
+        event_slot=("commit", str(proposal["proposal_version"])),
+        baseline_locator="metadata:canonical_commit.v1:" + receipt["operation_id"],
+        connection=connection,
+    )
+    if isinstance(repository, SeriesRepository):
+        classification = repository.classify_required_memory_event(series_access, **values)
+    else:
+        classification = repository.classify_required_memory_event(**values)
+    if classification == "RECORDED":
+        return receipt
+    if classification == "LEGACY_BEFORE_LEDGER":
+        return {**receipt, "memory_coverage": classification}
+    record["memory_ledger_status"] = classification
+    return {
+        "status": classification,
+        "canonical_commit": False,
+        "proposal_id": proposal["proposal_id"],
+        "reason": "REQUIRED_CANONICAL_COMMIT_EVENT_MISSING",
+    }
+
+
+def _validate_review_proposal(repository, proposal: dict, *, series_access=None,
+                              connection=None, read_only: bool = False) -> None:
     from app.p20_core.local_operator import OperatorError
     required = {
         "contract_version", "proposal_id", "project_id", "book_id", "series_id", "scope_type",
@@ -109,7 +183,7 @@ def _validate_review_proposal(repository, proposal: dict, *, series_access=None)
                 raise OperatorError("SERIES_ACCESS_DENIED")
             series.require_registered_member(
                 SeriesAccessContext.bind(proposal["project_id"], proposal["series_id"]),
-                book_id=proposal["book_id"],
+                book_id=proposal["book_id"], read_only=read_only,
             )
     elif isinstance(repository, SeriesRepository):
         if not isinstance(series_access, SeriesAccessContext):
@@ -120,7 +194,12 @@ def _validate_review_proposal(repository, proposal: dict, *, series_access=None)
                 or proposal["scope_type"] != "SERIES"
                 or proposal["scope_id"] != repository.scope.scope_id):
             raise OperatorError("PROPOSAL_SCOPE_MISMATCH")
-        repository.require_registered_member(series_access, book_id=proposal["book_id"])
+        if connection is None:
+            repository.require_registered_member(series_access, book_id=proposal["book_id"])
+        else:
+            membership = repository._require_registered_member(connection, series_access)
+            if str(membership.book_id) != str(proposal["book_id"]):
+                raise OperatorError("SERIES_ACCESS_DENIED")
     else:
         raise OperatorError("PROPOSAL_SCOPE_MISMATCH")
     if type(proposal["proposal_version"]) is not int or proposal["proposal_version"] < 1:
@@ -200,7 +279,8 @@ def save_canonical_proposal_for_review(repository, proposal: dict, *, impact: di
         raise OperatorError("REVIEW_EVIDENCE_MISSING", 409)
     with _canonical_transaction(
         repository, proposal["proposal_id"], series_access=series_access,
-    ) as (document, snapshot):
+        include_writer=True,
+    ) as (document, snapshot, conn):
         _validate_review_basis(proposal, snapshot)
         version = str(proposal["proposal_version"])
         record = {"proposal": proposal, "impact": impact, "initial_guard": initial_guard,
@@ -219,6 +299,38 @@ def save_canonical_proposal_for_review(repository, proposal: dict, *, impact: di
             document["versions"][document["current_version"]]["superseded"] = True
             document["versions"][version] = record
             document["current_version"] = version
+        _record_memory_event(
+            repository, conn, operation_namespace="CANONICAL_PROPOSAL",
+            operation_id=proposal["proposal_id"],
+            event_slot=("proposal", version), event_type="PROPOSAL_RECORDED",
+            run_id=proposal["run_id"], step_id=proposal["step_id"],
+            series_access=series_access, book_id=proposal["book_id"],
+            structured_payload={
+                "phase": "PROPOSAL_FROZEN", "proposal_id": proposal["proposal_id"],
+                "proposal_version": proposal["proposal_version"],
+                "proposal_hash": proposal["proposal_hash"], "new_state": proposal["status"],
+                "basis_hash": record["basis_hash"], "outcome": "RECORDED",
+            },
+        )
+        _record_memory_event(
+            repository, conn, operation_namespace="CANONICAL_PROPOSAL",
+            operation_id=proposal["proposal_id"],
+            event_slot=("state", version, "initial-analysis"),
+            event_type="PROPOSAL_STATE_RECORDED",
+            run_id=proposal["run_id"], step_id=proposal["step_id"],
+            series_access=series_access, book_id=proposal["book_id"],
+            structured_payload={
+                "phase": "INITIAL_ANALYSIS", "proposal_id": proposal["proposal_id"],
+                "proposal_version": proposal["proposal_version"],
+                "proposal_hash": proposal["proposal_hash"], "previous_state": "READY_FOR_ANALYSIS",
+                "new_state": proposal["status"], "basis_hash": record["basis_hash"],
+                "impact_refs": [impact["impact_id"]],
+                "guard_refs": [initial_guard.get("reason", initial_guard["outcome"])],
+                "outcome": initial_guard["outcome"],
+                **({"reason_code": _ledger_reason_code(initial_guard.get("reason"))}
+                   if initial_guard["outcome"] != "ALLOW" else {}),
+            },
+        )
     return proposal
 
 
@@ -228,17 +340,26 @@ def operator_proposal_review(repository, proposal_id: str, identity, *, ttl_seco
     import time
     from app.p20_core.local_operator import OperatorError
     with _canonical_transaction(
-        repository, proposal_id, series_access=series_access,
-    ) as (document, snapshot):
+        repository, proposal_id, series_access=series_access, include_writer=True,
+        read_only=not issue_challenge,
+    ) as (document, snapshot, conn):
         if not document:
             raise OperatorError("PROPOSAL_NOT_FOUND", 404)
         record = document["versions"][document["current_version"]]
         proposal = record["proposal"]
-        _validate_review_proposal(repository, proposal, series_access=series_access)
+        _validate_review_proposal(
+            repository, proposal, series_access=series_access, connection=conn,
+            read_only=not issue_challenge,
+        )
         if record.get("receipt"):
+            replay = _canonical_receipt_replay(
+                repository, conn, record, series_access=series_access,
+            )
+            if replay.get("canonical_commit") is not True:
+                return replay
             return {"proposal": proposal, "impact": record["impact"], "initial_guard": record["initial_guard"],
                     "challenge": None, "decision": record["decision"], "canonical_commit": True,
-                    "receipt": record["receipt"]}
+                    "receipt": replay}
         _validate_review_basis(proposal, snapshot)
         if record["basis_hash"] != _evidence_hash(snapshot):
             raise OperatorError("STALE_PROPOSAL_ANALYSIS", 409)
@@ -259,8 +380,8 @@ def record_operator_decision(repository, proposal_id: str, identity, request: di
     from uuid import uuid4
     from app.p20_core.local_operator import OperatorError, now_iso
     with _canonical_transaction(
-        repository, proposal_id, series_access=series_access,
-    ) as (document, snapshot):
+        repository, proposal_id, series_access=series_access, include_writer=True,
+    ) as (document, snapshot, conn):
         if not document:
             raise OperatorError("PROPOSAL_NOT_FOUND", 404)
         record = document["versions"][document["current_version"]]
@@ -281,7 +402,9 @@ def record_operator_decision(repository, proposal_id: str, identity, request: di
             raise OperatorError("DECISION_ALREADY_RECORDED", 409)
         if challenge["expires_at"] <= time.time():
             raise OperatorError("DECISION_CHALLENGE_EXPIRED", 409)
-        _validate_review_proposal(repository, proposal, series_access=series_access)
+        _validate_review_proposal(
+            repository, proposal, series_access=series_access, connection=conn,
+        )
         _validate_review_basis(proposal, snapshot)
         if challenge["basis_hash"] != _evidence_hash(snapshot):
             raise OperatorError("STALE_PROPOSAL_ANALYSIS", 409)
@@ -299,6 +422,24 @@ def record_operator_decision(repository, proposal_id: str, identity, request: di
         challenge["used"] = True
         if "pipeline" in record or proposal.get("source_kind") == "RESEARCH":
             proposal["status"] = "APPROVED_FOR_COMMIT" if request["decision"] == "APPROVE" else "REJECTED"
+        _record_memory_event(
+            repository, conn, operation_namespace="CANONICAL_PROPOSAL",
+            operation_id=proposal_id,
+            event_slot=("decision", str(proposal["proposal_version"])),
+            event_type="AUTHOR_DECISION_RECORDED",
+            actor={"kind": "OPERATOR", "id": identity.operator_id,
+                   "evidence_ref": evidence["authorization_ref"]},
+            run_id=proposal["run_id"], step_id=proposal["step_id"],
+            series_access=series_access, book_id=proposal["book_id"],
+            structured_payload={
+                "approval_id": evidence["approval_id"],
+                "authorization_ref": evidence["authorization_ref"],
+                "proposal_id": proposal_id,
+                "proposal_version": proposal["proposal_version"],
+                "proposal_hash": proposal["proposal_hash"],
+                "decision": request["decision"], "outcome": "RECORDED",
+            },
+        )
         # Decision evidence only. No transition to COMMITTED or bypass of the domain guard.
         return evidence
 
@@ -349,10 +490,21 @@ def _pipeline_evidence(record: dict) -> None:
         raise OperatorError("VERIFIER_INPUT_MISMATCH", 409)
 
 
-def _validate_canonical_record_set(proposal: dict, snapshot: dict) -> None:
-    """Existing typed validation plus references resolved against the whole target set."""
+_CANONICAL_REFERENCE_FIELDS = {
+    "FACT": ("subject_id", "object_id", "established_event_id", "established_scene_id"),
+    "CHARACTER_STATE": ("character_id", "source_scene_id", "source_event_id"),
+    "EVENT": ("location_id", "participant_ids", "cause_refs", "effect_refs", "source_scene_id"),
+    "KNOWLEDGE_EVENT": ("character_id", "fact_id", "event_id", "learned_at_scene_id", "learned_at_event_id", "learned_from_character_id"),
+    "THREAD": ("opened_scene_id", "closed_scene_id", "actual_payoff_ref"),
+    "SETUP": ("created_scene_id", "actual_payoff_scene_id"),
+    "PAYOFF": ("setup_id", "completed_scene_id"),
+    "RELATIONSHIP_CHANGE": ("subject_character_id", "object_character_id", "source_scene_id"),
+}
+
+
+def _canonical_reference_mismatches(proposal: dict, snapshot: dict) -> tuple[str, ...]:
+    """Return unresolved references using the final canonical target-set rules."""
     from app.p20_core.memory_extraction import decode_memory_entities
-    from app.p20_core.local_operator import OperatorError
     states = {r["record_id"]: json.loads(r["payload_json"]) for r in snapshot["records"]}
     states.update({m["target_entity_id"]: m["proposed_state"] for m in proposal["proposed_mutations"]})
     known = set(states) | {proposal.get("source_scene_id"), proposal["project_id"], proposal["book_id"]}
@@ -360,26 +512,74 @@ def _validate_canonical_record_set(proposal: dict, snapshot: dict) -> None:
     character_states = {r["record_id"] for r in snapshot["records"] if r["record_type"] == "CHARACTER_STATE"}
     character_states.update(m["target_entity_id"] for m in proposal["proposed_mutations"] if m["target_entity_type"] == "CHARACTER_STATE")
     known.update(states[identity]["character_id"] for identity in character_states)
-    reference_fields = {
-        "FACT": ("subject_id", "object_id", "established_event_id", "established_scene_id"),
-        "CHARACTER_STATE": ("character_id", "source_scene_id", "source_event_id"),
-        "EVENT": ("location_id", "participant_ids", "cause_refs", "effect_refs", "source_scene_id"),
-        "KNOWLEDGE_EVENT": ("character_id", "fact_id", "event_id", "learned_at_scene_id", "learned_at_event_id", "learned_from_character_id"),
-        "THREAD": ("opened_scene_id", "closed_scene_id", "actual_payoff_ref"),
-        "SETUP": ("created_scene_id", "actual_payoff_scene_id"),
-        "PAYOFF": ("setup_id", "completed_scene_id"),
-        "RELATIONSHIP_CHANGE": ("subject_character_id", "object_character_id", "source_scene_id"),
-    }
+    entities = decode_memory_entities([{"record_type": m["target_entity_type"], "payload": m["proposed_state"]}
+                                      for m in proposal["proposed_mutations"]])
+    mismatches: list[str] = []
+    for mutation, entity in zip(proposal["proposed_mutations"], entities):
+        for name in _CANONICAL_REFERENCE_FIELDS[entity.memory_record_type]:
+            value = getattr(entity, name)
+            values = value if isinstance(value, (tuple, list)) else (value,)
+            for item in values:
+                if item is not None and str(item) not in known:
+                    mismatches.append(
+                        f"unresolved canonical reference {entity.memory_record_type}:"
+                        f"{entity.record_id}.{name} -> {item}"
+                    )
+    return tuple(mismatches)
+
+
+def _validate_canonical_record_set(proposal: dict, snapshot: dict) -> None:
+    """Existing typed validation plus references resolved against the whole target set."""
+    from app.p20_core.memory_extraction import decode_memory_entities
+    from app.p20_core.local_operator import OperatorError
     entities = decode_memory_entities([{"record_type": m["target_entity_type"], "payload": m["proposed_state"]}
                                       for m in proposal["proposed_mutations"]])
     for mutation, entity in zip(proposal["proposed_mutations"], entities):
         if str(entity.project_id) != proposal["project_id"] or str(entity.record_id) != mutation["target_entity_id"]:
             raise OperatorError("CANONICAL_RECORD_SCOPE_MISMATCH", 409)
-        for name in reference_fields[entity.memory_record_type]:
-            value = getattr(entity, name)
-            values = value if isinstance(value, (tuple, list)) else (value,)
-            if any(v is not None and str(v) not in known for v in values):
-                raise OperatorError("CANONICAL_REFERENCE_UNRESOLVED", 409)
+    if _canonical_reference_mismatches(proposal, snapshot):
+        raise OperatorError("CANONICAL_REFERENCE_UNRESOLVED", 409)
+
+
+def _candidate_canonical_integrity_mismatches(
+    candidate, snapshot: dict, *, book_id: str
+) -> tuple[str, ...]:
+    """Apply version and whole-set reference rules before freezing a proposal."""
+    proposal = {
+        "project_id": str(candidate.project_id),
+        "book_id": book_id,
+        "source_scene_id": str(candidate.source_scene_id),
+        "proposed_mutations": [
+            {
+                "target_entity_type": entity.memory_record_type,
+                "target_entity_id": str(entity.record_id),
+                "proposed_state": entity.to_dict(),
+            }
+            for entity in candidate.memory_entities
+        ],
+    }
+    mismatches = list(_canonical_reference_mismatches(proposal, snapshot))
+    current = {
+        (record["record_type"], record["record_id"]): json.loads(record["payload_json"])
+        for record in snapshot["records"]
+    }
+    for entity in candidate.memory_entities:
+        identity = (entity.memory_record_type, str(entity.record_id))
+        previous = current.get(identity)
+        if previous is None:
+            if entity.version != 1:
+                mismatches.append(
+                    f"canonical version for new {identity[0]}:{identity[1]} must be "
+                    f"1; received {entity.version}"
+                )
+            continue
+        expected_version = int(previous["version"]) + 1
+        if entity.version != expected_version:
+            mismatches.append(
+                f"canonical version for {identity[0]}:{identity[1]} must be "
+                f"{expected_version}; received {entity.version}"
+            )
+    return tuple(mismatches)
 
 
 def _canonical_impact(repository, proposal: dict, snapshot: dict, *, series_access=None) -> dict:
@@ -424,13 +624,52 @@ def commit_canonical_proposal(repository, proposal_id: str, *, expected_hash: st
             raise OperatorError("PROPOSAL_NOT_FOUND", 404)
         record = document["versions"][document["current_version"]]
         proposal = record["proposal"]
+        def record_final_state(previous_state: str, new_state: str, outcome: str,
+                               reason_code: str | None = None) -> None:
+            approval = record.get("decision")
+            revision = "NONE" if approval is None else approval["approval_id"]
+            payload = {
+                "phase": "FINAL_VALIDATION", "proposal_id": proposal["proposal_id"],
+                "proposal_version": proposal["proposal_version"],
+                "proposal_hash": proposal["proposal_hash"],
+                "previous_state": previous_state, "new_state": new_state,
+                "basis_hash": record.get("basis_hash"),
+                "impact_refs": [] if not record.get("impact") else [record["impact"]["impact_id"]],
+                "guard_refs": [] if not record.get("final_guard") else [record["final_guard"].get("reason") or record["final_guard"]["outcome"]],
+                "outcome": outcome,
+            }
+            if reason_code is not None:
+                payload["reason_code"] = reason_code
+            _record_memory_event(
+                repository, conn, operation_namespace="CANONICAL_PROPOSAL",
+                operation_id=proposal["proposal_id"],
+                event_slot=("state", str(proposal["proposal_version"]),
+                            "final-validation", revision),
+                event_type="PROPOSAL_STATE_RECORDED",
+                run_id=proposal["run_id"], step_id=proposal["step_id"],
+                series_access=series_access, book_id=proposal["book_id"],
+                parent_refs=(() if approval is None else ({
+                    "kind": "APPROVAL",
+                    "owner_scope_type": proposal["scope_type"],
+                    "owner_scope_id": proposal["scope_id"],
+                    "locator": approval["approval_id"],
+                    "version": str(proposal["proposal_version"]),
+                    "hash_scheme": "SHA256",
+                    "hash": _evidence_hash(approval),
+                },)),
+                structured_payload=payload,
+            )
         if proposal["proposal_hash"] != expected_hash:
             raise OperatorError("PROPOSAL_HASH_MISMATCH", 409)
         if record.get("receipt"):
-            return record["receipt"]
+            return _canonical_receipt_replay(
+                repository, conn, record, series_access=series_access,
+            )
         if proposal["status"] in {"STALE", "REJECTED", "FAILED"}:
             return {"status": proposal["status"], "canonical_commit": False, "proposal_id": proposal_id}
-        _validate_review_proposal(repository, proposal, series_access=series_access)
+        _validate_review_proposal(
+            repository, proposal, series_access=series_access, connection=conn,
+        )
         binding = {
             key: proposal[key]
             for key in ("proposal_id", "proposal_hash", "project_id", "scope_type", "scope_id")
@@ -452,8 +691,10 @@ def commit_canonical_proposal(repository, proposal_id: str, *, expected_hash: st
             try:
                 validate_promotion_evidence(proposal, snapshot["research"])
             except ValueError as exc:
+                previous_status = proposal["status"]
                 proposal["status"] = "STALE"
                 record["failure"] = str(exc)
+                record_final_state(previous_status, "STALE", "STALE", "RESEARCH_EVIDENCE_STALE")
                 return {"status": "STALE", "reason": str(exc), "canonical_commit": False}
         else:
             _pipeline_evidence(record)
@@ -471,8 +712,10 @@ def commit_canonical_proposal(repository, proposal_id: str, *, expected_hash: st
             if record["basis_hash"] != _evidence_hash(snapshot):
                 raise OperatorError("STALE_PROPOSAL_ANALYSIS", 409)
         except OperatorError as exc:
+            previous_status = proposal["status"]
             proposal["status"] = "STALE"
             record["failure"] = exc.code
+            record_final_state(previous_status, "STALE", "STALE", exc.code)
             return {"status": "STALE", "reason": exc.code, "canonical_commit": False, "proposal_id": proposal_id}
         approval = record["decision"]
         if approval is not None:
@@ -483,9 +726,12 @@ def commit_canonical_proposal(repository, proposal_id: str, *, expected_hash: st
             proposal=proposal, snapshot=snapshot, impact=impact, approval=approval)
         record["final_guard"] = guard
         if guard["outcome"] != "ALLOW":
+            previous_status = proposal["status"]
             proposal["status"] = "AWAITING_USER_APPROVAL" if guard["outcome"] == "REQUIRE_USER_APPROVAL" else "REJECTED"
+            record_final_state(previous_status, proposal["status"], guard["outcome"], guard.get("reason"))
             return {"status": proposal["status"], "canonical_commit": False, "proposal_id": proposal_id,
                     "proposal_hash": expected_hash, "guard": guard}
+        record_final_state(proposal["status"], "COMMITTED", "ALLOW")
         # Repository repeats the same guard at the physical write boundary.
         from app.p20_core.project_repository import SeriesRepository
         if isinstance(repository, SeriesRepository):
@@ -537,6 +783,33 @@ def commit_canonical_proposal(repository, proposal_id: str, *, expected_hash: st
             f"INSERT INTO {metadata_table}(key,value) VALUES (?,?)",
             ("canonical_commit.v1:" + receipt["operation_id"], json.dumps(receipt, sort_keys=True)),
         )
+        from app.p20_core.memory_ledger import memory_event_id
+        entity_event_ids = [
+            memory_event_id(
+                proposal["scope_type"], proposal["scope_id"],
+                {"namespace": "CANONICAL_PROPOSAL", "id": proposal_id},
+                ("entity", str(proposal["proposal_version"]), mutation["target_entity_type"],
+                 mutation["target_entity_id"]),
+            )
+            for mutation in proposal["proposed_mutations"]
+        ]
+        _record_memory_event(
+            repository, conn, operation_namespace="CANONICAL_PROPOSAL",
+            operation_id=proposal_id,
+            event_slot=("commit", str(proposal["proposal_version"])),
+            event_type="CANONICAL_COMMITTED",
+            run_id=proposal["run_id"], step_id=proposal["step_id"],
+            series_access=series_access, book_id=proposal["book_id"],
+            structured_payload={
+                "proposal_id": proposal_id,
+                "proposal_version": proposal["proposal_version"],
+                "proposal_hash": proposal["proposal_hash"],
+                "receipt_ref": "canonical_commit.v1:" + receipt["operation_id"],
+                "receipt_hash": _evidence_hash(receipt),
+                "entity_event_ids": sorted(entity_event_ids),
+                "outcome": "COMMITTED",
+            },
+        )
         return receipt
 
 
@@ -563,7 +836,24 @@ def prepare_research_proposal(repository, *, proposal_id: str, operation_id: str
             # An explicit new source/assessment under the same proposal ID is
             # a new version, preserving the old decision and receipt.
             if current_record["proposal"]["status"] != "COMMITTED":
+                previous_status = current_record["proposal"]["status"]
                 current_record["proposal"]["status"] = "STALE"
+                old_proposal = current_record["proposal"]
+                _record_memory_event(
+                    repository, conn, operation_namespace="CANONICAL_PROPOSAL",
+                    operation_id=proposal_id,
+                    event_slot=("state", str(old_proposal["proposal_version"]), "superseded"),
+                    event_type="PROPOSAL_STATE_RECORDED",
+                    run_id=old_proposal["run_id"], step_id=old_proposal["step_id"],
+                    structured_payload={
+                        "phase": "SUPERSEDED", "proposal_id": proposal_id,
+                        "proposal_version": old_proposal["proposal_version"],
+                        "proposal_hash": old_proposal["proposal_hash"],
+                        "previous_state": previous_status, "new_state": "STALE",
+                        "basis_hash": current_record.get("basis_hash"),
+                        "outcome": "STALE", "reason_code": "NEW_RESEARCH_EVIDENCE",
+                    },
+                )
             proposal_version = int(document["current_version"]) + 1
         else:
             proposal_version = 1
@@ -616,6 +906,39 @@ def prepare_research_proposal(repository, *, proposal_id: str, operation_id: str
             research_request_hash=request_hash, basis_hash=_evidence_hash(snapshot),
             impact=impact, initial_guard=guard, challenges={}, decision=None)
         document["current_version"] = str(proposal_version)
+        record = document["versions"][str(proposal_version)]
+        _record_memory_event(
+            repository, conn, operation_namespace="CANONICAL_PROPOSAL",
+            operation_id=proposal_id, event_slot=("proposal", str(proposal_version)),
+            event_type="PROPOSAL_RECORDED",
+            run_id=proposal["run_id"], step_id=proposal["step_id"],
+            structured_payload={
+                "phase": "PROPOSAL_FROZEN", "proposal_id": proposal_id,
+                "proposal_version": proposal_version,
+                "proposal_hash": proposal["proposal_hash"],
+                "new_state": proposal["status"], "basis_hash": record["basis_hash"],
+                "outcome": "RECORDED",
+            },
+        )
+        _record_memory_event(
+            repository, conn, operation_namespace="CANONICAL_PROPOSAL",
+            operation_id=proposal_id,
+            event_slot=("state", str(proposal_version), "initial-analysis"),
+            event_type="PROPOSAL_STATE_RECORDED",
+            run_id=proposal["run_id"], step_id=proposal["step_id"],
+            structured_payload={
+                "phase": "INITIAL_ANALYSIS", "proposal_id": proposal_id,
+                "proposal_version": proposal_version,
+                "proposal_hash": proposal["proposal_hash"],
+                "previous_state": "READY_FOR_ANALYSIS", "new_state": proposal["status"],
+                "basis_hash": record["basis_hash"], "impact_refs": [impact["impact_id"]],
+                "guard_refs": [guard.get("reason") or guard["outcome"]],
+                "outcome": guard["outcome"],
+                "reason_code": _ledger_reason_code(
+                    guard.get("reason") or "PROTECTED_MUTATION"
+                ),
+            },
+        )
         return proposal
 
 
@@ -669,12 +992,17 @@ def process_accepted_artifact(*, execution_context, text: str, source_trace: dic
     if cached:
         record = json.loads(cached)["versions"]["1"]
         if record.get("receipt"):
-            return record["receipt"]
+            return commit_canonical_proposal(
+                repository,
+                proposal_id,
+                expected_hash=record["proposal"]["proposal_hash"],
+                series_access=series_access,
+            )
         return {"status": record["proposal"]["status"], "proposal_id": proposal_id,
                 "proposal_hash": record["proposal"]["proposal_hash"], "canonical_commit": False}
     with _pipeline_transaction(
-        repository, operation, series_access=series_access,
-    ) as state:
+        repository, operation, series_access=series_access, include_writer=True,
+    ) as (state, conn):
         if state.get("result"):
             return state["result"]
         if state.get("started"):
@@ -685,15 +1013,39 @@ def process_accepted_artifact(*, execution_context, text: str, source_trace: dic
                   "accepted_step_artifact": source_trace["artifact_path"],
                   "context_package_id": source_trace["context_package_id"], "context_hash": source_trace["context_hash"]}
         state.update(started=True, source=source, attempts=[])
+        _record_memory_event(
+            repository, conn, operation_namespace="CANONICAL_PIPELINE",
+            operation_id=operation, event_slot=("start",),
+            event_type="EXTRACTION_STARTED",
+            run_id=execution_context.run_id, step_id=execution_context.step_id,
+            series_access=series_access, book_id=execution_context.book_id,
+            structured_payload={
+                "phase": "STARTED", "attempt_ordinal": 0,
+                "source_refs": [source_ref], "outcome": "STARTED",
+            },
+        )
+    proposal_recorded = False
     try:
+        revision_feedback: tuple[str, ...] = ()
         for attempt in range(1, DEFAULT_MEMORY_EXTRACTION_POLICY.max_attempts + 1):
             source_contract = SceneMemorySource.from_text(project_id=execution_context.project_id,
                 source_scene_id=source["scene_id"], source_artifact_ref=source_ref, source_text=text)
+            with _canonical_transaction(
+                repository, proposal_id, series_access=series_access,
+            ) as (_, candidate_snapshot):
+                current_canonical_versions = {
+                    f'{record["record_type"]}:{record["record_id"]}': int(
+                        json.loads(record["payload_json"])["version"]
+                    )
+                    for record in candidate_snapshot["records"]
+                }
             extractor = invoke_memory_model(execution_context=replace(execution_context,
                 step_id=execution_context.step_id + f":canonical:{operation}:extract:{attempt}", technical_retry=False),
                 role="EXTRACTOR", requested_model=requested_model, effective_model=effective_model,
                 source=source, candidate=None, context_sources=context_sources,
-                model_routing=source_trace.get("model_routing"))
+                model_routing=source_trace.get("model_routing"),
+                revision_feedback=revision_feedback,
+                current_canonical_versions=current_canonical_versions)
             with _pipeline_transaction(
                 repository, operation, series_access=series_access,
             ) as state:
@@ -704,39 +1056,78 @@ def process_accepted_artifact(*, execution_context, text: str, source_trace: dic
                 candidate_records=decode_memory_entities(extractor["result"]["records"]),
                 extractor_call=ModelInvocation(**extractor["invocation"]), created_at=candidate_time,
                 scene_quality_status="ACCEPT")
+            integrity_mismatches = _candidate_canonical_integrity_mismatches(
+                candidate, candidate_snapshot, book_id=execution_context.book_id,
+            )
             verifier = invoke_memory_model(execution_context=replace(execution_context,
                 step_id=execution_context.step_id + f":canonical:{operation}:verify:{attempt}", technical_retry=False),
                 role="VERIFIER", requested_model=requested_model, effective_model=effective_model,
                 source=source, candidate=candidate.to_dict(), context_sources=context_sources,
-                model_routing=source_trace.get("model_routing"))
+                model_routing=source_trace.get("model_routing"),
+                current_canonical_versions=current_canonical_versions)
             with _pipeline_transaction(
                 repository, operation, series_access=series_access,
             ) as state:
                 state["last_verifier"] = verifier
             verification = verify_memory_extraction_candidate(candidate, source=source_contract,
-                verifier_call=ModelInvocation(**verifier["invocation"]), **verifier["result"])
+                verifier_call=ModelInvocation(**verifier["invocation"]),
+                canonical_integrity_mismatches=integrity_mismatches,
+                **verifier["result"])
             evidence = {"source": source, "extractor": extractor, "verifier": verifier,
-                "candidate_created_at": candidate_time, "attempt": attempt, "verification": verification.to_dict()}
+                "candidate_created_at": candidate_time, "attempt": attempt,
+                "canonical_integrity_mismatches": list(integrity_mismatches),
+                "verification": verification.to_dict()}
             with _pipeline_transaction(
-                repository, operation, series_access=series_access,
-            ) as state:
+                repository, operation, series_access=series_access, include_writer=True,
+            ) as (state, conn):
                 state["attempts"].append(evidence)
+                _record_memory_event(
+                    repository, conn, operation_namespace="CANONICAL_PIPELINE",
+                    operation_id=operation, event_slot=("attempt", str(attempt)),
+                    event_type="EXTRACTION_ATTEMPT_RECORDED",
+                    run_id=execution_context.run_id, step_id=execution_context.step_id,
+                    series_access=series_access, book_id=execution_context.book_id,
+                    structured_payload={
+                        "phase": "VERIFIED_ATTEMPT", "attempt_ordinal": attempt,
+                        "source_refs": [source_ref],
+                        "candidate_refs": [candidate.candidate_id, candidate.candidate_hash],
+                        "verification_refs": ["verification-" + operation,
+                                              _evidence_hash(verification.to_dict())],
+                        "invocation_refs": [extractor["invocation"]["call_id"],
+                                            verifier["invocation"]["call_id"]],
+                        "outcome": verification.decision.value,
+                    },
+                )
             if verification.decision.value == "ACCEPT":
                 break
             if verification.decision.value == "REJECT" or verification.escalation_required:
                 result = {"status": verification.memory_extraction_status.value,
                           "canonical_commit": False, "verification": verification.to_dict()}
                 with _pipeline_transaction(
-                    repository, operation, series_access=series_access,
-                ) as state:
+                    repository, operation, series_access=series_access, include_writer=True,
+                ) as (state, conn):
                     state["result"] = result
+                    _record_memory_event(
+                        repository, conn, operation_namespace="CANONICAL_PIPELINE",
+                        operation_id=operation, event_slot=("terminal",),
+                        event_type="EXTRACTION_FINISHED",
+                        run_id=execution_context.run_id, step_id=execution_context.step_id,
+                        series_access=series_access, book_id=execution_context.book_id,
+                        structured_payload={
+                            "phase": "TERMINAL", "attempt_ordinal": attempt,
+                            "verification_refs": ["verification-" + operation,
+                                                  _evidence_hash(verification.to_dict())],
+                            "outcome": verification.memory_extraction_status.value,
+                        },
+                    )
                 return result
+            revision_feedback = tuple(verification.must_fix)
         if any(type(getattr(entity, flag, None)) is not bool for entity in candidate.memory_entities
                for flag in ("frozen", "author_locked")):
             raise OperatorError("CANONICAL_RECORD_PROTECTION_REQUIRED", 409)
         with _canonical_transaction(
-            repository, proposal_id, series_access=series_access,
-        ) as (document, snapshot):
+            repository, proposal_id, series_access=series_access, include_writer=True,
+        ) as (document, snapshot, conn):
             current = {(r["record_type"], r["record_id"]): json.loads(r["payload_json"]) for r in snapshot["records"]}
             mutations = []
             for entity in candidate.memory_entities:
@@ -758,14 +1149,45 @@ def process_accepted_artifact(*, execution_context, text: str, source_trace: dic
                 source="AUTOMATION", actor_ref=execution_context.operation_id, authority_ref="P20_VERIFIED_EXTRACTION_V1",
                 policy_ref="CANONICAL_CHANGE_V1", proposal_version=1, proposal_hash="", status="READY_FOR_ANALYSIS", created_at=utc_now_iso())
             proposal["proposal_hash"] = canonical_proposal_hash(proposal)
-            _validate_review_proposal(repository, proposal, series_access=series_access)
+            _validate_review_proposal(
+                repository, proposal, series_access=series_access, connection=conn,
+            )
             _validate_canonical_record_set(proposal, snapshot)
             document.update(current_version="1", versions={"1": {"proposal": proposal, "pipeline": evidence,
                 "basis_hash": _evidence_hash(snapshot), "challenges": {}, "decision": None}})
+            record = document["versions"]["1"]
+            _record_memory_event(
+                repository, conn, operation_namespace="CANONICAL_PIPELINE",
+                operation_id=operation, event_slot=("terminal",),
+                event_type="EXTRACTION_FINISHED",
+                run_id=proposal["run_id"], step_id=proposal["step_id"],
+                series_access=series_access, book_id=proposal["book_id"],
+                structured_payload={
+                    "phase": "TERMINAL", "attempt_ordinal": evidence["attempt"],
+                    "candidate_refs": [candidate.candidate_id, candidate.candidate_hash],
+                    "verification_refs": [proposal["verification_ref"]["id"],
+                                          proposal["verification_ref"]["hash"]],
+                    "outcome": "ACCEPT",
+                },
+            )
+            _record_memory_event(
+                repository, conn, operation_namespace="CANONICAL_PROPOSAL",
+                operation_id=proposal_id, event_slot=("proposal", "1"),
+                event_type="PROPOSAL_RECORDED",
+                run_id=proposal["run_id"], step_id=proposal["step_id"],
+                series_access=series_access, book_id=proposal["book_id"],
+                structured_payload={
+                    "phase": "PROPOSAL_FROZEN", "proposal_id": proposal_id,
+                    "proposal_version": 1, "proposal_hash": proposal["proposal_hash"],
+                    "new_state": "READY_FOR_ANALYSIS", "basis_hash": record["basis_hash"],
+                    "outcome": "RECORDED",
+                },
+            )
+        proposal_recorded = True
         # Frozen proposal exists before analysis. A new snapshot must match its basis.
         with _canonical_transaction(
-            repository, proposal_id, series_access=series_access,
-        ) as (document, snapshot):
+            repository, proposal_id, series_access=series_access, include_writer=True,
+        ) as (document, snapshot, conn):
             record = document["versions"]["1"]
             if record["basis_hash"] != _evidence_hash(snapshot):
                 raise OperatorError("STALE_PROPOSAL_ANALYSIS", 409)
@@ -776,6 +1198,23 @@ def process_accepted_artifact(*, execution_context, text: str, source_trace: dic
             guard = DomainMutationGuard().evaluate_canonical(proposal=proposal, snapshot=snapshot, impact=impact)
             record.update(impact=impact, initial_guard=guard)
             proposal["status"] = {"ALLOW": "APPROVED_FOR_COMMIT", "REQUIRE_USER_APPROVAL": "AWAITING_USER_APPROVAL", "DENY": "REJECTED"}[guard["outcome"]]
+            _record_memory_event(
+                repository, conn, operation_namespace="CANONICAL_PROPOSAL",
+                operation_id=proposal_id, event_slot=("state", "1", "initial-analysis"),
+                event_type="PROPOSAL_STATE_RECORDED",
+                run_id=proposal["run_id"], step_id=proposal["step_id"],
+                series_access=series_access, book_id=proposal["book_id"],
+                structured_payload={
+                    "phase": "INITIAL_ANALYSIS", "proposal_id": proposal_id,
+                    "proposal_version": 1, "proposal_hash": proposal["proposal_hash"],
+                    "previous_state": "READY_FOR_ANALYSIS", "new_state": proposal["status"],
+                    "basis_hash": record["basis_hash"], "impact_refs": [impact["impact_id"]],
+                    "guard_refs": [guard.get("reason") or guard["outcome"]],
+                    "outcome": guard["outcome"],
+                    **({"reason_code": _ledger_reason_code(guard.get("reason"))}
+                       if guard["outcome"] != "ALLOW" else {}),
+                },
+            )
         return commit_canonical_proposal(
             repository, proposal_id, expected_hash=proposal["proposal_hash"],
             series_access=series_access,
@@ -787,21 +1226,50 @@ def process_accepted_artifact(*, execution_context, text: str, source_trace: dic
                              else exc.code if isinstance(exc, OperatorError)
                              else type(exc).__name__)}
         with _canonical_transaction(
-            repository, proposal_id, series_access=series_access,
-        ) as (document, snapshot):
+            repository, proposal_id, series_access=series_access, include_writer=True,
+        ) as (document, snapshot, conn):
             if document:
                 record = document["versions"]["1"]
                 if record.get("receipt"):
                     return record["receipt"]
+                previous_status = record["proposal"]["status"]
                 record["proposal"]["status"] = "FAILED"
                 record["failure"] = result["reason"]
+                _record_memory_event(
+                    repository, conn, operation_namespace="CANONICAL_PROPOSAL",
+                    operation_id=proposal_id,
+                    event_slot=("state", "1", "failed"),
+                    event_type="PROPOSAL_STATE_RECORDED",
+                    run_id=execution_context.run_id, step_id=execution_context.step_id,
+                    series_access=series_access, book_id=execution_context.book_id,
+                    structured_payload={
+                        "phase": "FAILED", "proposal_id": proposal_id,
+                        "proposal_version": 1,
+                        "proposal_hash": record["proposal"]["proposal_hash"],
+                        "previous_state": previous_status, "new_state": "FAILED",
+                        "basis_hash": record.get("basis_hash"),
+                        "outcome": "FAILED", "reason_code": _ledger_reason_code(result["reason"]),
+                    },
+                )
         with _pipeline_transaction(
-            repository, operation, series_access=series_access,
-        ) as state:
+            repository, operation, series_access=series_access, include_writer=True,
+        ) as (state, conn):
             if isinstance(exc, MemoryModelInvocationError):
                 role = exc.evidence["invocation"]["role"].lower()
                 state["last_" + role] = exc.evidence
             state["result"] = result
+            if not proposal_recorded:
+                _record_memory_event(
+                    repository, conn, operation_namespace="CANONICAL_PIPELINE",
+                    operation_id=operation, event_slot=("terminal",),
+                    event_type="EXTRACTION_FINISHED",
+                    run_id=execution_context.run_id, step_id=execution_context.step_id,
+                    series_access=series_access, book_id=execution_context.book_id,
+                    structured_payload={
+                        "phase": "TERMINAL", "attempt_ordinal": len(state.get("attempts", [])),
+                        "outcome": "FAILED", "reason_code": _ledger_reason_code(result["reason"]),
+                    },
+                )
         return result
 
 
@@ -882,9 +1350,20 @@ def ensure_book_dirs(
     project_id: str | None = None,
     domain_book_id: str | None = None,
 ) -> Path:
+    # ``book_id`` is also the legacy physical-directory key.  When callers do
+    # not yet carry the explicit P20 identity, derive canonical domain IDs for
+    # the repository while retaining the original storage path.
+    if project_id is None or domain_book_id is None:
+        from app.p20_core.context_runtime import canonical_book_id, canonical_project_id
+
+        resolved_project_id = project_id or canonical_project_id(book_id)
+        resolved_domain_book_id = domain_book_id or canonical_book_id(book_id)
+    else:
+        resolved_project_id = project_id
+        resolved_domain_book_id = domain_book_id
     ensure_project_repository_for_book(
-        str(domain_book_id or book_id),
-        project_id=project_id,
+        str(resolved_domain_book_id),
+        project_id=str(resolved_project_id),
     )
     book_dir = get_books_root() / str(book_id)
     (book_dir / "memory").mkdir(parents=True, exist_ok=True)
@@ -1097,6 +1576,41 @@ def rebuild_canon_from_chapters(
         data = json_load(path, {})
         if not isinstance(data, dict):
             continue
+        if data.get("schema_version") == 2:
+            # F5 writes the final bytes before F4's audit and Memory Ledger
+            # transaction. The file alone is never acceptance authority.
+            from app.p20_core.project_repository import ProjectRepository, StorageResolver
+            import hashlib
+
+            versions = data.get("versions")
+            if (
+                data.get("status") != "ACCEPTED"
+                or data.get("chapter_id") != path.stem
+                or data.get("book_id") != book_id
+                or (project_id is not None and data.get("project_id") != project_id)
+                or (domain_book_id is not None and data.get("domain_book_id") != domain_book_id)
+                or not isinstance(versions, list) or not versions
+                or any(not isinstance(version, dict) for version in versions)
+                or any(type(version.get("version")) is not int or version["version"] < 1
+                       for version in versions if isinstance(version, dict))
+                or not isinstance(data.get("project_id"), str)
+                or not isinstance(data.get("domain_book_id"), str)
+            ):
+                continue
+            try:
+                relative_path = path.resolve().relative_to(book_dir.parent.resolve()).as_posix()
+                file_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+                owner = ProjectRepository(StorageResolver().resolve_project(
+                    data["project_id"], book_id=data["domain_book_id"],
+                ))
+            except (OSError, ValueError):
+                continue
+            if not owner.is_finalized_chapter_artifact(
+                relative_path=relative_path, artifact_sha256=file_hash,
+                chapter_id=path.stem,
+                versions=tuple(version["version"] for version in versions),
+            ):
+                continue
 
         chapter_id = str(data.get("chapter_id") or path.stem)
         chapter_rel = _public_path(path)

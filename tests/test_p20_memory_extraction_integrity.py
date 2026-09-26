@@ -41,6 +41,7 @@ from app.p20_core.project_repository import (
 
 STAMP = "2026-09-11T00:00:00Z"
 PROJECT_ID = "PROJ-gap008"
+BOOK_ID = "BOOK-gap008"
 SCENE_ID = "SCENE-gap008-source"
 ARTIFACT_REF = "books/gap008/chapters/chapter_001.json"
 SOURCE_TEXT = "Ada opens the archive door and learns that Bo hid the brass marker."
@@ -330,7 +331,7 @@ def _verify(
 def test_extraction_candidate_is_not_automatically_persisted_memory(
     isolated_agentpro_storage,
 ) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID))
+    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID, book_id=BOOK_ID))
     _reset_sqlite_file(repo.db_path)
 
     candidate = _candidate()
@@ -458,7 +459,7 @@ def test_extractor_cannot_self_accept_memory_candidate() -> None:
 def test_verifier_accept_allows_atomic_project_memory_commit(
     isolated_agentpro_storage,
 ) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID))
+    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID, book_id=BOOK_ID))
     _reset_sqlite_file(repo.db_path)
     candidate = _candidate()
     verification = _verify(candidate)
@@ -489,7 +490,10 @@ def test_verifier_revise_or_reject_blocks_project_memory_commit(
     isolated_agentpro_storage,
     status,
 ) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project(f"{PROJECT_ID}-{status.value.lower()}"))
+    repo = ProjectRepository(StorageResolver().resolve_project(
+        f"{PROJECT_ID}-{status.value.lower()}",
+        book_id=f"{BOOK_ID}-{status.value.lower()}",
+    ))
     _reset_sqlite_file(repo.db_path)
     candidate = _candidate(
         project_id=f"{PROJECT_ID}-{status.value.lower()}",
@@ -544,7 +548,7 @@ def test_provenance_or_source_scene_mismatch_is_rejected() -> None:
 def test_candidate_set_is_committed_as_one_acceptance_unit(
     isolated_agentpro_storage,
 ) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID))
+    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID, book_id=BOOK_ID))
     _reset_sqlite_file(repo.db_path)
     candidate = _candidate()
 
@@ -563,7 +567,7 @@ def test_partial_project_db_write_rolls_back_whole_candidate_set(
     isolated_agentpro_storage,
     monkeypatch,
 ) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID))
+    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID, book_id=BOOK_ID))
     _reset_sqlite_file(repo.db_path)
     candidate = _candidate()
     verification = _verify(candidate)
@@ -592,7 +596,9 @@ def test_partial_project_db_write_rolls_back_whole_candidate_set(
 def test_cross_project_candidate_is_rejected_before_commit(
     isolated_agentpro_storage,
 ) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project("PROJ-gap008-other"))
+    repo = ProjectRepository(StorageResolver().resolve_project(
+        "PROJ-gap008-other", book_id="BOOK-gap008-other"
+    ))
     _reset_sqlite_file(repo.db_path)
     candidate = _candidate()
     verification = _verify(candidate)
@@ -607,7 +613,7 @@ def test_accepted_memory_stays_only_in_project_db_not_series_or_system(
     isolated_agentpro_storage,
 ) -> None:
     resolver = StorageResolver()
-    project_repo = ProjectRepository(resolver.resolve_project(PROJECT_ID))
+    project_repo = ProjectRepository(resolver.resolve_project(PROJECT_ID, book_id=BOOK_ID))
     series_repo = SeriesRepository(resolver.resolve_series("SERIES-gap008"))
     system_repo = SystemRepository(resolver.resolve_system())
     _reset_sqlite_file(project_repo.db_path)
@@ -630,7 +636,7 @@ def test_accepted_memory_stays_only_in_project_db_not_series_or_system(
 def test_accepting_structured_memory_does_not_promote_fact_to_frozen_canon(
     isolated_agentpro_storage,
 ) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID))
+    repo = ProjectRepository(StorageResolver().resolve_project(PROJECT_ID, book_id=BOOK_ID))
     _reset_sqlite_file(repo.db_path)
     candidate = _candidate(candidate_records=[_fact(frozen=False, reality_status="CANDIDATE")])
 

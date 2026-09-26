@@ -102,7 +102,7 @@ def _uniqueness_registry_path() -> Path:
 def tool_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"tool":"PLAN","payload":{"text":"Plan (stub).", "meta":{"requested_model": payload.get("_requested_model")}}}
 
-def tool_write(payload: Dict[str, Any]) -> Dict[str, Any]:
+def tool_write(payload: Dict[str, Any], *, model_call=None) -> Dict[str, Any]:
     inp = (payload.get("input") or payload.get("topic") or "").strip()
     if _is_test_mode():
         base = (
@@ -113,8 +113,17 @@ def tool_write(payload: Dict[str, Any]) -> Dict[str, Any]:
         text = base if inp == "x" or not inp else base + "\n\n" + inp
         meta = {"requested_model": payload.get("_requested_model"), "provider_family": "test"}
     else:
-        text = f"{inp}\n\n(WRITE: produkcyjny generator offline.)"
-        meta = {"requested_model": payload.get("_requested_model"), "provider_family": "runtime"}
+        if not callable(model_call):
+            raise RuntimeError("WRITE_MODEL_TRANSPORT_REQUIRED")
+        generated = model_call()
+        if not isinstance(generated, dict):
+            raise RuntimeError("WRITE_MODEL_RESULT_INVALID")
+        text = str(generated.get("text") or "").strip()
+        if not text:
+            raise RuntimeError("WRITE_MODEL_RESULT_EMPTY")
+        raw_meta = generated.get("meta")
+        meta = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+        meta.setdefault("requested_model", payload.get("_requested_model"))
 
     style_features = payload.get("style_features")
     if isinstance(style_features, dict):
@@ -404,7 +413,10 @@ def _strict_memory_json(text: str) -> dict:
 def memory_integrity_provider(payload, *, invocation_audit=None):
     """Adapt a persisted P20 ContextPackage to the existing OpenAI text transport."""
     from app.p20_core.context_builder import ContextPackage
-    from app.p20_core.memory_extraction import validate_memory_model_result
+    from app.p20_core.memory_extraction import (
+        memory_model_response_format,
+        validate_memory_model_result,
+    )
 
     if not isinstance(payload, dict):
         raise MemoryTransportResponseError("memory provider payload must be an object")
@@ -455,23 +467,131 @@ def memory_integrity_provider(payload, *, invocation_audit=None):
             },
         )
 
+    source_binding = payload.get("source")
+    source_artifact_ref = (
+        source_binding.get("artifact_ref")
+        if isinstance(source_binding, dict)
+        else None
+    )
+    source_scene_id = (
+        source_binding.get("scene_id")
+        if isinstance(source_binding, dict)
+        else None
+    )
+    revision_feedback = payload.get("revision_feedback", [])
+    if (
+        not isinstance(revision_feedback, list)
+        or any(not isinstance(item, str) or not item.strip() for item in revision_feedback)
+    ):
+        raise MemoryTransportResponseError("revision feedback must be a list of non-empty strings")
+    author_instruction = payload.get("author_instruction", "")
+    if not isinstance(author_instruction, str):
+        raise MemoryTransportResponseError("author instruction must be text")
+    current_canonical_versions = payload.get("current_canonical_versions", {})
+    if (
+        not isinstance(current_canonical_versions, dict)
+        or any(
+            not isinstance(identity, str)
+            or not identity.strip()
+            or isinstance(version, bool)
+            or not isinstance(version, int)
+            or version < 1
+            for identity, version in current_canonical_versions.items()
+        )
+    ):
+        raise MemoryTransportResponseError("current canonical versions must map identities to positive integers")
+    expected_candidate_versions = {
+        identity: version + 1
+        for identity, version in current_canonical_versions.items()
+    }
+    explicit_existing_identities = {
+        identity: expected_candidate_versions[identity]
+        for identity in sorted(current_canonical_versions)
+        if identity.partition(":")[2]
+        and identity.partition(":")[2] in author_instruction
+    }
+    response_format = memory_model_response_format(
+        role,
+        project_id=str(payload.get("project_id") or "") or None,
+        source_artifact_ref=(
+            str(source_artifact_ref or "") or None
+        ),
+        source_scene_id=str(source_scene_id or "") or None,
+    )
     prompt = json.dumps(
         {
             "protocol": "AGENTPRO_MEMORY_INTEGRITY_V1",
             "role": role,
-            "output_requirement": "Return exactly one JSON object matching the TASK contract. No prose or markdown.",
+            "task_instruction": payload.get("instruction"),
+            "author_instruction": author_instruction,
+            "protection_requirement": (
+                "The accepted source controls which facts are extractable. The author_instruction is authoritative "
+                "for explicit frozen and author_locked declarations attached to those source-grounded facts. Copy "
+                "each explicit true or false declaration exactly. Do not infer a protection value when no explicit "
+                "declaration exists. VERIFIER must return REVISE for every protection mismatch."
+            ),
+            "current_canonical_versions": current_canonical_versions,
+            "expected_candidate_versions": expected_candidate_versions,
+            "explicit_existing_identities": explicit_existing_identities,
+            "version_requirement": (
+                "expected_candidate_versions is the exact required version map for every existing identity; copy "
+                "those values without arithmetic or inference. Every identity absent from that map is new and must "
+                "use version 1. Do not rename an existing record to avoid update/version rules. Record IDs are opaque: "
+                "digits or suffixes in an ID never imply a version. An identity in explicit_existing_identities is "
+                "named explicitly by the author instruction: represent statements about it with that exact identity "
+                "and required version, never with a new alternative ID. VERIFIER must return REVISE for any mismatch "
+                "or alternate-ID representation."
+            ),
+            "verifier_scope_requirement": (
+                "VERIFIER assesses whether candidate records faithfully and completely represent the accepted source. "
+                "It must not decide mutation authorization, operator approval, or DomainMutationGuard outcome. A faithfully "
+                "represented contradiction with current protected canon is not itself an extraction defect; preserve the "
+                "current frozen and author_locked flags and allow the downstream guard to decide. Every REVISE response "
+                "must provide at least one concrete must_fix item. ACCEPT must provide an empty must_fix list. If an "
+                "explicit_existing_identities entry is the subject of a changed claim, the candidate must use that exact "
+                "identity and must not place the claim in a newly invented record."
+            ),
+            "revision_feedback": list(revision_feedback),
+            "revision_requirement": (
+                "When revision_feedback is non-empty, return a complete replacement records set "
+                "that corrects every listed defect without reverting fields that were already correct. Apply every exact "
+                "version from expected_candidate_versions to every included existing identity. For each unresolved canonical reference, "
+                "either omit that reference when the source does not establish it, or include the "
+                "corresponding supported record in the same set. In particular, an EVENT participant "
+                "with a new CHAR- identity requires a CHARACTER_STATE whose character_id is that exact "
+                "identity. Do not return while any listed defect still applies."
+            ),
+            "output_requirement": (
+                "Return exactly one JSON object matching response_contract and the TASK domain schema. "
+                "For EXTRACTOR the top-level object is {\"records\":[...]}; never return a bare array. "
+                "Use the exact supplied project/source identities and uppercase domain ID prefixes. "
+                "For every record exposing source_artifact_ref, copy source.artifact_ref exactly; "
+                "accepted_step_artifact is audit lineage and is not the canonical source reference. "
+                "No prose or markdown."
+            ),
+            "response_contract": response_format["schema"],
             "context_package": package_payload,
         },
         ensure_ascii=True,
-        sort_keys=True,
+        sort_keys=False,
         separators=(",", ":"),
         allow_nan=False,
     )
     try:
         from app.llm_provider_openai import call_text
-        transport = (invocation_audit.call(prompt=prompt, model=effective_model, temperature=None)
+        transport = (invocation_audit.call(
+                         prompt=prompt,
+                         model=effective_model,
+                         temperature=None,
+                         response_schema=response_format,
+                     )
                      if invocation_audit is not None else
-                     call_text(prompt=prompt, model=effective_model, temperature=None))
+                     call_text(
+                         prompt=prompt,
+                         model=effective_model,
+                         temperature=None,
+                         response_schema=response_format,
+                     ))
     except Exception as exc:
         # SDK/configuration exceptions are normalized so audit never persists
         # provider messages that may echo input or credentials.

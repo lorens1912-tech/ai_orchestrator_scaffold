@@ -90,8 +90,10 @@ def test_system_repository_creates_agentpro_system_db(isolated_agentpro_storage)
 
 def test_project_series_and_system_databases_have_schema_versions(isolated_agentpro_storage) -> None:
     resolver = StorageResolver()
-    project_repo = ProjectRepository(resolver.resolve_book("gap003_schema_project"))
-    series_repo = SeriesRepository(resolver.resolve_series("gap003_schema_series"))
+    project_repo = ProjectRepository(
+        resolver.resolve_project("PROJ-gap003-schema", book_id="BOOK-gap003-schema")
+    )
+    series_repo = SeriesRepository(resolver.resolve_series("SERIES-gap003-schema"))
     system_repo = SystemRepository(resolver.resolve_system())
 
     project_repo.initialize()
@@ -263,7 +265,9 @@ def test_plain_schema_read_does_not_run_silent_migration(isolated_agentpro_stora
 def test_project_domain_transaction_commit_persists_all_changes(
     isolated_agentpro_storage,
 ) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_book("gap003_commit_project"))
+    repo = ProjectRepository(
+        StorageResolver().resolve_project("PROJ-gap003-commit", book_id="BOOK-gap003-commit")
+    )
     _reset_sqlite_file(repo.db_path)
 
     with repo.domain_transaction() as tx:
@@ -282,7 +286,9 @@ def test_project_domain_transaction_commit_persists_all_changes(
 def test_project_domain_transaction_rollback_discards_all_changes(
     isolated_agentpro_storage,
 ) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_book("gap003_rollback_project"))
+    repo = ProjectRepository(
+        StorageResolver().resolve_project("PROJ-gap003-rollback", book_id="BOOK-gap003-rollback")
+    )
     _reset_sqlite_file(repo.db_path)
 
     with pytest.raises(RuntimeError, match="boom"):
@@ -299,8 +305,10 @@ def test_project_series_and_system_databases_do_not_mix_scopes(
     isolated_agentpro_storage,
 ) -> None:
     resolver = StorageResolver()
-    project_repo = ProjectRepository(resolver.resolve_book("gap003_scope_project"))
-    series_repo = SeriesRepository(resolver.resolve_series("gap003_scope_series"))
+    project_repo = ProjectRepository(
+        resolver.resolve_project("PROJ-gap003-scope", book_id="BOOK-gap003-scope")
+    )
+    series_repo = SeriesRepository(resolver.resolve_series("SERIES-gap003-scope"))
     system_repo = SystemRepository(resolver.resolve_system())
     _reset_sqlite_file(project_repo.db_path)
     _reset_sqlite_file(series_repo.db_path)
@@ -315,8 +323,8 @@ def test_project_series_and_system_databases_do_not_mix_scopes(
     series_tables = _table_names(series_repo.db_path)
     system_tables = _table_names(system_repo.db_path)
 
-    assert project_repo.db_path == isolated_agentpro_storage / "projects" / "gap003_scope_project" / "project.db"
-    assert series_repo.db_path == isolated_agentpro_storage / "series" / "gap003_scope_series" / "series.db"
+    assert project_repo.db_path == isolated_agentpro_storage / "projects" / "PROJ-gap003-scope" / "project.db"
+    assert series_repo.db_path == isolated_agentpro_storage / "series" / "SERIES-gap003-scope" / "series.db"
     assert system_repo.db_path == isolated_agentpro_storage / "agentpro_system.db"
 
     assert "project_fact_records" in project_tables

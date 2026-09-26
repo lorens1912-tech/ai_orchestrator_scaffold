@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import replace
 
 import pytest
@@ -13,6 +14,7 @@ from app.p20_core.domain_records import FactRecord, EdgeRecord
 from app.p20_core.project_repository import ProjectRepository, StorageResolver, ensure_system_repository
 from app.p20_core.local_operator import initialize_operator, rotate_operator
 from app.p20_core.storage_paths import get_storage_root
+import app.p20_core.canon_service as canon_service
 import app.tools as tools
 
 PROJECT = "PROJ-pipeline-proof"
@@ -53,7 +55,14 @@ def pipeline(isolated_agentpro_storage, monkeypatch, tmp_path):
             if controls["records"]:
                 records = controls["records"](records, payload)
             return {"records": records}
-        return {"precision_status": controls["verdict"], "completeness_status": controls["verdict"]}
+        verdict = controls["verdict"]
+        return {
+            "precision_status": verdict,
+            "completeness_status": verdict,
+            "precision_reasons": [] if verdict == "ACCEPT" else ["synthetic verifier verdict"],
+            "completeness_reasons": [] if verdict == "ACCEPT" else ["synthetic verifier verdict"],
+            "must_fix": ["synthetic candidate revision"] if verdict == "REVISE" else [],
+        }
 
     monkeypatch.setattr(tools, "memory_integrity_provider", provider)
     # Only the external WRITE adapter is controlled; P20, extraction and gates are real.
@@ -137,8 +146,15 @@ def protected_change(pipeline):
             target_type="FACT", target_id=FACT, valid_from=None, valid_to=None,
             confidence=1, source_ref="synthetic", version=1), source_scope=repo.scope, target_scope=repo.scope)
     controls.update(version=2, protected=True)
-    change = step(client)["canonical_change"]
+    response = step(client)
+    change = response["canonical_change"]
     assert change["status"] == "AWAITING_USER_APPROVAL", change
+    assert response["decision"] == "AWAITING_USER_APPROVAL"
+    assert response["chapter_path"] is None
+    assert response["run_state"]["chapter_path"] is None
+    assert list((get_storage_root() / "books" / BOOK / "chapters").glob(
+        "chapter_*.json"
+    )) == []
     assert json.loads(repo.list_structured_memory_records()[FACT])["version"] == 1
     return change
 
@@ -150,10 +166,13 @@ def test_protected_operator_commit_and_legacy_file_cannot_bypass(pipeline, isola
     assert commit(client, change, headers).json()["status"] == "AWAITING_USER_APPROVAL"
     assert commit(client, change, {}).status_code == 401
     book = get_storage_root() / "books" / BOOK
-    chapter = next((book / "chapters").glob("chapter_*.json"))
-    chapter_doc = json.loads(chapter.read_text(encoding="utf-8"))
-    chapter_doc["facts"] = {FACT: {"version": 999, "frozen": False, "author_locked": False}}
-    chapter_doc["proposed_mutations"] = chapter_doc["facts"]
+    chapter = book / "chapters" / "chapter_legacy_bypass.json"
+    chapter_doc = {
+        "chapter_id": chapter.stem,
+        "sha256": "f" * 64,
+        "facts": {FACT: {"version": 999, "frozen": False, "author_locked": False}},
+    }
+    chapter_doc["proposed_mutations"] = dict(chapter_doc["facts"])
     chapter.write_text(json.dumps(chapter_doc), encoding="utf-8")
     before = json.loads((book / "memory" / "canon.json").read_text(encoding="utf-8"))
     commit_chapter_to_canon(book_id=BOOK, run_id="run-pipeline", chapter_path=str(chapter),
@@ -262,10 +281,18 @@ def test_explicit_operator_reject_never_commits(pipeline):
     body.update(challenge_id=review["challenge"]["challenge_id"], decision="REJECT")
     assert client.post(base(change) + "/decision", headers=headers, json=body).status_code == 200
     assert commit(client, change, headers).json()["status"] == "REJECTED"
+    replay = step(client, retry=True)
+    assert replay["decision"] == "REJECT"
+    assert replay["canonical_change"]["status"] == "REJECTED"
+    assert replay["chapter_path"] is None
+    assert replay["run_state"]["chapter_path"] is None
+    assert list((get_storage_root() / "books" / BOOK / "chapters").glob(
+        "chapter_*.json"
+    )) == []
     assert json.loads(repo.list_structured_memory_records()[FACT])["version"] == 1
 
 
-def test_real_analysis_error_and_audit_rollback(pipeline):
+def test_real_analysis_error_and_audit_rollback(pipeline, monkeypatch):
     client, repo, controls, _, _, _ = pipeline
     # Real malformed persisted graph input: no analyzer replacement or fake result.
     with repo.connect() as conn:
@@ -276,12 +303,21 @@ def test_real_analysis_error_and_audit_rollback(pipeline):
     assert repo.list_structured_memory_records() == {}
     with repo.connect() as conn:
         conn.execute("DELETE FROM edges WHERE edge_id='edge-corrupt'")
-        conn.execute("CREATE TRIGGER reject_commit_audit BEFORE INSERT ON project_metadata "
-            "WHEN NEW.key LIKE 'canonical_commit.v1:%' BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END")
     controls["records"] = lambda records, payload: records + [{"record_type": "FACT",
         "payload": fact(identity="FACT-atomic-second", source=payload["source"]).to_dict()}]
-    result = step(client, run="run-audit-failure", step_id="step-audit-failure")["canonical_change"]
-    assert result["status"] == "FAILED", result
+    original_record_event = canon_service._record_memory_event
+
+    def fail_commit_audit(*args, **kwargs):
+        if kwargs.get("event_type") == "CANONICAL_COMMITTED":
+            raise sqlite3.IntegrityError("synthetic audit failure")
+        return original_record_event(*args, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(canon_service, "_record_memory_event", fail_commit_audit)
+        result = step(
+            client, run="run-audit-failure", step_id="step-audit-failure",
+        )["canonical_change"]
+    assert result["status"] == "FAILED", json.dumps(result, indent=2)
     assert repo.list_structured_memory_records() == {}
     assert not any(k.startswith("canonical_versions") for k in repo.list_metadata())
     assert not any(k.startswith("canonical_commit") for k in repo.list_metadata())
@@ -318,10 +354,16 @@ def test_unresolved_reference_and_duplicate_targets_reject_full_set(pipeline):
         records[0]["payload"]["object_id"] = "FACT-missing"
         return records
     controls["records"] = bad_reference
-    assert step(client)["canonical_change"]["reason"] == "CANONICAL_REFERENCE_UNRESOLVED"
+    unresolved = step(client)["canonical_change"]
+    assert unresolved["status"] == "ESCALATED", unresolved
+    assert unresolved["verification"]["escalation_required"] is True
+    assert any(
+        "FACT-missing" in item
+        for item in unresolved["verification"]["must_fix"]
+    )
     controls["records"] = lambda records, payload: records * 2
     result = step(client, run="run-duplicate", step_id="step-duplicate")["canonical_change"]
-    assert result["status"] == "FAILED", result
+    assert result["status"] == "FAILED", json.dumps(result, indent=2)
     assert repo.list_structured_memory_records() == {}
 
 

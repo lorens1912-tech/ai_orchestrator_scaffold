@@ -77,6 +77,17 @@ def _create_project_v1_db(db_path: Path) -> None:
             )
             """
         )
+        conn.execute(
+            "CREATE TABLE project_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE project_fact_records (scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, "
+            "fact_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE project_character_states (scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, "
+            "state_id TEXT PRIMARY KEY, character_id TEXT NOT NULL, payload_json TEXT NOT NULL)"
+        )
         conn.execute("INSERT INTO schema_version (id, version) VALUES (1, 1)")
         conn.execute(
             """
@@ -300,7 +311,9 @@ def test_structured_memory_records_are_deterministically_serialized() -> None:
 def test_project_repository_persists_structured_memory_records(
     isolated_agentpro_storage,
 ) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project("PROJ-memory"))
+    repo = ProjectRepository(
+        StorageResolver().resolve_project("PROJ-memory", book_id="BOOK-memory")
+    )
     _reset_sqlite_file(repo.db_path)
 
     with repo.domain_transaction() as tx:
@@ -333,7 +346,11 @@ def test_project_repository_persists_structured_memory_records(
 def test_structured_memory_transaction_rolls_back_all_records(
     isolated_agentpro_storage,
 ) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project("PROJ-memory-rollback"))
+    repo = ProjectRepository(
+        StorageResolver().resolve_project(
+            "PROJ-memory-rollback", book_id="BOOK-memory-rollback"
+        )
+    )
     _reset_sqlite_file(repo.db_path)
 
     with pytest.raises(RuntimeError, match="boom"):
@@ -348,7 +365,9 @@ def test_structured_memory_transaction_rolls_back_all_records(
 def test_structured_memory_rejects_cross_project_write(
     isolated_agentpro_storage,
 ) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project("PROJ-memory-a"))
+    repo = ProjectRepository(
+        StorageResolver().resolve_project("PROJ-memory-a", book_id="BOOK-memory-a")
+    )
     _reset_sqlite_file(repo.db_path)
 
     with pytest.raises(ProjectStorageError, match="record scope does not match"):
@@ -374,7 +393,13 @@ def test_project_schema_v2_adds_structured_memory_table_by_controlled_migration(
     with pytest.raises(ProjectStorageError, match="controlled migration"):
         repo.initialize()
 
-    migrated = repo.migrate_schema(PROJECT_DB_MIGRATIONS)
+    repo.migrate_schema(PROJECT_DB_MIGRATIONS, target_version=5)
+    migrated = repo.migrate_schema(
+        PROJECT_DB_MIGRATIONS,
+        backup_path=isolated_agentpro_storage / "structured-memory-ledger.backup",
+        maintenance_confirmed=True,
+        release_head="TEST-HEAD",
+    )
     repo.initialize()
 
     assert migrated.current_version == PROJECT_DB_SCHEMA_VERSION
@@ -387,7 +412,11 @@ def test_structured_memory_stays_in_project_db_not_series_or_system_db(
     isolated_agentpro_storage,
 ) -> None:
     resolver = StorageResolver()
-    project_repo = ProjectRepository(resolver.resolve_project("PROJ-memory-storage"))
+    project_repo = ProjectRepository(
+        resolver.resolve_project(
+            "PROJ-memory-storage", book_id="BOOK-memory-storage"
+        )
+    )
     series_repo = SeriesRepository(resolver.resolve_series("SERIES-memory-storage"))
     system_repo = SystemRepository(resolver.resolve_system())
     _reset_sqlite_file(project_repo.db_path)

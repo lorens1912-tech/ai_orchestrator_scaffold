@@ -23,7 +23,9 @@ from app.p20_core.series_memory import SeriesMembershipRecord
 
 @pytest.fixture
 def repo(isolated_agentpro_storage):
-    return ProjectRepository(StorageResolver().resolve_project("PROJ-graph"))
+    return ProjectRepository(
+        StorageResolver().resolve_project("PROJ-graph", book_id="BOOK-graph")
+    )
 
 
 def edge(edge_id="dependency-1", source="EVENT-a", target="EVENT-b", **changes):
@@ -174,13 +176,21 @@ def test_controlled_series_v2_to_v3_graph_migration_preserves_membership(isolate
     repository, access = registered_series("SERIES-graph-migration")
     with repository.connect() as conn:
         conn.execute("DROP TABLE edges")
+        conn.execute("DROP TABLE memory_event_entities")
+        conn.execute("DROP TABLE memory_events")
+        conn.execute("DELETE FROM series_metadata WHERE key='memory_ledger_control.v1'")
         conn.execute("UPDATE schema_version SET version=2")
         conn.execute("UPDATE series_identity SET schema_version=2")
     assert repository.inspect_schema().migration_needed
     with pytest.raises(ValueError, match="controlled migration"):
         repository.list_edges(access)
-    status = repository.migrate_schema()
-    assert status.current_version == SERIES_DB_SCHEMA_VERSION == 3
+    repository.migrate_schema(target_version=3)
+    status = repository.migrate_schema(
+        backup_path=isolated_agentpro_storage / "series-graph-ledger.backup",
+        maintenance_confirmed=True,
+        release_head="TEST-HEAD",
+    )
+    assert status.current_version == SERIES_DB_SCHEMA_VERSION
     assert repository.require_registered_member(access).project_id.value == access.project_id
     with repository.domain_transaction(access) as tx:
         tx.add_edge(
@@ -247,7 +257,9 @@ def test_self_edge_is_allowed_and_finite(repo):
 
 def test_deterministic_breadth_first_order_independent_of_insertion(repo):
     records = [edge("c", "EVENT-b", "EVENT-d"), edge("b", target="EVENT-c"), edge("a")]
-    other = ProjectRepository(StorageResolver().resolve_project("PROJ-other"))
+    other = ProjectRepository(
+        StorageResolver().resolve_project("PROJ-other", book_id="BOOK-other")
+    )
     write(repo, *records)
     write(other, *(replace(e, scope_id=other.scope.scope_id) for e in reversed(records)))
     expected = [("a", 1, "EVENT-b"), ("b", 1, "EVENT-c"), ("c", 2, "EVENT-d")]
@@ -304,7 +316,9 @@ def test_malformed_stored_graph_fails_closed(repo, corruption):
 
 def test_project_isolation_and_other_stores_unchanged(repo):
     resolver = StorageResolver()
-    other = ProjectRepository(resolver.resolve_project("PROJ-other"))
+    other = ProjectRepository(
+        resolver.resolve_project("PROJ-other", book_id="BOOK-other")
+    )
     series = SeriesRepository(resolver.resolve_series("SERIES-graph"))
     system = SystemRepository(resolver.resolve_system())
     series.initialize()
@@ -326,6 +340,9 @@ def old_schema(repo):
     repo.initialize()
     with repo.connect() as conn:
         conn.execute("DROP TABLE edges")
+        conn.execute("DROP TABLE memory_event_entities")
+        conn.execute("DROP TABLE memory_events")
+        conn.execute("DELETE FROM project_metadata WHERE key='memory_ledger_control.v1'")
         conn.execute("UPDATE schema_version SET version = 2")
         conn.execute("UPDATE project_identity SET schema_version = 2")
 
@@ -339,8 +356,13 @@ def test_controlled_v2_to_current_migration_preserves_data_and_read_never_migrat
     with pytest.raises(ProjectStorageError, match="controlled migration"):
         repo.list_edges()
     assert repo.db_path.read_bytes() == before
-    assert repo.migrate_schema().current_version == PROJECT_DB_SCHEMA_VERSION == 5
-    assert repo.get_project_identity()["schema_version"] == 5
+    assert repo.migrate_schema(target_version=5).current_version == 5
+    assert repo.migrate_schema(
+        backup_path=repo.db_path.with_name("project-graph-ledger.backup"),
+        maintenance_confirmed=True,
+        release_head="TEST-HEAD",
+    ).current_version == PROJECT_DB_SCHEMA_VERSION
+    assert repo.get_project_identity()["schema_version"] == PROJECT_DB_SCHEMA_VERSION
     assert repo.get_metadata("preserved") == "yes"
     write(repo, edge())
     assert repo.get_edge("dependency-1") == edge()
@@ -353,7 +375,10 @@ def test_migration_rollback_and_existing_backup_hook(repo):
     observed = []
 
     def backup_before_change(conn):
-        conn.backup(backup)
+        assert conn.in_transaction
+        source_uri = repo.db_path.resolve().as_uri() + "?mode=ro"
+        with sqlite3.connect(source_uri, uri=True) as read_connection:
+            read_connection.backup(backup)
         observed.append(backup.execute("SELECT version FROM schema_version").fetchone()[0])
 
     def fail_validation(conn):
@@ -363,7 +388,10 @@ def test_migration_rollback_and_existing_backup_hook(repo):
     migration = next(item for item in PROJECT_DB_MIGRATIONS if item.source_version == 2)
     try:
         with pytest.raises(RuntimeError, match="migration rejected"):
-            repo.migrate_schema((SchemaMigration(2, 3, migration.apply, fail_validation, backup_before_change),))
+            repo.migrate_schema(
+                (SchemaMigration(2, 3, migration.apply, fail_validation, backup_before_change),),
+                target_version=3,
+            )
         assert observed == [2]
         assert repo.inspect_schema().current_version == 2
         with repo.connect() as conn:

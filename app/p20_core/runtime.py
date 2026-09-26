@@ -792,6 +792,11 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
             ):
                 assert_resume_project_truth_consistency(project_truth_binding, _resume_run_state)
         input_text = extract_input_text(payload, req)
+        # Canonical extraction operates on accepted prose, but explicit author
+        # protection declarations belong to the request that produced it. Keep
+        # that request in the persisted extractor/verifier ContextPackage so
+        # frozen/author_locked intent cannot disappear at the WRITE boundary.
+        context_sources["author_instruction"] = input_text
         pre_report = run_canon_check(input_text, canon_snapshot, scene_ref)
 
         if canon_blocks(pre_report):
@@ -945,29 +950,53 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
         canonical_change = None
 
         if decision == "ACCEPT" and "WRITE" in modes and not research_failed:
-            chapter_commit = persist_chapter_lineage(
-                repository=ProjectRepository(
-                    StorageResolver().resolve_project(
-                        execution_context.project_id,
-                        book_id=execution_context.book_id,
-                    )
+            write_trace = next(
+                (
+                    trace
+                    for trace in reversed(context_traces)
+                    if trace.get("mode") == "WRITE"
                 ),
-                execution_context=execution_context,
-                storage_book_id=book_id,
-                artifact_paths=artifact_paths,
-                text=output_text,
-                quality_decision=quality_decision or None,
-                canon_snapshot_path=_public_path(canon_snapshot_path),
-                pre_report=pre_report,
-                post_report=post_report,
-                master_canon=master_canon_ref,
-                project_truth=project_truth_ref,
-                book_bible_binding=book_bible_binding,
-                engine=APP_VERSION,
+                context_traces[-1] if context_traces else None,
             )
-            chapter_path = chapter_commit.chapter_path
-            chapter_lineage = chapter_commit.summary()
-            if chapter_path:
+            if write_trace is not None:
+                from app.p20_core.canon_service import process_accepted_artifact
+                canonical_change = process_accepted_artifact(
+                    execution_context=execution_context,
+                    text=output_text,
+                    source_trace=write_trace,
+                    context_sources=context_sources,
+                    requested_model=write_trace.get("requested_model"),
+                    effective_model=write_trace["effective_model"],
+                    scope_type=payload.get("scope_type", "PROJECT"),
+                )
+
+            canonical_ready_for_chapter = (
+                isinstance(canonical_change, dict)
+                and canonical_change.get("canonical_commit") is True
+            )
+            if canonical_ready_for_chapter:
+                chapter_commit = persist_chapter_lineage(
+                    repository=ProjectRepository(
+                        StorageResolver().resolve_project(
+                            execution_context.project_id,
+                            book_id=execution_context.book_id,
+                        )
+                    ),
+                    execution_context=execution_context,
+                    storage_book_id=book_id,
+                    artifact_paths=artifact_paths,
+                    text=output_text,
+                    quality_decision=quality_decision or None,
+                    canon_snapshot_path=_public_path(canon_snapshot_path),
+                    pre_report=pre_report,
+                    post_report=post_report,
+                    master_canon=master_canon_ref,
+                    project_truth=project_truth_ref,
+                    book_bible_binding=book_bible_binding,
+                    engine=APP_VERSION,
+                )
+                chapter_path = chapter_commit.chapter_path
+                chapter_lineage = chapter_commit.summary()
                 chapter_full = _path_for_read(Path(chapter_path))
                 chapter_doc = chapter_commit.document
                 canon_memory = commit_chapter_to_canon(
@@ -992,29 +1021,40 @@ async def run_agent_step(req: AgentStepRequest) -> Dict[str, Any]:
                             encoding="utf-8",
                         )
 
-                if isinstance(chapter_doc, dict):
-                    write_trace = next(
-                        (
-                            trace
-                            for trace in reversed(context_traces)
-                            if trace.get("mode") == "WRITE"
-                        ),
-                        context_traces[-1] if context_traces else None,
-                    )
-                    if write_trace is not None:
-                        from app.p20_core.canon_service import process_accepted_artifact
-                        canonical_change = process_accepted_artifact(
-                            execution_context=execution_context, text=output_text,
-                            source_trace=write_trace, context_sources=context_sources,
-                            requested_model=write_trace.get("requested_model"),
-                            effective_model=write_trace["effective_model"],
-                            scope_type=payload.get("scope_type", "PROJECT"))
-
         canonical_failed = (
-            isinstance(canonical_change, dict)
-            and canonical_change.get("status") == "FAILED"
+            decision == "ACCEPT"
+            and "WRITE" in modes
+            and not research_failed
+            and (
+                not isinstance(canonical_change, dict)
+                or canonical_change.get("status") == "FAILED"
+            )
         )
-        execution_decision = "FAILED" if canonical_failed or research_failed else decision
+        canonical_pending = (
+            decision == "ACCEPT"
+            and "WRITE" in modes
+            and not research_failed
+            and not canonical_failed
+            and isinstance(canonical_change, dict)
+            and canonical_change.get("status") == "AWAITING_USER_APPROVAL"
+        )
+        canonical_rejected = (
+            decision == "ACCEPT"
+            and "WRITE" in modes
+            and not research_failed
+            and not canonical_failed
+            and not canonical_pending
+            and not (
+                isinstance(canonical_change, dict)
+                and canonical_change.get("canonical_commit") is True
+            )
+        )
+        execution_decision = (
+            "FAILED" if canonical_failed or research_failed
+            else "AWAITING_USER_APPROVAL" if canonical_pending
+            else "REJECT" if canonical_rejected
+            else decision
+        )
 
         state = save_run_state(
             run_id,

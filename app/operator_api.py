@@ -11,8 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.p20_core.local_operator import OperatorError, authenticate, project_for_operator
 from app.p20_core.project_repository import (
-    ensure_system_repository, SeriesAccessContext, SeriesAccessError,
+    SeriesAccessContext, SeriesAccessError,
     SeriesRepository, StorageResolver, SystemRepository,
+    SystemStorageError, SeriesStorageError, SchemaMigrationError,
+)
+from app.p20_core.memory_ledger import (
+    MemoryLedgerError, MemoryLedgerMigrationRequired, MemoryLedgerNotActive,
 )
 from app.p20_core.canon_service import operator_proposal_review, record_operator_decision, commit_canonical_proposal
 from app.p20_core.adaptive_style import AdaptiveStyleError, StyleRepository
@@ -45,25 +49,37 @@ def authenticated_operator(request: Request,
     except ValueError:
         raise HTTPException(403, "OPERATOR_REQUIRES_LOOPBACK") from None
     try:
-        with ensure_system_repository().local_operator_transaction() as (state, registry):
+        repository = SystemRepository(StorageResolver().resolve_system())
+        if request.method == "GET" and not repository.db_path.is_file():
+            raise OperatorError("OPERATOR_NOT_CONFIGURED", 503)
+        with repository.local_operator_transaction(read_only=request.method == "GET") as (state, registry):
             authenticate(state, None if credential is None else credential.credentials)
             return credential.credentials
     except OperatorError as exc:
         raise HTTPException(exc.status, exc.code) from None
     except SeriesAccessError:
         raise HTTPException(403, "SERIES_ACCESS_DENIED") from None
+    except (SystemStorageError, SchemaMigrationError):
+        raise HTTPException(409, "OPERATOR_STORAGE_CONFLICT") from None
 
 
-def _with_operator(token, operation):
+def _with_operator(token, operation, *, read_only=False):
     try:
         # Revalidate and keep credential/registry stable through project commit.
         # Entire transaction runs in this endpoint's worker thread.
-        with ensure_system_repository().local_operator_transaction() as (state, registry):
+        repository = SystemRepository(StorageResolver().resolve_system())
+        with repository.local_operator_transaction(read_only=read_only) as (state, registry):
             return operation(authenticate(state, token), registry)
     except OperatorError as exc:
         raise HTTPException(exc.status, exc.code) from None
     except SeriesAccessError:
         raise HTTPException(403, "SERIES_ACCESS_DENIED") from None
+    except MemoryLedgerMigrationRequired:
+        raise HTTPException(409, "MIGRATION_REQUIRED") from None
+    except MemoryLedgerNotActive:
+        raise HTTPException(409, "LEDGER_NOT_ACTIVE") from None
+    except (SystemStorageError, ProjectStorageError, SeriesStorageError, SchemaMigrationError, MemoryLedgerError):
+        raise HTTPException(409, "OPERATOR_STORAGE_CONFLICT") from None
 
 
 def _project(registry, project_id):
@@ -73,11 +89,12 @@ def _project(registry, project_id):
     return project_for_operator(registry, project_id, book_id)
 
 
-def _proposal_target(registry, project_id: str, proposal_id: str):
+def _proposal_target(registry, project_id: str, proposal_id: str, *, read_only=False):
     """Resolve an authorized proposal to its sole owning local repository."""
     project = _project(registry, project_id)
     matches = []
-    if project.get_metadata("canonical_proposal.v1:" + proposal_id) is not None:
+    read_metadata = project.get_metadata_readonly if read_only else project.get_metadata
+    if read_metadata("canonical_proposal.v1:" + proposal_id) is not None:
         return project, None
     book_id = registry[project_id]
     system_reader = SystemRepository(StorageResolver().resolve_system())
@@ -89,7 +106,7 @@ def _proposal_target(registry, project_id: str, proposal_id: str):
         if series.get_metadata_readonly(
             access, "canonical_proposal.v1:" + proposal_id,
         ) is not None:
-            series.require_registered_member(access, book_id=book_id)
+            series.require_registered_member(access, book_id=book_id, read_only=read_only)
             matches.append((series, access))
     if not matches:
         raise OperatorError("PROPOSAL_NOT_FOUND", 404)
@@ -100,7 +117,7 @@ def _proposal_target(registry, project_id: str, proposal_id: str):
 
 @router.get("/identity")
 def identity(principal=Depends(authenticated_operator)):
-    return _with_operator(principal, lambda operator, registry: operator.to_dict())
+    return _with_operator(principal, lambda operator, registry: operator.to_dict(), read_only=True)
 
 
 def _style_library_profile_response(profile):
@@ -176,12 +193,28 @@ def get_style_library_profile_by_id(
 @router.get("/projects/{project_id}/proposals/{proposal_id}")
 def read_proposal(project_id: str, proposal_id: str, principal=Depends(authenticated_operator)):
     def operation(operator, registry):
-        repository, access = _proposal_target(registry, project_id, proposal_id)
-        return operator_proposal_review(
+        repository, access = _proposal_target(registry, project_id, proposal_id, read_only=True)
+        result = operator_proposal_review(
             repository, proposal_id, operator, ttl_seconds=challenge_ttl_seconds(),
             issue_challenge=False, series_access=access,
         )
-    return _with_operator(principal, operation)
+        if access is None:
+            events, _cursor = repository.list_memory_events(
+                operation=("CANONICAL_PROPOSAL", proposal_id), limit=200,
+            )
+        else:
+            events, _cursor = repository.list_memory_events(
+                access, operation=("CANONICAL_PROPOSAL", proposal_id), limit=200,
+            )
+        from app.p20_core.memory_ledger import MEMORY_LEDGER_COVERAGE
+        result["memory_event_refs"] = [
+            {"memory_event_id": event.memory_event_id, "event_type": event.event_type,
+             "content_hash": event.content_hash}
+            for event in events
+        ]
+        result["coverage"] = MEMORY_LEDGER_COVERAGE
+        return result
+    return _with_operator(principal, operation, read_only=True)
 
 
 @router.post("/projects/{project_id}/proposals/{proposal_id}/review")
@@ -326,10 +359,10 @@ class ResearchProposalRequest(BaseModel):
     fiction_decision: dict | None = None
 
 
-def _research_operation(principal, operation):
+def _research_operation(principal, operation, *, read_only=False):
     from app.p20_core.research import ResearchError
     try:
-        return _with_operator(principal, operation)
+        return _with_operator(principal, operation, read_only=read_only)
     except ResearchError as exc:
         raise HTTPException(422, str(exc)) from None
     except (ValueError, TypeError, KeyError) as exc:
@@ -358,17 +391,48 @@ def read_research(project_id: str, research_id: str, principal=Depends(authentic
     from app.p20_core.research import research_context
     def read(operator, registry):
         repository = _project(registry, project_id)
-        result = research_context(repository, research_id, include_sources=True)
-        operations = repository.read_research_state()["operations"].values()
+        with repository.connect(read_only=True) as connection:
+            result = research_context(repository, research_id, include_sources=True, connection=connection)
+            research_state = repository.read_research_state(connection)
+            invocations = repository.list_model_invocations(connection=connection)
+        operations = research_state["operations"].values()
         call_ids = {op.get("invocation", op.get("failure", {})).get("call_id")
                     for op in operations if isinstance(op.get("invocation", op.get("failure", {})), dict)
                     and op.get("request", {}).get("research_id") == research_id}
         from app.p20_core.model_provenance import project_trace
         result["model_provenance"] = [project_trace(trace)
-                                      for trace in repository.list_model_invocations()
+                                      for trace in invocations
                                       if trace["operation_id"] in call_ids]
+        event_refs = []
+        related_source_ids = {
+            source["source_id"] for source in result["sources"].values()
+        }
+        for operation_id, stored in sorted(research_state["operations"].items()):
+            result_record = stored.get("result")
+            request = stored.get("request", {})
+            if not (
+                isinstance(result_record, dict)
+                and (
+                    result_record.get("research_id") == research_id
+                    or result_record.get("source_id") in related_source_ids
+                )
+                or request.get("research_id") == research_id
+            ):
+                continue
+            namespace = "RESEARCH_OPERATION" if "request" in stored else "RESEARCH_COMMAND"
+            events, _cursor = repository.list_memory_events(
+                operation=(namespace, operation_id), limit=200,
+            )
+            event_refs.extend(
+                {"memory_event_id": event.memory_event_id, "event_type": event.event_type,
+                 "content_hash": event.content_hash}
+                for event in events
+            )
+        from app.p20_core.memory_ledger import MEMORY_LEDGER_COVERAGE
+        result["memory_event_refs"] = event_refs
+        result["coverage"] = MEMORY_LEDGER_COVERAGE
         return result
-    return _research_operation(principal, read)
+    return _research_operation(principal, read, read_only=True)
 
 
 @router.post("/projects/{project_id}/research/execute")

@@ -17,7 +17,7 @@ from app.p20_core.context_runtime import (
 )
 from app.p20_core.storage_paths import get_books_root, get_runs_root, get_storage_root
 from app.team_resolver import resolve_team
-from app.tools import TOOLS, _p15_hardfail_quality_payload
+from app.tools import TOOLS, _p15_hardfail_quality_payload, tool_write
 from app.p20_core.adaptive_style import (
     AdaptiveStyleSession,
     prepare_adaptive_style_session,
@@ -57,10 +57,127 @@ class MemoryModelInvocationError(RuntimeError):
         self.evidence = evidence
 
 
+class WriterModelInvocationError(RuntimeError):
+    """Safe WRITE failure that never substitutes placeholder prose."""
+
+
+def _read_pinned_prompt(prompt: dict[str, Any], path_key: str, hash_key: str) -> str:
+    raw_path = str(prompt.get(path_key) or "").strip()
+    expected_hash = str(prompt.get(hash_key) or "").strip()
+    if not raw_path or not expected_hash:
+        raise WriterModelInvocationError("WRITE_PROMPT_BINDING_MISSING")
+    path = Path(raw_path)
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise WriterModelInvocationError("WRITE_PROMPT_UNAVAILABLE") from exc
+    actual_hash = hashlib.sha1(content.encode("utf-8")).hexdigest()
+    if actual_hash != expected_hash:
+        raise WriterModelInvocationError("WRITE_PROMPT_BINDING_CHANGED")
+    return content
+
+
+def _invoke_writer_model(
+    *,
+    repository: ProjectRepository,
+    execution_context: ProjectExecutionContext,
+    context_package: Any,
+    requested_model: str | None,
+    effective_model: str,
+    model_routing: dict[str, Any],
+    team: dict[str, Any],
+    context_sources: dict[str, Any],
+) -> dict[str, Any]:
+    """Invoke the existing audited provider transport for a P20 WRITE step."""
+    prompts = team.get("prompts")
+    if not isinstance(prompts, dict):
+        raise WriterModelInvocationError("WRITE_PROMPT_BINDING_MISSING")
+    system_prompt = _read_pinned_prompt(prompts, "system_path", "system_sha1")
+    mode_prompt = _read_pinned_prompt(prompts, "mode_path", "mode_sha1")
+    prompt = json.dumps(
+        {
+            "protocol": "AGENTPRO_P20_WRITER_V1",
+            "system_prompt": system_prompt,
+            "mode_prompt": mode_prompt,
+            "output_contract": {
+                "format": "plain_text_prose",
+                "requirements": [
+                    "Return only final book prose.",
+                    "Do not include headings, instructions, analysis, or process commentary.",
+                    "Respect every authoritative constraint in the supplied ContextPackage.",
+                ],
+            },
+            "context_package": context_package.to_dict(),
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    from app.p20_core.model_provenance import ModelInvocationAudit
+
+    artifact_refs = [
+        str(context_sources[key])
+        for key in ("canon_snapshot_path", "book_bible_path")
+        if context_sources.get(key)
+    ]
+    invocation_audit = ModelInvocationAudit(
+        repository,
+        execution_context,
+        context_package,
+        role="WRITER",
+        mode="WRITE",
+        requested_model=requested_model,
+        routing=model_routing,
+        artifact_refs=artifact_refs,
+    )
+    policy = team.get("policy")
+    temperature = policy.get("temperature") if isinstance(policy, dict) else None
+    if isinstance(temperature, bool) or not isinstance(temperature, (int, float, type(None))):
+        raise WriterModelInvocationError("WRITE_TEMPERATURE_INVALID")
+    try:
+        provider_result = invocation_audit.call(
+            prompt=prompt,
+            model=effective_model,
+            temperature=temperature,
+        )
+        if not isinstance(provider_result, dict):
+            raise WriterModelInvocationError("WRITE_MODEL_RESULT_INVALID")
+        if provider_result.get("refused"):
+            raise WriterModelInvocationError("WRITE_MODEL_REFUSED")
+        text = str(provider_result.get("text") or "").strip()
+        if not text:
+            raise WriterModelInvocationError("WRITE_MODEL_RESULT_EMPTY")
+        invocation_audit.validated(status="VALID")
+    except BaseException as exc:
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise
+        try:
+            invocation_audit.validated(status="INVALID")
+        except Exception:
+            pass
+        if isinstance(exc, WriterModelInvocationError):
+            raise
+        raise WriterModelInvocationError(
+            f"WRITE_MODEL_INVOCATION_FAILED:{type(exc).__name__}"
+        ) from exc
+    return {
+        "text": text,
+        "meta": {
+            "provider_family": "OPENAI",
+            "requested_model": requested_model,
+            "effective_model": effective_model,
+            "provider_returned_model": provider_result.get("provider_returned_model"),
+            "model_invocation_operation_id": execution_context.operation_id,
+        },
+    }
+
+
 def invoke_memory_model(*, execution_context: ProjectExecutionContext, role: str,
                         requested_model: str | None, effective_model: str,
                         source: dict, candidate: dict | None,
-                        context_sources: dict, model_routing: dict | None = None) -> dict:
+                        context_sources: dict, model_routing: dict | None = None,
+                        revision_feedback: tuple[str, ...] = (),
+                        current_canonical_versions: dict[str, int] | None = None) -> dict:
     """Internal integrity call through the same ContextBuilder/provider boundary.
 
     These are internal roles, not additional user-selectable execution modes.
@@ -71,16 +188,47 @@ def invoke_memory_model(*, execution_context: ProjectExecutionContext, role: str
     payload = {"project_id": execution_context.project_id, "book_id": execution_context.book_id,
                "series_id": execution_context.series_id, "run_id": execution_context.run_id,
                "step_id": execution_context.step_id, "source": source, "candidate": candidate,
+               "author_instruction": str(context_sources.get("author_instruction") or ""),
+               "current_canonical_versions": dict(current_canonical_versions or {}),
+               "revision_feedback": list(revision_feedback),
                "role": role, "_requested_model": requested_model,
                "_effective_model": effective_model,
                "record_schema": {kind: {field.name: str(field.type) for field in fields(record_type)}
                                  for kind, record_type in memory_record_types().items()},
-               "instruction": ("Return the complete records list as [{record_type: schema name, payload: full record}]. "
+               "instruction": ("Return exactly one top-level object {records: [{record_type: schema name, payload: full record}]}. "
+                               "Never return a bare list. Every domain ID must use its uppercase namespace prefix "
+                               "(for example FACT-, EVENT-, CONTEXT-, CHAR-, SCENE-, OBJECT-, THREAD-, SETUP-, PAYOFF-, KNOWLEDGE-, REL-). "
                                "Explicit boolean frozen and author_locked are required for every record. Preserve IDs and protection from context; "
-                               "use current version + 1 for updates and 1 for creates. Bind provenance to the supplied source. "
+                               "For each supported record grounded in the accepted source, copy explicit frozen/author_locked declarations from "
+                               "author_instruction exactly, including explicit negative declarations. Never infer protection when the author did "
+                               "not declare it. For an ID listed in current_canonical_versions use its current value + 1; "
+                               "for every other new ID use version 1. Do not rename an existing record to evade update "
+                               "semantics. Bind provenance to the supplied source. "
+                               "Every non-null domain reference must resolve to the current context or to another record in this same records set. "
+                               "Set EVENT.location_id to null unless an existing PLACE identity is present in context. Include a CHARACTER_STATE for "
+                               "each new character referenced by EVENT, KNOWLEDGE_EVENT, or RELATIONSHIP_CHANGE. KNOWLEDGE_EVENT requires a non-null "
+                               "fact_id or event_id that resolves in context or this set. Because this record contract cannot create OBJECT records, "
+                               "a new FACT about an unregistered object must use its own fact_id as subject_id and represent the value in object_value "
+                               "with object_id null. Extract every explicit durable object attribute, count, measurement, material, or stable value "
+                               "from the accepted source as a FACT; do not replace such facts with only an EVENT or CHARACTER_STATE. If the source "
+                               "explicitly names an ID for a supported record type, preserve that exact ID in the corresponding record. "
+                               "When revision_feedback is present, correct every listed defect in the complete replacement set. "
                                "Do not discard unsupported entities: fail explicitly if the complete set cannot be represented."
                                if role == "EXTRACTOR" else
-                               "Independently verify every record against source. Return precision_status and completeness_status: ACCEPT, REVISE or REJECT, with reasons.")}
+                               "Independently verify the complete candidate against the entire accepted source. Precision checks that every returned "
+                               "record is supported. Completeness checks that every explicit durable object attribute, count, measurement, material, "
+                               "stable value, named supported record ID, event, and character state expressible by the supported schemas is present. "
+                               "Protection checks compare every supported source record with explicit frozen/author_locked declarations in "
+                               "author_instruction; any mismatch must be REVISE with an exact must_fix item. "
+                               "A candidate that omits any such supported record must be REVISE with an exact must_fix item. "
+                               "Treat record identities as opaque values: a numeric suffix is not a version. The supplied "
+                               "current_canonical_versions map is the only version authority; an exact identity absent from that map is new "
+                               "and version 1 is correct. Verify extraction fidelity only. Do not decide whether a mutation is authorized, "
+                               "whether operator approval is required, or whether a protected contradiction may be committed; those decisions "
+                               "belong to the downstream DomainMutationGuard. A candidate that faithfully represents an explicit contradictory "
+                               "source statement with the correct existing protection flags is not imprecise merely because the eventual mutation "
+                               "requires approval. Every REVISE result must contain at least one concrete must_fix item; an ACCEPT result must "
+                               "contain none. Return precision_status and completeness_status: ACCEPT, REVISE or REJECT, with reasons.")}
     package = build_runtime_context_package(execution_context=execution_context, mode="MEMORY_" + role,
         role=role, requested_model=requested_model, effective_model=effective_model,
         tool_input=payload, context_sources=context_sources)
@@ -1006,7 +1154,34 @@ def execute_p20(*args, **kwargs) -> List[str]:
         elif mode_id not in TOOLS:
             result: Dict[str, Any] = {"ok": False, "error": f"UNKNOWN_MODE_TOOL: {mode_id}", "tool": mode_id}
         else:
-            out = _call_tool_tolerant(TOOLS[mode_id], tool_input, run_dir)
+            if mode_id == "WRITE":
+                model_call = None
+                if (
+                    step_execution_context is not None
+                    and context_package is not None
+                ):
+                    model_call = lambda: _invoke_writer_model(
+                        repository=route_repo,
+                        execution_context=step_execution_context,
+                        context_package=context_package,
+                        requested_model=requested_model,
+                        effective_model=effective_model,
+                        model_routing=model_routing,
+                        team=team,
+                        context_sources=context_sources,
+                    )
+                write_tool = TOOLS[mode_id]
+                if (
+                    write_tool is tool_write
+                    or "model_call" in inspect.signature(write_tool).parameters
+                ):
+                    out = write_tool(tool_input, model_call=model_call)
+                else:
+                    # Explicitly injected test adapters keep their existing narrow
+                    # signature; the production registry always uses tool_write.
+                    out = _call_tool_tolerant(write_tool, tool_input, run_dir)
+            else:
+                out = _call_tool_tolerant(TOOLS[mode_id], tool_input, run_dir)
             if inspect.isawaitable(out):
                 raise RuntimeError(f"Tool {mode_id} returned awaitable in sync execute_p20")
             result = (

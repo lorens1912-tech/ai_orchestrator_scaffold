@@ -861,11 +861,21 @@ def test_context_hash_is_deterministic_for_same_state_and_input(repo) -> None:
 def test_project_schema_v3_migrates_to_context_package_storage(repo) -> None:
     with repo.connect() as connection:
         connection.execute("DROP TABLE context_packages")
+        connection.execute("DROP TABLE memory_event_entities")
+        connection.execute("DROP TABLE memory_events")
+        connection.execute(
+            "DELETE FROM project_metadata WHERE key='memory_ledger_control.v1'"
+        )
         connection.execute("UPDATE schema_version SET version = 3")
         connection.execute("UPDATE project_identity SET schema_version = 3")
     before = repo.inspect_schema()
     assert before.current_version == 3 and before.migration_needed
-    assert repo.migrate_schema().current_version == PROJECT_DB_SCHEMA_VERSION == 5
+    assert repo.migrate_schema(target_version=5).current_version == 5
+    assert repo.migrate_schema(
+        backup_path=repo.db_path.with_name("context-builder-ledger.backup"),
+        maintenance_confirmed=True,
+        release_head="TEST-HEAD",
+    ).current_version == PROJECT_DB_SCHEMA_VERSION
     package = build(repo, request())
     assert repo.get_context_package(package.context_package_id) == package
 

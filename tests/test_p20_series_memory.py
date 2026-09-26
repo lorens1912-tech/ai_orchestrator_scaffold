@@ -278,7 +278,12 @@ def test_series_schema_v2_uses_controlled_migration(isolated_agentpro_storage) -
     with pytest.raises(SeriesStorageError, match="controlled migration"):
         repo.initialize()
 
-    status = repo.migrate_schema()
+    repo.migrate_schema(target_version=3)
+    status = repo.migrate_schema(
+        backup_path=isolated_agentpro_storage / "series-memory-ledger.backup",
+        maintenance_confirmed=True,
+        release_head="TEST-HEAD",
+    )
     repo.initialize()
 
     assert status.current_version == SERIES_DB_SCHEMA_VERSION

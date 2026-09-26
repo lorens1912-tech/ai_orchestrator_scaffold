@@ -69,50 +69,56 @@ def test_project_and_series_scope_with_same_id_are_distinct() -> None:
 
 
 def test_project_repository_is_bound_to_project_scope(isolated_agentpro_storage) -> None:
-    context = StorageResolver().resolve_project("gap004_project_bound")
+    context = StorageResolver().resolve_project(
+        "PROJ-gap004-project-bound", book_id="BOOK-gap004-project-bound"
+    )
     repo = ProjectRepository(context)
 
     repo.set_scoped_metadata(context.scope, "scope", "project")
 
-    assert repo.scope == StorageScope.project("gap004_project_bound")
+    assert repo.scope == StorageScope.project("PROJ-gap004-project-bound")
     assert repo.get_metadata("scope") == "project"
-    assert repo.db_path == isolated_agentpro_storage / "projects" / "gap004_project_bound" / "project.db"
+    assert repo.db_path == isolated_agentpro_storage / "projects" / "PROJ-gap004-project-bound" / "project.db"
 
 
 def test_series_repository_is_bound_to_series_scope(isolated_agentpro_storage) -> None:
-    context = StorageResolver().resolve_series("gap004_series_bound")
+    context = StorageResolver().resolve_series("SERIES-gap004-series-bound")
     repo = SeriesRepository(context)
 
     repo.set_scoped_metadata(context.scope, "scope", "series")
 
-    assert repo.scope == StorageScope.series("gap004_series_bound")
+    assert repo.scope == StorageScope.series("SERIES-gap004-series-bound")
     assert repo.get_metadata("scope") == "series"
-    assert repo.db_path == isolated_agentpro_storage / "series" / "gap004_series_bound" / "series.db"
+    assert repo.db_path == isolated_agentpro_storage / "series" / "SERIES-gap004-series-bound" / "series.db"
 
 
 def test_project_repository_rejects_cross_project_scope(isolated_agentpro_storage) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project("gap004_project_a"))
+    repo = ProjectRepository(StorageResolver().resolve_project(
+        "PROJ-gap004-project-a", book_id="BOOK-gap004-project-a"
+    ))
 
     with pytest.raises(ProjectStorageError, match="record scope does not match"):
-        repo.set_scoped_metadata(StorageScope.project("gap004_project_b"), "bad", "value")
+        repo.set_scoped_metadata(StorageScope.project("PROJ-gap004-project-b"), "bad", "value")
 
 
 def test_project_repository_rejects_series_scope(isolated_agentpro_storage) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project("gap004_project_scope_type"))
+    repo = ProjectRepository(StorageResolver().resolve_project(
+        "PROJ-gap004-project-scope-type", book_id="BOOK-gap004-project-scope-type"
+    ))
 
     with pytest.raises(ProjectStorageError, match="record scope does not match"):
         repo.set_scoped_metadata(StorageScope.series("gap004_project_scope_type"), "bad", "value")
 
 
 def test_series_repository_rejects_cross_series_scope(isolated_agentpro_storage) -> None:
-    repo = SeriesRepository(StorageResolver().resolve_series("gap004_series_a"))
+    repo = SeriesRepository(StorageResolver().resolve_series("SERIES-gap004-series-a"))
 
     with pytest.raises(SeriesStorageError, match="record scope does not match"):
-        repo.set_scoped_metadata(StorageScope.series("gap004_series_b"), "bad", "value")
+        repo.set_scoped_metadata(StorageScope.series("SERIES-gap004-series-b"), "bad", "value")
 
 
 def test_series_repository_rejects_project_scope(isolated_agentpro_storage) -> None:
-    repo = SeriesRepository(StorageResolver().resolve_series("gap004_series_scope_type"))
+    repo = SeriesRepository(StorageResolver().resolve_series("SERIES-gap004-series-scope-type"))
 
     with pytest.raises(SeriesStorageError, match="record scope does not match"):
         repo.set_scoped_metadata(StorageScope.project("gap004_series_scope_type"), "bad", "value")
@@ -129,26 +135,26 @@ def test_independent_project_has_no_series_access(isolated_agentpro_storage) -> 
 def test_project_series_access_context_is_explicit_and_deterministic(
     isolated_agentpro_storage,
 ) -> None:
-    first = resolve_project_series_access_context("gap004_member_project", "gap004_member_series")
-    second = resolve_project_series_access_context("gap004_member_project", "gap004_member_series")
-    repo = ensure_series_repository_for_access(first, requested_series_id="gap004_member_series")
+    first = resolve_project_series_access_context("PROJ-gap004-member-project", "SERIES-gap004-member-series")
+    second = resolve_project_series_access_context("PROJ-gap004-member-project", "SERIES-gap004-member-series")
+    repo = ensure_series_repository_for_access(first, requested_series_id="SERIES-gap004-member-series")
 
     assert first == second
-    assert first.project_scope == StorageScope.project("gap004_member_project")
-    assert first.series_scope == StorageScope.series("gap004_member_series")
+    assert first.project_scope == StorageScope.project("PROJ-gap004-member-project")
+    assert first.series_scope == StorageScope.series("SERIES-gap004-member-series")
     assert first.to_dict() == {
         "project_scope": {
             "scope_type": "PROJECT",
-            "scope_id": "gap004_member_project",
+            "scope_id": "PROJ-gap004-member-project",
         },
         "series_scope": {
             "scope_type": "SERIES",
-            "scope_id": "gap004_member_series",
+            "scope_id": "SERIES-gap004-member-series",
         },
     }
     assert repo is not None
     assert repo.scope == first.series_scope
-    assert repo.db_path == isolated_agentpro_storage / "series" / "gap004_member_series" / "series.db"
+    assert repo.db_path == isolated_agentpro_storage / "series" / "SERIES-gap004-member-series" / "series.db"
 
 
 def test_project_series_access_rejects_requested_other_series(isolated_agentpro_storage) -> None:
@@ -173,7 +179,9 @@ def test_series_access_context_rejects_wrong_scope_types() -> None:
 
 
 def test_project_domain_records_store_repository_scope(isolated_agentpro_storage) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project("gap004_record_scope"))
+    repo = ProjectRepository(StorageResolver().resolve_project(
+        "PROJ-gap004-record-scope", book_id="BOOK-gap004-record-scope"
+    ))
     _reset_sqlite_file(repo.db_path)
 
     with repo.domain_transaction() as tx:
@@ -188,13 +196,13 @@ def test_project_domain_records_store_repository_scope(isolated_agentpro_storage
     assert repo.list_fact_record_scopes() == {
         "fact_scope": {
             "scope_type": "PROJECT",
-            "scope_id": "gap004_record_scope",
+            "scope_id": "PROJ-gap004-record-scope",
         }
     }
     assert repo.list_character_state_scopes() == {
         "state_scope": {
             "scope_type": "PROJECT",
-            "scope_id": "gap004_record_scope",
+            "scope_id": "PROJ-gap004-record-scope",
         }
     }
 
@@ -202,7 +210,9 @@ def test_project_domain_records_store_repository_scope(isolated_agentpro_storage
 def test_project_domain_transaction_rejects_mismatched_record_scope(
     isolated_agentpro_storage,
 ) -> None:
-    repo = ProjectRepository(StorageResolver().resolve_project("gap004_reject_record_scope"))
+    repo = ProjectRepository(StorageResolver().resolve_project(
+        "PROJ-gap004-reject-record-scope", book_id="BOOK-gap004-reject-record-scope"
+    ))
     _reset_sqlite_file(repo.db_path)
 
     with pytest.raises(ProjectStorageError, match="record scope does not match"):

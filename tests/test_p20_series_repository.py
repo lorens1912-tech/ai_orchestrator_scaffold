@@ -38,8 +38,8 @@ def test_series_storage_resolution_is_deterministic(isolated_agentpro_storage) -
 
 def test_two_series_get_separate_series_dbs(isolated_agentpro_storage) -> None:
     resolver = StorageResolver()
-    context_a = resolver.resolve_series("gap002_series_a")
-    context_b = resolver.resolve_series("gap002_series_b")
+    context_a = resolver.resolve_series("SERIES-gap002-a")
+    context_b = resolver.resolve_series("SERIES-gap002-b")
 
     assert context_a.database_path != context_b.database_path
     assert context_a.series_root != context_b.series_root
@@ -56,7 +56,7 @@ def test_two_series_get_separate_series_dbs(isolated_agentpro_storage) -> None:
 
 
 def test_series_repository_is_bound_to_one_context(isolated_agentpro_storage) -> None:
-    context = StorageResolver().resolve_series("gap002_bound_series")
+    context = StorageResolver().resolve_series("SERIES-gap002-bound")
     repo = SeriesRepository(context)
 
     repo.initialize()
@@ -65,7 +65,7 @@ def test_series_repository_is_bound_to_one_context(isolated_agentpro_storage) ->
     assert repo.db_path == context.database_path
     assert isinstance(repo.context, SeriesStorageContext)
     assert repo.get_series_identity() == {
-        "series_id": "gap002_bound_series",
+        "series_id": "SERIES-gap002-bound",
         "schema_version": SERIES_DB_SCHEMA_VERSION,
     }
 
@@ -76,8 +76,8 @@ def test_series_repository_is_bound_to_one_context(isolated_agentpro_storage) ->
 
 def test_write_to_series_a_is_not_visible_in_series_b(isolated_agentpro_storage) -> None:
     resolver = StorageResolver()
-    repo_a = SeriesRepository(resolver.resolve_series("gap002_isolated_a"))
-    repo_b = SeriesRepository(resolver.resolve_series("gap002_isolated_b"))
+    repo_a = SeriesRepository(resolver.resolve_series("SERIES-gap002-isolated-a"))
+    repo_b = SeriesRepository(resolver.resolve_series("SERIES-gap002-isolated-b"))
 
     repo_a.set_metadata("shared_fact", "series-a-only")
 
@@ -88,8 +88,8 @@ def test_write_to_series_a_is_not_visible_in_series_b(isolated_agentpro_storage)
 
 def test_series_repository_rejects_series_db_identity_mismatch(isolated_agentpro_storage) -> None:
     resolver = StorageResolver()
-    context_a = resolver.resolve_series("gap002_identity_a")
-    context_b = resolver.resolve_series("gap002_identity_b")
+    context_a = resolver.resolve_series("SERIES-gap002-identity-a")
+    context_b = resolver.resolve_series("SERIES-gap002-identity-b")
     repo_a = SeriesRepository(context_a)
     repo_a.initialize()
 
@@ -107,8 +107,10 @@ def test_series_repository_rejects_series_db_identity_mismatch(isolated_agentpro
 
 def test_project_and_series_repositories_use_separate_databases(isolated_agentpro_storage) -> None:
     resolver = StorageResolver()
-    project_context = resolver.resolve_book("gap002_project_a")
-    series_context = resolver.resolve_series("gap002_series_for_a")
+    project_context = resolver.resolve_project(
+        "PROJ-gap002-project-a", book_id="BOOK-gap002-project-a"
+    )
+    series_context = resolver.resolve_series("SERIES-gap002-for-a")
     project_repo = ProjectRepository(project_context)
     series_repo = SeriesRepository(series_context)
 
@@ -173,7 +175,7 @@ def test_series_resolver_rejects_path_traversal_and_storage_escape(
 
 
 def test_series_repository_initializes_sqlite_wal_and_foreign_keys(isolated_agentpro_storage) -> None:
-    repo = SeriesRepository(StorageResolver().resolve_series("gap002_sqlite"))
+    repo = SeriesRepository(StorageResolver().resolve_series("SERIES-gap002-sqlite"))
 
     repo.initialize()
 

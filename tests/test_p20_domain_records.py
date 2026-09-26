@@ -323,7 +323,9 @@ def test_project_and_series_records_bind_to_gap004_storage_scope(
     with pytest.raises(DomainContractError, match="series record scope"):
         series.require_scope(StorageScope.series("SERIES-other"))
 
-    project_repo = ProjectRepository(StorageResolver().resolve_project(str(project.project_id)))
+    project_repo = ProjectRepository(StorageResolver().resolve_project(
+        str(project.project_id), book_id=str(project.book_id)
+    ))
     project_repo.set_scoped_metadata(project.scope, "project_record", project.to_json())
     assert project_repo.get_metadata("project_record") == project.to_json()
     assert project_repo.db_path.is_relative_to(isolated_agentpro_storage)

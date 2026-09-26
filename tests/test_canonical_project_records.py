@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import replace
 
 import pytest
 import app.tools as tools
+import app.p20_core.canon_service as canon_service
 
 from tests.test_canonical_pipeline import pipeline, step, approve, commit, proposal_record, base, PROJECT, BOOK
 from tests.test_p20_memory_extraction_integrity import (
@@ -143,13 +145,19 @@ def test_mixed_guard_denial_preserves_whole_set(pipeline):
     assert repo.list_structured_memory_records() == before
 
 
-def test_mixed_sql_failure_rolls_back_every_record_and_history(pipeline):
+def test_mixed_sql_failure_rolls_back_every_record_and_history(pipeline, monkeypatch):
     client, repo, controls, _, _, _ = pipeline
     configure(controls)
-    with repo.connect() as conn:
-        conn.execute("CREATE TRIGGER abort_mixed_audit BEFORE INSERT ON project_metadata "
-                     "WHEN NEW.key LIKE 'canonical_commit.v1:%' BEGIN SELECT RAISE(ABORT, 'test audit failure'); END")
-    result = step(client)["canonical_change"]
+    original = canon_service._record_memory_event
+
+    def fail_commit_event(*args, **kwargs):
+        if kwargs.get("event_type") == "CANONICAL_COMMITTED":
+            raise sqlite3.IntegrityError("test audit failure")
+        return original(*args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(canon_service, "_record_memory_event", fail_commit_event)
+        result = step(client)["canonical_change"]
     assert result["status"] == "FAILED", result
     assert repo.list_structured_memory_records() == {}
     assert not any(k.startswith(("canonical_versions", "canonical_commit")) for k in repo.list_metadata())
@@ -161,7 +169,13 @@ def test_legacy_unknown_protection_and_derived_rebuild_remain_blocked(pipeline):
     assert "frozen" not in old.to_dict() and "author_locked" not in old.to_dict()
     with repo.domain_transaction() as tx:
         tx.add_structured_memory_record(old)
-    configure(controls)
+    def valid_legacy_update(_, payload):
+        records = mixed_records(payload, 1)
+        for record in records:
+            if record["record_type"] == "EVENT" and record["payload"]["event_id"] == str(old.record_id):
+                record["payload"]["version"] = 2
+        return records
+    controls["records"] = valid_legacy_update
     controls["version"] = 2
     result = step(client)["canonical_change"]
     assert result["status"] == "REJECTED", result

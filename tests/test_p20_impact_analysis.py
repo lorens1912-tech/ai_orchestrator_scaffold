@@ -19,7 +19,9 @@ from app.p20_core.series_memory import SeriesMembershipRecord
 
 @pytest.fixture
 def repo(isolated_agentpro_storage):
-    repository = ProjectRepository(StorageResolver().resolve_project("PROJ-impact"))
+    repository = ProjectRepository(
+        StorageResolver().resolve_project("PROJ-impact", book_id="BOOK-impact")
+    )
     repository.initialize()
     return repository
 
@@ -118,14 +120,20 @@ def test_insertion_order_does_not_change_result(repo):
     write(repo, *records)
     first = json.dumps(analyze_impact(repo, request()).to_dict(), sort_keys=True)
     # A second isolated physical root with the same logical project and graph.
-    other = ProjectRepository(StorageResolver(repo.context.storage_root / "other").resolve_project("PROJ-impact"))
+    other = ProjectRepository(
+        StorageResolver(repo.context.storage_root / "other").resolve_project(
+            "PROJ-impact", book_id="BOOK-impact"
+        )
+    )
     write(other, *reversed(records))
     assert json.dumps(analyze_impact(other, request()).to_dict(), sort_keys=True) == first
 
 
 def test_cross_project_scope_and_same_local_ids(repo):
     write(repo, edge("1", "FACT-b", "FACT-a"))
-    other = ProjectRepository(StorageResolver().resolve_project("PROJ-other"))
+    other = ProjectRepository(
+        StorageResolver().resolve_project("PROJ-other", book_id="BOOK-other")
+    )
     write(other, edge("2", "FACT-secret", "FACT-a", project="PROJ-other"))
     assert [i.entity_id for i in analyze_impact(repo, request()).impacts] == ["FACT-b"]
     with pytest.raises(ProjectStorageError):
@@ -189,7 +197,9 @@ def test_analysis_reuses_traversal_once_and_does_not_mutate(repo, monkeypatch):
 
 
 def test_missing_database_not_created(isolated_agentpro_storage):
-    repo = ProjectRepository(StorageResolver().resolve_project("PROJ-impact"))
+    repo = ProjectRepository(
+        StorageResolver().resolve_project("PROJ-impact", book_id="BOOK-impact")
+    )
     with pytest.raises(sqlite3.OperationalError):
         analyze_impact(repo, request())
     assert not repo.context.project_root.exists()

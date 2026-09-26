@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import sqlite3
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +12,7 @@ from openai.resources.responses.responses import Responses
 
 from app.model_policy import resolve_model
 from app.p20_core.context_runtime import ProjectExecutionContext, build_runtime_context_package
+import app.p20_core.model_provenance as model_provenance
 from app.p20_core.model_provenance import ModelInvocationAudit, InvocationRecoveryRequired, fingerprint, public_trace, recover_invocation
 from app.p20_core.project_repository import ProjectRepository, StorageResolver
 from app.p20_core.storage_paths import get_runs_root
@@ -148,17 +150,21 @@ def test_interruption_fencing_and_explicit_recovery(monkeypatch):
 
 def test_real_sql_failure_leaves_started_attempt(monkeypatch):
     repo, audit = make_audit()
-    def sdk(self, **kwargs):
-        with repo.connect() as connection:
-            connection.execute("CREATE TRIGGER fail_audit BEFORE UPDATE ON project_metadata "
-                "WHEN NEW.key LIKE 'model_invocation.v1:%' BEGIN SELECT RAISE(ABORT, 'synthetic disk failure'); END")
-        return sdk_response()
-    monkeypatch.setattr(Responses, 'create', sdk)
-    with pytest.raises(sqlite3.DatabaseError):
-        audit.call(prompt='Neutral', model='alias')
+    original_transaction = repo.model_invocation_transaction
+
+    @contextmanager
+    def fail_received_write(operation_id, *, connection=None):
+        with original_transaction(operation_id, connection=connection) as state:
+            yield state
+            if state.get('attempts') and state['attempts'][-1]['status'] == 'RECEIVED':
+                raise sqlite3.IntegrityError('synthetic disk failure')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Responses, 'create', lambda self, **kwargs: sdk_response())
+        patch.setattr(repo, 'model_invocation_transaction', fail_received_write)
+        with pytest.raises(sqlite3.DatabaseError, match='synthetic disk failure'):
+            audit.call(prompt='Neutral', model='alias')
     assert repo.list_model_invocations()[0]['attempts'][0]['status'] == 'STARTED'
-    with repo.connect() as connection:
-        connection.execute('DROP TRIGGER fail_audit')
     with pytest.raises(InvocationRecoveryRequired):
         audit.call(prompt='Neutral', model='alias')
 
@@ -396,25 +402,24 @@ def test_runtime_secrets_not_in_audit_or_artifacts(production_pipeline, monkeypa
 def test_sql_failure_during_research_validation_rolls_back_claims(setup, monkeypatch):
     seed(setup)
     repo = setup[1]
-    original = Responses.create
-    def sdk(self, **kwargs):
-        response = original(self, **kwargs)
-        with repo.connect() as connection:
-            connection.execute("CREATE TRIGGER fail_validation BEFORE UPDATE ON project_metadata "
-                "WHEN NEW.key LIKE 'model_invocation.v1:%' AND json_extract(NEW.value, '$.validation')='VALID' "
-                "BEGIN SELECT RAISE(ABORT, 'synthetic validation write failure'); END")
-        return response
-    monkeypatch.setattr(Responses, 'create', sdk)
-    with pytest.raises(sqlite3.DatabaseError):
-        run(setup, 'EXTRACT')
+    original_mark_validation = model_provenance.mark_validation
+
+    def fail_validated_write(repository, operation_id, status, *, connection=None):
+        if status == 'VALID':
+            raise sqlite3.IntegrityError('synthetic validation write failure')
+        return original_mark_validation(
+            repository, operation_id, status, connection=connection
+        )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(model_provenance, 'mark_validation', fail_validated_write)
+        with pytest.raises(sqlite3.DatabaseError, match='synthetic validation write failure'):
+            run(setup, 'EXTRACT')
     assert repo.read_research_state()['claims'] == {}
     assert repo.read_research_state()['operations']['extract']['status'] == 'RUNNING'
     assert repo.list_model_invocations()[0]['validation'] == 'NOT_PERFORMED'
-    with repo.connect() as connection:
-        connection.execute('DROP TRIGGER fail_validation')
     response = setup[0].post(BASE + '/research/operations/extract/recover', headers=setup[2])
     assert response.status_code == 200
-    monkeypatch.setattr(Responses, 'create', original)
     run(setup, 'EXTRACT')
     assert len(repo.read_research_state()['claims']) == 1
     assert len(repo.list_model_invocations()[0]['attempts']) == 1

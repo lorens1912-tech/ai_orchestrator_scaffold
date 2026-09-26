@@ -217,9 +217,9 @@ def test_secret_not_forwarded_to_p20_context_provider_or_audit(configured, monke
     ensure_test_book_bible(BOOK)
     observed = []
     original = executor.TOOLS["WRITE"]
-    def observed_provider(payload):
+    def observed_provider(payload, *, model_call=None):
         observed.append(json.dumps(payload))
-        return original(payload)
+        return original(payload, model_call=model_call)
     monkeypatch.setitem(executor.TOOLS, "WRITE", observed_provider)
     response = client.post("/agent/step", headers=headers(token), json={
         "mode": "WRITE", "project_id": PROJECT, "book_id": BOOK,

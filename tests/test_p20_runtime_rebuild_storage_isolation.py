@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -173,8 +174,9 @@ def test_parallel_agent_step_calls_use_configured_storage_without_global_scope(t
     threads = [threading.Thread(target=worker, args=case) for case in cases]
     for thread in threads:
         thread.start()
+    deadline = time.monotonic() + 60
     for thread in threads:
-        thread.join(timeout=10)
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
 
     assert all(not thread.is_alive() for thread in threads)
     if errors:

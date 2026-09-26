@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 
 import pytest
@@ -405,22 +406,25 @@ def test_unprovable_binding_becomes_needs_intervention(isolated_agentpro_storage
     assert "record" not in state
 
 
-def test_real_sqlite_failure_rolls_back_final_record(isolated_agentpro_storage):
+def test_real_sqlite_failure_rolls_back_final_record(isolated_agentpro_storage, monkeypatch):
     repo = repository(isolated_agentpro_storage)
     item = binding(repo)
     started = start_evaluation(repo, item)
-    repo.initialize()
-    with repo.connect() as conn:
-        conn.execute(
-            "CREATE TRIGGER reject_gap017_final BEFORE INSERT ON project_metadata "
-            "WHEN NEW.key LIKE 'evaluation.v1:%' AND instr(NEW.value, '\"record\"') > 0 "
-            "BEGIN SELECT RAISE(ABORT, 'injected GAP017 finalization failure'); END"
-        )
+    original_transaction = repo.evaluation_transaction
 
-    with pytest.raises(sqlite3.IntegrityError, match="injected GAP017"):
-        finalize_evaluation(
-            repo, item, attempt_token=started.attempt_token, decision="ACCEPT"
-        )
+    @contextmanager
+    def fail_final_record_write(operation_id, *, connection=None):
+        with original_transaction(operation_id, connection=connection) as state:
+            yield state
+            if "record" in state:
+                raise sqlite3.IntegrityError("injected GAP017 finalization failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(repo, "evaluation_transaction", fail_final_record_write)
+        with pytest.raises(sqlite3.IntegrityError, match="injected GAP017"):
+            finalize_evaluation(
+                repo, item, attempt_token=started.attempt_token, decision="ACCEPT"
+            )
 
     state = repo.get_evaluation_envelope(item.operation_id)
     assert state["execution_status"] == "RUNNING"

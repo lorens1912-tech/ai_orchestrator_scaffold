@@ -32,6 +32,98 @@ def task(package):
     return json.loads(item["content"])["input"]
 
 
+@pytest.mark.parametrize("resource", ["research", "proposal"])
+def test_operator_memory_history_get_does_not_initialize_storage(setup, monkeypatch, resource):
+    result = verified(setup)
+    proposal = propose(setup, result)
+    client, repo, headers, _controls = setup
+    with sqlite3.connect(repo.db_path) as connection:
+        before = connection.execute("SELECT key,value FROM project_metadata ORDER BY key").fetchall()
+
+    def forbidden_initialize(self):
+        raise AssertionError("history GET must not initialize storage")
+
+    from app.p20_core.project_repository import SystemRepository, SeriesRepository
+    for owner in (ProjectRepository, SystemRepository, SeriesRepository):
+        monkeypatch.setattr(owner, "initialize", forbidden_initialize)
+    path = (BASE + "/research/records/" + RID if resource == "research"
+            else BASE + "/proposals/" + proposal["proposal_id"])
+    response = client.get(path, headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["coverage"] == "MEMORY_PIPELINES_V1"
+    with sqlite3.connect(repo.db_path) as connection:
+        after = connection.execute("SELECT key,value FROM project_metadata ORDER BY key").fetchall()
+    assert after == before
+
+
+@pytest.mark.parametrize("resource", ["research", "proposal"])
+def test_operator_memory_history_get_has_no_sql_writes(setup, monkeypatch, resource):
+    from app.p20_core import project_repository as storage
+
+    result = verified(setup)
+    proposal = propose(setup, result)
+    client, repo, headers, _controls = setup
+    system = ensure_system_repository()
+    paths = (repo.db_path, system.db_path)
+
+    def snapshot():
+        result = []
+        for path in paths:
+            with sqlite3.connect(path) as connection:
+                dump = tuple(connection.iterdump())
+            result.append((dump, hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns))
+        return result
+
+    before = snapshot()
+    statements = []
+    original = storage._connect_repository_database
+
+    def traced_connection(**kwargs):
+        connection = original(**kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(storage, "_connect_repository_database", traced_connection)
+    path = (BASE + "/research/records/" + RID if resource == "research"
+            else BASE + "/proposals/" + proposal["proposal_id"])
+    for _ in range(2):
+        response = client.get(path, headers=headers)
+        assert response.status_code == 200, response.text
+    assert snapshot() == before
+    writes = [s for s in statements if s.lstrip().split()[0].upper() in {
+        "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "REPLACE",
+    } or s.upper().startswith("BEGIN IMMEDIATE")]
+    assert not writes, writes
+
+
+@pytest.mark.parametrize("resource", ["research", "proposal"])
+def test_operator_memory_history_get_refuses_legacy_without_migration(setup, resource):
+    client, repo, headers, _ = setup
+    with sqlite3.connect(repo.db_path) as conn:
+        conn.execute("UPDATE schema_version SET version=5 WHERE id=1")
+    before = repo.db_path.read_bytes()
+    path = (BASE + "/research/records/" + RID if resource == "research"
+            else BASE + "/proposals/missing-proposal")
+    for _ in range(2):
+        response = client.get(path, headers=headers)
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == "MIGRATION_REQUIRED"
+    assert repo.db_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("resource", ["research/records/missing", "proposals/missing"])
+def test_operator_memory_history_get_does_not_create_missing_project(setup, resource):
+    client, _repo, headers, _ = setup
+    project, book = "PROJ-history-missing", "BOOK-history-missing"
+    ensure_system_repository().bind_project(project, book)
+    context = StorageResolver().resolve_project(project, book_id=book)
+    assert not context.project_root.exists()
+    for _ in range(2):
+        response = client.get(f"/operator/projects/{project}/{resource}", headers=headers)
+        assert response.status_code == 404, response.text
+    assert not context.project_root.exists()
+
+
 @pytest.fixture
 def setup(isolated_agentpro_storage, tmp_path, monkeypatch):
     system = ensure_system_repository()
@@ -356,22 +448,30 @@ def test_semantic_verification_not_just_hashes(setup):
         research.verified_evidence(state, "verify")
 
 
-def test_failure_rollback_entire_approved_set(setup):
+def test_failure_rollback_entire_approved_set(setup, monkeypatch):
     setup[3]["count"] = 2
     result = verified(setup)
     proposal = propose(setup, result)
     approval(setup, proposal)
     repo = setup[1]
-    with repo.connect() as connection:
-        connection.execute("CREATE TRIGGER fail_second_research BEFORE INSERT ON project_structured_memory_records "
-                           "WHEN NEW.record_id='FACT-research-1' BEGIN SELECT RAISE(ABORT, 'synthetic disk fault'); END")
-    with pytest.raises(sqlite3.IntegrityError, match="synthetic disk fault"):
-        commit(setup, proposal)
+    original_record_event = ProjectRepository.record_memory_event
+    entity_events = {"count": 0}
+
+    def fail_second_entity_event(self, connection, **kwargs):
+        if kwargs.get("event_type") == "CANONICAL_ENTITY_CHANGED":
+            entity_events["count"] += 1
+            if entity_events["count"] == 2:
+                raise sqlite3.IntegrityError("synthetic disk fault")
+        return original_record_event(self, connection, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(ProjectRepository, "record_memory_event", fail_second_entity_event)
+        with pytest.raises(sqlite3.IntegrityError, match="synthetic disk fault"):
+            commit(setup, proposal)
+    assert entity_events["count"] == 2
     assert repo.list_structured_memory_records() == {}
     assert not repo.read_research_state()["decisions"]
     assert not any(k.startswith(("canonical_commit.v1:", "canonical_versions.v1:")) for k in repo.list_metadata())
-    with repo.connect() as connection:
-        connection.execute("DROP TRIGGER fail_second_research")
     receipt = commit(setup, proposal)
     assert len(receipt["resulting_versions"]) == 2
     assert commit(setup, proposal) == receipt

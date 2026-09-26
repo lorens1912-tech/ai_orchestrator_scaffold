@@ -36,6 +36,34 @@ def controlled_memory_transport_sdk_boundary(monkeypatch):
 
     def create(_self, **kwargs):
         prompt = json.loads(kwargs["input"])
+        if prompt.get("protocol") == "AGENTPRO_P20_WRITER_V1":
+            text = (
+                "Światło przesuwało się po pustym placu, gdy Marta zatrzymała rower przy starej "
+                "fontannie. Kamienne obrzeże było chłodne, a woda drżała od wiatru i rozbijała "
+                "odbicia okien na drobne, srebrne plamy. Czekała spokojnie, licząc uderzenia zegara "
+                "na wieży, lecz po trzecim dźwięku usłyszała szybkie kroki w wąskiej uliczce.\n\n"
+                "Jan wyszedł zza narożnika z mokrym płaszczem przewieszonym przez ramię. Nie przywitał "
+                "się od razu. Położył na kamieniu małe drewniane pudełko i cofnął dłoń, jakby przedmiot "
+                "parzył. Marta spojrzała na wyblakły znak na wieku. Znała go z listu, który matka ukryła "
+                "przed laty w kuchennej szufladzie.\n\n"
+                "— Skąd to masz? — zapytała.\n\n"
+                "— Z warsztatu przy moście. Właściciel kazał oddać je tobie przed zachodem słońca.\n\n"
+                "Marta uniosła wieko. W środku leżał mosiężny klucz i złożona kartka. Papier pachniał "
+                "dymem. Jedno zdanie, zapisane równym pismem, wskazywało zamknięte od dawna drzwi w "
+                "północnej części dworca. Jan obserwował jej twarz, ale nie zadawał pytań.\n\n"
+                "Z wieży popłynęło czwarte uderzenie. Marta schowała klucz do kieszeni, zapięła płaszcz "
+                "i poprowadziła rower w stronę mostu. Jan ruszył obok niej. Na drugim brzegu miasta "
+                "zapalały się pierwsze lampy, a ciemne okna dworca wyglądały tak, jakby ktoś już na nich "
+                "czekał."
+            )
+            return SimpleNamespace(
+                output_text=text,
+                model=kwargs["model"],
+                output=[],
+                id="response-writer-controlled",
+                _request_id="request-writer-controlled",
+                usage=SimpleNamespace(input_tokens=120, output_tokens=260, total_tokens=380),
+            )
         package = prompt["context_package"]
         task = next(item for item in package["included_items"] if item["layer"] == "TASK")
         payload = json.loads(task["content"])["input"]
@@ -74,7 +102,14 @@ def controlled_memory_transport_sdk_boundary(monkeypatch):
                 "precision_status": "ACCEPT",
                 "completeness_status": "ACCEPT",
             })
-        return SimpleNamespace(output_text=text, model=kwargs["model"], output=[])
+        return SimpleNamespace(
+            output_text=text,
+            model=kwargs["model"],
+            output=[],
+            id="response-memory-controlled",
+            _request_id="request-memory-controlled",
+            usage=SimpleNamespace(input_tokens=50, output_tokens=80, total_tokens=130),
+        )
 
     monkeypatch.setattr(Responses, "create", create)
 

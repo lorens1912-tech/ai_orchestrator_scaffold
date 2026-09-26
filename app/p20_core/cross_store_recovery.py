@@ -29,6 +29,7 @@ RECOVERY_RECORD_SCHEMA_VERSION = 1
 _OPERATION_KEY_PREFIX = "cross_store_operation.v1:"
 _PROJECT_WRITE_KEY_PREFIX = "cross_store_project_write.v1:"
 _AUDIT_KEY_PREFIX = "cross_store_audit.v1:"
+_LEDGER_CHAPTER_OPERATION = "CHAPTER_ARTIFACT_LINEAGE_V2"
 
 
 class CrossStoreRecoveryError(RuntimeError):
@@ -361,7 +362,7 @@ class CrossStoreRecoveryService:
         created = False
         with self._project_repository.cross_store_operation_transaction(
             plan.operation_id
-        ) as (state, _conn):
+        ) as (state, conn):
             if state:
                 self._validate_record_identity(state, plan)
             else:
@@ -410,6 +411,24 @@ class CrossStoreRecoveryService:
                         "payload": plan.durable_payload(),
                     }
                 )
+                if self._ledger_covered(plan):
+                    self._project_repository.record_memory_event(
+                        conn,
+                        operation_namespace="CROSS_STORE_OPERATION",
+                        operation_id=plan.operation_id,
+                        event_slot=("intent",), event_type="ARTIFACT_WRITE_INTENDED",
+                        actor={"kind": "SYSTEM", "id": "F004_CROSS_STORE_RECOVERY",
+                               "evidence_ref": None},
+                        run_id=plan.run_id, step_id=plan.step_id,
+                        structured_payload={
+                            "operation_id": plan.operation_id,
+                            "input_hash": plan.input_hash,
+                            "artifact_type": plan.operation_type,
+                            "confined_path": plan.artifact_relative_path,
+                            "expected_hash": plan.artifact_sha256,
+                            "status": "INTENDED", "outcome": "PENDING",
+                        },
+                    )
             result = dict(state)
         return created, result
 
@@ -610,8 +629,96 @@ class CrossStoreRecoveryService:
                     raise RecoveryInterventionRequired(
                         "final audit does not match durable intent"
                     )
+            if self._ledger_covered(plan):
+                final_path = self._artifact_path(
+                    plan.artifact_relative_path, plan.artifact_root,
+                )
+                if not final_path.is_file() or self._file_hash(final_path) != plan.artifact_sha256:
+                    raise RecoveryInterventionRequired(
+                        "artifact confirmation requires the expected durable file"
+                    )
+                self._project_repository.record_memory_event(
+                    conn,
+                    operation_namespace="CROSS_STORE_OPERATION",
+                    operation_id=plan.operation_id,
+                    event_slot=("confirmed",), event_type="ARTIFACT_WRITE_CONFIRMED",
+                    actor={"kind": "SYSTEM", "id": "F004_CROSS_STORE_RECOVERY",
+                           "evidence_ref": None},
+                    run_id=plan.run_id, step_id=plan.step_id,
+                    structured_payload={
+                        "operation_id": plan.operation_id,
+                        "input_hash": plan.input_hash,
+                        "artifact_type": plan.operation_type,
+                        "confined_path": plan.artifact_relative_path,
+                        "expected_hash": plan.artifact_sha256,
+                        "observed_hash": plan.artifact_sha256,
+                        "status": "CONFIRMED", "outcome": "COMMITTED",
+                    },
+                )
+                if plan.operation_type == _LEDGER_CHAPTER_OPERATION:
+                    self._record_chapter_events(conn, plan)
             result = dict(state)
         return result
+
+    @staticmethod
+    def _ledger_covered(plan: CrossStoreOperationPlan) -> bool:
+        return (
+            plan.operation_type == _LEDGER_CHAPTER_OPERATION
+            or plan.series_snapshot is not None
+        )
+
+    def _record_chapter_events(
+        self, connection, plan: CrossStoreOperationPlan,
+    ) -> None:
+        try:
+            document = json.loads(plan.artifact_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RecoveryInterventionRequired(
+                "chapter lineage artifact is not valid JSON"
+            ) from exc
+        chapter_id = str(document.get("chapter_id") or "")
+        versions = document.get("versions")
+        if not chapter_id or not isinstance(versions, list) or not versions:
+            raise RecoveryInterventionRequired(
+                "chapter lineage artifact has no version history"
+            )
+        for version in versions:
+            number = version.get("version")
+            if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+                raise RecoveryInterventionRequired("chapter version is invalid")
+            evaluation = version.get("source_evaluation")
+            quality_ref = None
+            if isinstance(evaluation, dict):
+                quality_ref = evaluation.get("artifact_path")
+            if quality_ref is None and number == document.get("version"):
+                final_evaluation = document.get("quality_evaluation")
+                if isinstance(final_evaluation, dict):
+                    quality_ref = final_evaluation.get("artifact_path")
+            status = version.get("status")
+            if status not in {"SUPERSEDED", "ACCEPTED"}:
+                raise RecoveryInterventionRequired("chapter version status is invalid")
+            self._project_repository.record_memory_event(
+                connection,
+                operation_namespace="CROSS_STORE_OPERATION",
+                operation_id=plan.operation_id,
+                event_slot=("chapter-version", chapter_id, str(number)),
+                event_type="CHAPTER_VERSION_RECORDED",
+                actor={"kind": "SYSTEM", "id": "F005_CHAPTER_LINEAGE",
+                       "evidence_ref": None},
+                run_id=plan.run_id, step_id=version.get("step_id") or plan.step_id,
+                structured_payload={
+                    "operation_id": plan.operation_id,
+                    "input_hash": plan.input_hash,
+                    "artifact_type": plan.operation_type,
+                    "confined_path": plan.artifact_relative_path,
+                    "observed_hash": plan.artifact_sha256,
+                    "chapter_id": chapter_id, "version": number,
+                    "status": status,
+                    "text_hash": str(version.get("artifact_hash") or ""),
+                    "quality_evaluation_ref": quality_ref,
+                    "outcome": "RECORDED",
+                },
+            )
 
     def _verify_committed(
         self,
@@ -637,6 +744,36 @@ class CrossStoreRecoveryService:
             raise RecoveryInterventionRequired(
                 "committed operation audit is missing or inconsistent"
             )
+        if self._ledger_covered(plan):
+            required_slots: list[tuple[str, ...]] = [("intent",), ("confirmed",)]
+            if plan.operation_type == _LEDGER_CHAPTER_OPERATION:
+                try:
+                    chapter_document = json.loads(plan.artifact_bytes.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise RecoveryInterventionRequired(
+                        "chapter lineage artifact is not valid JSON"
+                    ) from exc
+                chapter_id = str(chapter_document.get("chapter_id") or "")
+                versions = chapter_document.get("versions")
+                if not chapter_id or not isinstance(versions, list):
+                    raise RecoveryInterventionRequired(
+                        "chapter lineage artifact is incomplete"
+                    )
+                required_slots.extend(
+                    ("chapter-version", chapter_id, str(version.get("version")))
+                    for version in versions
+                )
+            for event_slot in required_slots:
+                classification = self._project_repository.classify_required_memory_event(
+                    operation_namespace="CROSS_STORE_OPERATION",
+                    operation_id=plan.operation_id,
+                    event_slot=event_slot,
+                    baseline_locator="metadata:" + _OPERATION_KEY_PREFIX + plan.operation_id,
+                )
+                if classification == "MEMORY_LEDGER_NEEDS_INTERVENTION":
+                    raise RecoveryInterventionRequired(
+                        "committed operation is missing a required Memory Ledger event"
+                    )
         if plan.series_snapshot is not None and plan.series_id is not None:
             resolver = StorageResolver(self._project_repository.context.storage_root)
             series_repository = SeriesRepository(resolver.resolve_series(plan.series_id))

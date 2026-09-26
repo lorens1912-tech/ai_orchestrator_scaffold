@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -20,6 +21,7 @@ from app.p20_core.project_repository import (
 from app.p20_core.series_memory import (
     SeriesMembershipRecord, SeriesStateKind, SeriesStateRecord,
 )
+import app.p20_core.canon_service as canon_service
 import app.tools as tools
 
 
@@ -160,6 +162,51 @@ def step(env, *, run="run-series", step_id="step-series", retry=False,
     data = response.json()
     assert data["quality_gate"]["decision"] == "ACCEPT", data
     return data["canonical_change"]
+
+
+def test_series_history_get_is_read_only_and_scope_isolated(series_pipeline, monkeypatch):
+    from app.p20_core import project_repository as storage
+
+    env = series_pipeline
+    change = step(env)
+    paths = [env[key].db_path for key in ("system", "project", "series")]
+
+    def snapshot():
+        result = []
+        for path in paths:
+            with sqlite3.connect(path) as conn:
+                dump = tuple(conn.iterdump())
+            result.append((dump, hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns))
+        return result
+
+    before = snapshot()
+    statements = []
+    original = storage._connect_repository_database
+
+    def traced_connection(**kwargs):
+        conn = original(**kwargs)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    def forbidden_initialize(self):
+        raise AssertionError("history GET must not initialize storage")
+
+    monkeypatch.setattr(storage, "_connect_repository_database", traced_connection)
+    for owner in (storage.SystemRepository, ProjectRepository, SeriesRepository):
+        monkeypatch.setattr(owner, "initialize", forbidden_initialize)
+    for _ in range(2):
+        response = env["client"].get(base(change), headers=env["headers"])
+        assert response.status_code == 200, response.text
+        assert response.json()["canonical_commit"] is True
+        assert response.json()["memory_event_refs"]
+    denied = env["client"].get(
+        base(change).replace(PROJECT, "PROJ-foreign-history"), headers=env["headers"],
+    )
+    assert denied.status_code == 403
+    assert snapshot() == before
+    assert not [s for s in statements if s.lstrip().split()[0].upper() in {
+        "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "REPLACE",
+    } or s.upper().startswith("BEGIN IMMEDIATE")]
 
 
 def proposal_record(env, change):
@@ -318,15 +365,22 @@ def test_series_missing_impact_blocks_final_guard_without_mutation(series_pipeli
     assert env["series"].list_series_canon(env["access"])[0].state["version"] == 1
 
 
-def test_series_commit_audit_failure_rolls_back_state_history_and_receipt(series_pipeline):
+def test_series_commit_audit_failure_rolls_back_state_history_and_receipt(
+    series_pipeline, monkeypatch,
+):
     env = series_pipeline
-    with env["series"].connect() as connection:
-        connection.execute(
-            "CREATE TRIGGER reject_series_commit_audit BEFORE INSERT ON series_metadata "
-            "WHEN NEW.key LIKE 'canonical_commit.v1:%' "
-            "BEGIN SELECT RAISE(ABORT, 'synthetic series audit failure'); END"
+    original_record_event = canon_service._record_memory_event
+
+    def fail_commit_audit(*args, **kwargs):
+        if kwargs.get("event_type") == "CANONICAL_COMMITTED":
+            raise sqlite3.IntegrityError("synthetic series audit failure")
+        return original_record_event(*args, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(canon_service, "_record_memory_event", fail_commit_audit)
+        failed = step(
+            env, run="run-series-audit-failure", step_id="step-series-audit-failure",
         )
-    failed = step(env, run="run-series-audit-failure", step_id="step-series-audit-failure")
     assert failed["status"] == "FAILED"
     assert env["series"].list_series_canon(env["access"]) == ()
     assert env["series"].get_metadata("canonical_versions.v1:FACT:" + FACT) is None

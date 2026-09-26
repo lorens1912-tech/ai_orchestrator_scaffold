@@ -91,10 +91,20 @@ class ModelInvocationAudit:
                                                    if k != "event"})
                 state["status"] = event["status"]
 
-    def call(self, *, prompt, model, temperature=_ABSENT):
+    def call(self, *, prompt, model, temperature=_ABSENT, response_schema=None):
         from app.llm_provider_openai import call_text
+        schema_binding = None
+        if response_schema is not None:
+            schema_binding = {
+                "name": response_schema.get("name"),
+                "strict": response_schema.get("strict"),
+                "schema_hash": fingerprint(response_schema.get("schema")),
+            }
         request = dict(input_hash=hashlib.sha256(prompt.encode()).hexdigest(), model=model,
-                       parameters={} if temperature is _ABSENT else {"temperature": temperature},
+                       parameters={
+                           **({} if temperature is _ABSENT else {"temperature": temperature}),
+                           **({} if schema_binding is None else {"response_schema": schema_binding}),
+                       },
                        api_mode=(os.getenv("OPENAI_API_MODE", "responses") or "responses").strip().lower())
         if temperature is _ABSENT:
             temperature = None
@@ -121,7 +131,13 @@ class ModelInvocationAudit:
                     and state["validation"] != "INVALID"):
                 raise InvocationRecoveryRequired("MODEL_RESULT_PERSISTENCE_INCOMPLETE")
         try:
-            result = call_text(prompt=prompt, model=model, temperature=temperature, observer=self.event)
+            result = call_text(
+                prompt=prompt,
+                model=model,
+                temperature=temperature,
+                observer=self.event,
+                response_schema=response_schema,
+            )
         except Exception:
             with self.repository.model_invocation_transaction(self.operation_id) as state:
                 if not state["attempts"]:

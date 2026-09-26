@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from typing import Any, Callable, Dict, Optional
 
@@ -37,7 +38,8 @@ def _reported(response) -> dict:
 
 
 def call_text(prompt: str, model: str, temperature: Optional[float] = None, *,
-              observer: Callable[[dict], None] | None = None) -> Dict[str, Any]:
+              observer: Callable[[dict], None] | None = None,
+              response_schema: dict[str, Any] | None = None) -> Dict[str, Any]:
     """Existing transport, with an explicit per-call durable audit observer.
 
     SENT records the exact parameter kwargs; content is represented by its hash.
@@ -51,11 +53,42 @@ def call_text(prompt: str, model: str, temperature: Optional[float] = None, *,
     temp_sent = temperature
     sdk_error = None
 
+    structured_format = None
+    if response_schema is not None:
+        if (
+            not isinstance(response_schema, dict)
+            or set(response_schema) != {"name", "strict", "schema"}
+            or not isinstance(response_schema.get("name"), str)
+            or not response_schema["name"].strip()
+            or type(response_schema.get("strict")) is not bool
+            or not isinstance(response_schema.get("schema"), dict)
+        ):
+            raise ValueError("response_schema is invalid")
+        # Round-trip before the SDK boundary so unsupported Python values never
+        # become provider parameters or nondeterministic audit material.
+        structured_format = json.loads(json.dumps({
+            "type": "json_schema",
+            "name": response_schema["name"],
+            "strict": response_schema["strict"],
+            "schema": response_schema["schema"],
+        }, sort_keys=True, separators=(",", ":"), allow_nan=False))
+
     def invoke(with_temp):
         nonlocal sdk_error
         kwargs = {"model": model}
         kwargs.update({"messages": [{"role": "user", "content": prompt}]} if api_mode == "chat"
                       else {"input": prompt})
+        if structured_format is not None:
+            if api_mode == "chat":
+                kwargs["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        key: structured_format[key]
+                        for key in ("name", "strict", "schema")
+                    },
+                }
+            else:
+                kwargs["text"] = {"format": structured_format}
         if with_temp and temperature is not None:
             kwargs["temperature"] = temperature
         sent = {k: v for k, v in kwargs.items() if k not in {"input", "messages"}}

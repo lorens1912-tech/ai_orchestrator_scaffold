@@ -87,6 +87,8 @@ def _append(
 
 def _drop_project_ledger(repository: ProjectRepository) -> None:
     with repository.connect() as connection:
+        for table in ("gap018_manuscript_head", "gap018_source_head", "gap018_records"):
+            connection.execute(f"DROP TABLE {table}")
         for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'memory_event%'"
         ).fetchall():

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+from dataclasses import asdict
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -471,3 +472,270 @@ def propose_research(project_id: str, body: ResearchProposalRequest, principal=D
     from app.p20_core.canon_service import prepare_research_proposal
     return _research_operation(principal, lambda operator, registry: prepare_research_proposal(
         _project(registry, project_id), **body.model_dump()))
+
+
+# GAP-018 keeps HTTP parsing here; all book lifecycle rules live in P20 services.
+def _gap018_project(registry, project_id: str, book_id: str):
+    if registry.get(project_id) != book_id:
+        raise OperatorError("OPERATOR_PROJECT_ACCESS_DENIED", 403)
+    return _project(registry, project_id)
+
+
+def _gap018_operation(principal, operation, *, read_only=False):
+    from app.p20_core.book_qa import BookQAIntegrityError
+    from app.p20_core.candidate_master import CandidateIntegrityError
+    from app.p20_core.cross_store_recovery import CrossStoreRecoveryError
+    from app.p20_core.gap018_receipts import Gap018RequestConflict
+    from app.p20_core.manuscript_version import ManuscriptBlocked, ManuscriptIntegrityError
+    from app.p20_core.source_master import SourceContractError
+    try:
+        return _with_operator(principal, operation, read_only=read_only)
+    except ManuscriptBlocked as exc:
+        status = 409 if any(item.code == "MANUSCRIPT_HEAD_CHANGED" for item in exc.blockers) else 422
+        raise HTTPException(status, [asdict(item) for item in exc.blockers]) from None
+    except Gap018RequestConflict:
+        raise HTTPException(409, "GAP018_REQUEST_ID_CONFLICT") from None
+    except (ManuscriptIntegrityError, BookQAIntegrityError, CandidateIntegrityError,
+            SourceContractError, CrossStoreRecoveryError):
+        raise HTTPException(409, "GAP018_INTEGRITY_CONFLICT") from None
+    except ValueError:
+        raise HTTPException(422, "GAP018_INVALID_REQUEST") from None
+
+
+class Gap018ChapterBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    chapter_id: str
+    version: int
+    artifact_ref: str
+    artifact_sha256: str
+    text_sha256: str
+    evaluation_id: str
+    evaluation_record_hash: str
+    chapter_commit_operation_id: str
+    canonical_commit_operation_id: str
+
+
+class Gap018CompositionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    version: str
+    project_id: str
+    book_id: str
+    ordered_chapter_ids: list[str]
+
+
+class Gap018ManuscriptBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    version: int
+    chapter_versions: list[Gap018ChapterBody]
+    composition: Gap018CompositionBody
+    book_bible_source_ref: str
+    book_bible_version: str
+    book_bible_hash: str
+    canon_source_ref: str
+    canon_revision: str
+    canon_snapshot_hash: str
+    source_language: str
+    request_id: str
+    parent_manuscript_id: str | None = None
+    series_id: str | None = None
+    composition_policy_version: str = "GAP018_UTF8_DOUBLE_LF_V1"
+
+
+@router.post("/projects/{project_id}/books/{book_id}/manuscripts")
+def gap018_seal_manuscript(project_id: str, book_id: str, body: Gap018ManuscriptBody,
+                           principal=Depends(authenticated_operator)):
+    from app.p20_core.manuscript_version import (
+        ChapterSelection, CompositionDeclaration, SealRequest, seal_manuscript,
+    )
+
+    def operation(_operator, registry):
+        data = body.model_dump()
+        data["project_id"], data["book_id"] = project_id, book_id
+        data["chapter_versions"] = tuple(ChapterSelection(**item) for item in data["chapter_versions"])
+        composition = data["composition"]
+        composition["ordered_chapter_ids"] = tuple(composition["ordered_chapter_ids"])
+        data["composition"] = CompositionDeclaration(**composition)
+        return seal_manuscript(_gap018_project(registry, project_id, book_id),
+                               SealRequest(**data)).to_dict()
+    return _gap018_operation(principal, operation)
+
+
+@router.get("/projects/{project_id}/books/{book_id}/manuscripts/{manuscript_id}")
+def gap018_read_manuscript(project_id: str, book_id: str, manuscript_id: str,
+                           principal=Depends(authenticated_operator)):
+    from app.p20_core.manuscript_version import load_manuscript
+    def operation(_operator, registry):
+        repository = _gap018_project(registry, project_id, book_id)
+        if (manuscript_id.startswith("MV-") and len(manuscript_id) == 67
+                and repository.get_cross_store_operation_readonly(
+                    "gap018-manuscript-" + manuscript_id[3:]) is None):
+            raise OperatorError("MANUSCRIPT_NOT_FOUND", 404)
+        return load_manuscript(repository, manuscript_id).to_dict()
+    return _gap018_operation(principal, operation, read_only=True)
+
+
+class Gap018BookQABody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    manuscript_id: str
+    content_hash: str
+    manifest_hash: str
+    request_id: str
+    policy_version: str
+    policy_hash: str
+    criteria_version: str
+    criteria_hash: str
+    model: str | None = None
+    reevaluation_of: str | None = None
+
+
+@router.post("/projects/{project_id}/books/{book_id}/book-qa")
+def gap018_run_book_qa(project_id: str, book_id: str, body: Gap018BookQABody,
+                       principal=Depends(authenticated_operator)):
+    from app.model_policy import resolve_model
+    from app.p20_core.book_qa_execution import (
+        BookQARecoveryRequired, BookQARunRequest, BookQATransportError,
+        run_book_qa,
+    )
+    from app.p20_core.gap018_receipts import Gap018RequestConflict
+    # A model call must not hold the system credential/registry transaction.
+    repository = _gap018_operation(principal, lambda _operator, registry:
+                                   _gap018_project(registry, project_id, book_id))
+    decision = resolve_model(body.model)
+    if not decision.allowlist_ok and os.getenv("MODEL_POLICY_MODE", "PERMISSIVE").upper() == "STRICT":
+        raise HTTPException(422, "BOOK_QA_MODEL_POLICY_DENIED")
+    request = BookQARunRequest(project_id, book_id, body.manuscript_id,
+                               body.content_hash, body.manifest_hash, body.request_id,
+                               decision.requested_model, decision.effective_model,
+                               body.reevaluation_of, body.policy_version,
+                               body.policy_hash, body.criteria_version,
+                               body.criteria_hash)
+    try:
+        return run_book_qa(repository, request, routing={**decision.provenance,
+            "request_sources": {"body": body.model_dump(include={"model"}, exclude_unset=True)}}).to_dict()
+    except Gap018RequestConflict:
+        raise HTTPException(409, "GAP018_REQUEST_ID_CONFLICT") from None
+    except BookQARecoveryRequired as exc:
+        raise HTTPException(409, {"status": "RECOVERY_REQUIRED",
+                                  "operation_id": exc.operation_id}) from None
+    except BookQATransportError as exc:
+        raise HTTPException(503, {"status": "MODEL_TRANSPORT_FAILED",
+                                  "operation_id": exc.operation_id}) from None
+    except (ValueError, TypeError, KeyError, RuntimeError) as exc:
+        raise HTTPException(422, "BOOK_QA_EXECUTION_FAILED:" + type(exc).__name__) from None
+
+
+@router.get("/projects/{project_id}/books/{book_id}/book-qa/{qa_id}")
+def gap018_read_book_qa(project_id: str, book_id: str, qa_id: str,
+                        principal=Depends(authenticated_operator)):
+    from app.p20_core.book_qa import load_book_qa_report
+    def operation(_operator, registry):
+        repository = _gap018_project(registry, project_id, book_id)
+        if (qa_id.startswith("BQA-") and len(qa_id) == 68
+                and repository.get_cross_store_operation_readonly(
+                    "gap018-book-qa-" + qa_id[4:]) is None):
+            raise OperatorError("BOOK_QA_NOT_FOUND", 404)
+        return load_book_qa_report(repository, qa_id).to_dict()
+    return _gap018_operation(principal, operation, read_only=True)
+
+
+class Gap018CandidateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    manuscript_id: str
+    content_hash: str
+    manifest_hash: str
+    qa_id: str
+    report_hash: str
+    candidate_version: int
+    request_id: str
+    parent_candidate_id: str | None = None
+
+
+@router.post("/projects/{project_id}/books/{book_id}/candidate-masters")
+def gap018_create_candidate(project_id: str, book_id: str, body: Gap018CandidateBody,
+                            principal=Depends(authenticated_operator)):
+    from app.p20_core.candidate_master import CandidateRequest, create_candidate
+    return _gap018_operation(principal, lambda _operator, registry: create_candidate(
+        _gap018_project(registry, project_id, book_id),
+        CandidateRequest(project_id=project_id, book_id=book_id, **body.model_dump())).to_dict())
+
+
+@router.get("/projects/{project_id}/books/{book_id}/candidate-masters/{candidate_id}")
+def gap018_read_candidate(project_id: str, book_id: str, candidate_id: str,
+                          principal=Depends(authenticated_operator)):
+    from app.p20_core.candidate_master import load_candidate
+    def operation(_operator, registry):
+        repository = _gap018_project(registry, project_id, book_id)
+        if (candidate_id.startswith("CM-") and len(candidate_id) == 67
+                and repository.get_cross_store_operation_readonly(
+                    "gap018-candidate-" + candidate_id[3:]) is None):
+            raise OperatorError("CANDIDATE_NOT_FOUND", 404)
+        return load_candidate(repository, candidate_id).to_dict()
+    return _gap018_operation(principal, operation, read_only=True)
+
+
+@router.post("/projects/{project_id}/books/{book_id}/candidate-masters/{candidate_id}/review")
+def gap018_review_candidate(project_id: str, book_id: str, candidate_id: str,
+                            principal=Depends(authenticated_operator)):
+    from app.p20_core.source_promotion import issue_source_review
+    return _gap018_operation(principal, lambda operator, registry: issue_source_review(
+        _gap018_project(registry, project_id, book_id), candidate_id, operator,
+        ttl_seconds=challenge_ttl_seconds()))
+
+
+class Gap018SourceHeadBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    source_master_id: str | None
+    version: int | None
+    head_hash: str | None
+
+
+class Gap018DecisionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    request_id: str
+    challenge_id: str
+    decision: Literal["APPROVE", "REJECT"]
+    candidate_hash: str
+    manuscript_hash: str
+    manifest_hash: str
+    qa_report_hash: str
+    expected_head: Gap018SourceHeadBody
+
+
+@router.post("/projects/{project_id}/books/{book_id}/candidate-masters/{candidate_id}/decision")
+def gap018_decide_candidate(project_id: str, book_id: str, candidate_id: str,
+                            body: Gap018DecisionBody, principal=Depends(authenticated_operator)):
+    from app.p20_core.source_promotion import record_source_decision
+    result = _gap018_operation(principal, lambda operator, registry: record_source_decision(
+        _gap018_project(registry, project_id, book_id), candidate_id,
+        body.model_dump(), operator))
+    if result.get("status") == "SOURCE_CONFLICT":
+        raise HTTPException(409, result)
+    return result
+
+
+@router.get("/projects/{project_id}/books/{book_id}/source-masters/current")
+def gap018_current_source(project_id: str, book_id: str,
+                          principal=Depends(authenticated_operator)):
+    from app.p20_core.source_promotion import current_source_master
+    result = _gap018_operation(principal, lambda _operator, registry: current_source_master(
+        _gap018_project(registry, project_id, book_id)), read_only=True)
+    return None if result is None else asdict(result)
+
+
+@router.get("/projects/{project_id}/books/{book_id}/source-masters/{source_master_id}")
+def gap018_read_source(project_id: str, book_id: str, source_master_id: str,
+                      principal=Depends(authenticated_operator)):
+    from app.p20_core.source_promotion import load_source_master
+    return _gap018_operation(principal, lambda _operator, registry: asdict(load_source_master(
+        _gap018_project(registry, project_id, book_id), source_master_id)), read_only=True)
+
+
+@router.post("/projects/{project_id}/books/{book_id}/source-masters/operations/{operation_id}/recover")
+def gap018_recover_source(project_id: str, book_id: str, operation_id: str,
+                         principal=Depends(authenticated_operator)):
+    from app.p20_core.source_promotion import recover_source_promotion
+    result = _gap018_operation(principal, lambda _operator, registry: recover_source_promotion(
+        _gap018_project(registry, project_id, book_id), operation_id))
+    if result.get("status") == "SOURCE_CONFLICT":
+        raise HTTPException(409, result)
+    return result

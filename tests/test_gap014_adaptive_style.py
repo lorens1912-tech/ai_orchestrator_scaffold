@@ -287,6 +287,8 @@ def test_project_schema_v4_migrates_to_adaptive_style_storage(isolated_agentpro_
     repo = repository("PROJ-style-migration", "BOOK-style-migration")
     repo.set_metadata("preserved", "yes")
     with repo.connect() as connection:
+        for table in ("gap018_manuscript_head", "gap018_source_head", "gap018_records"):
+            connection.execute(f"DROP TABLE {table}")
         for table in (
             "style_library_profiles",
             "book_style_dna",

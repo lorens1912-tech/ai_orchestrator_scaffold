@@ -30,6 +30,14 @@ _OPERATION_KEY_PREFIX = "cross_store_operation.v1:"
 _PROJECT_WRITE_KEY_PREFIX = "cross_store_project_write.v1:"
 _AUDIT_KEY_PREFIX = "cross_store_audit.v1:"
 _LEDGER_CHAPTER_OPERATION = "CHAPTER_ARTIFACT_LINEAGE_V2"
+_LEDGER_MANUSCRIPT_OPERATION = "MANUSCRIPT_VERSION_V1"
+_LEDGER_GAP018_OPERATIONS = frozenset({
+    _LEDGER_MANUSCRIPT_OPERATION,
+    "BOOK_QA_REPORT_V1",
+    "CANDIDATE_MASTER_V1",
+    "AUTHOR_APPROVAL_V1",
+    "SOURCE_MASTER_V1",
+})
 
 
 class CrossStoreRecoveryError(RuntimeError):
@@ -308,6 +316,16 @@ class CrossStoreRecoveryService:
             self._record_attempt(plan.operation_id, "TECHNICAL_RETRY", retry=True)
             self._inject(FaultPoint.DURING_RETRY)
         return self._run(plan)
+
+    def verify_committed_readonly(self, operation_id: str) -> dict[str, Any]:
+        """Verify a committed project artifact without recovery or error writes."""
+        record = self._project_repository.get_cross_store_operation_readonly(operation_id)
+        if record is None or record.get("status") != RecoveryStatus.COMMITTED.value:
+            raise CrossStoreRecoveryError("cross-store operation is not committed")
+        plan = CrossStoreOperationPlan.from_record(record)
+        self._validate_plan_scope(plan)
+        self._verify_committed(plan, record, read_only=True)
+        return record
 
     def recover(self, operation_id: str) -> dict[str, Any]:
         record = self._project_repository.get_cross_store_operation(operation_id)
@@ -664,6 +682,7 @@ class CrossStoreRecoveryService:
     def _ledger_covered(plan: CrossStoreOperationPlan) -> bool:
         return (
             plan.operation_type == _LEDGER_CHAPTER_OPERATION
+            or plan.operation_type in _LEDGER_GAP018_OPERATIONS
             or plan.series_snapshot is not None
         )
 
@@ -724,6 +743,8 @@ class CrossStoreRecoveryService:
         self,
         plan: CrossStoreOperationPlan,
         record: Mapping[str, Any],
+        *,
+        read_only: bool = False,
     ) -> None:
         self._validate_record_identity(record, plan)
         if set(record.get("planned_writes") or ()) != set(
@@ -737,9 +758,9 @@ class CrossStoreRecoveryService:
             raise RecoveryInterventionRequired(
                 "committed operation artifact is missing or has an unexpected hash"
             )
-        audit_value = self._project_repository.get_metadata(
-            _AUDIT_KEY_PREFIX + plan.operation_id
-        )
+        read_metadata = (self._project_repository.get_metadata_readonly if read_only
+                         else self._project_repository.get_metadata)
+        audit_value = read_metadata(_AUDIT_KEY_PREFIX + plan.operation_id)
         if audit_value is None or json.loads(audit_value).get("input_hash") != plan.input_hash:
             raise RecoveryInterventionRequired(
                 "committed operation audit is missing or inconsistent"

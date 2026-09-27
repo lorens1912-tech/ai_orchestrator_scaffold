@@ -8,7 +8,7 @@ import sqlite3
 import stat
 import time
 from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from enum import Enum
@@ -62,7 +62,7 @@ from app.p20_core.memory_ledger import (
 )
 
 
-PROJECT_DB_SCHEMA_VERSION = 6
+PROJECT_DB_SCHEMA_VERSION = 7
 PROJECT_DB_FILENAME = "project.db"
 SERIES_DB_SCHEMA_VERSION = 4
 SERIES_DB_FILENAME = "series.db"
@@ -1744,7 +1744,7 @@ def _memory_ledger_bootstrap_preflight(
     from app.p20_core.domain_records import DomainId, DomainNamespace
 
     if scope_type == "PROJECT":
-        _validate_project_schema_v6(conn)
+        _validate_project_schema_v7(conn)
         preflight_metadata_table = "project_metadata"
     elif scope_type == "SERIES":
         _validate_series_schema_v4(conn)
@@ -2942,6 +2942,33 @@ _PROJECT_BASE_TABLE_CONTRACTS = {
     ),
 }
 
+_GAP018_RECORD_KINDS = frozenset({
+    "CHALLENGE", "CHALLENGE_USE", "REQUEST", "APPROVAL", "PROMOTION",
+    "PROMOTION_TERMINAL", "SOURCE", "CANDIDATE", "CANDIDATE_STATE", "MANUSCRIPT",
+    "MANUSCRIPT_REQUEST_RESULT", "QA_RUN_RESULT",
+})
+
+_GAP018_TABLE_CONTRACTS = {
+    "gap018_records": (
+        (("project_id", "TEXT", 1, 1), ("book_id", "TEXT", 1, 2),
+         ("record_kind", "TEXT", 1, 3), ("record_id", "TEXT", 1, 4),
+         ("payload_hash", "TEXT", 1, 0), ("payload_json", "TEXT", 1, 0)),
+        ("PRIMARY KEY (project_id, book_id, record_kind, record_id)",),
+    ),
+    "gap018_source_head": (
+        (("project_id", "TEXT", 1, 1), ("book_id", "TEXT", 1, 2),
+         ("source_master_id", "TEXT", 1, 0), ("version", "INTEGER", 1, 0),
+         ("head_hash", "TEXT", 1, 0)),
+        ("PRIMARY KEY (project_id, book_id)",),
+    ),
+    "gap018_manuscript_head": (
+        (("project_id", "TEXT", 1, 1), ("book_id", "TEXT", 1, 2),
+         ("manuscript_id", "TEXT", 1, 0), ("version", "INTEGER", 1, 0),
+         ("manifest_hash", "TEXT", 1, 0)),
+        ("PRIMARY KEY (project_id, book_id)",),
+    ),
+}
+
 _PROJECT_EXPLICIT_INDEX_CONTRACTS = {
     "edges_source": "CREATE INDEX edges_source ON edges(scope_type, scope_id, source_id, edge_id)",
     "edges_target": "CREATE INDEX edges_target ON edges(scope_type, scope_id, target_id, edge_id)",
@@ -3352,20 +3379,23 @@ def _apply_project_schema_v5_to_v6(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE project_identity SET schema_version = 6 WHERE id = 1")
 
 
-def _validate_project_schema_v6_step(conn: sqlite3.Connection) -> None:
+def _validate_project_schema_v6_step(
+    conn: sqlite3.Connection, *, expected_version: int = 6,
+    extra_tables: tuple[str, ...] = (),
+) -> None:
     _validate_project_base_schema(conn)
     _validate_no_authoritative_base_triggers(
         conn, tables=_PROJECT_BASE_TABLE_CONTRACTS,
     )
     validate_memory_ledger_schema(conn, scope_type=ScopeType.PROJECT.value)
     _validate_exact_user_table_set(
-        conn, (*_PROJECT_BASE_TABLE_CONTRACTS, "memory_events", "memory_event_entities"),
+        conn, (*_PROJECT_BASE_TABLE_CONTRACTS, "memory_events", "memory_event_entities", *extra_tables),
     )
     identity = _validated_identity_singleton(
         conn,
         table="project_identity",
         identity_columns=("project_id", "book_id"),
-        expected_version=PROJECT_DB_SCHEMA_VERSION,
+        expected_version=expected_version,
         error_message="project identity schema version is invalid",
     )
     try:
@@ -3388,7 +3418,110 @@ def _validate_project_schema_v6_step(conn: sqlite3.Connection) -> None:
 
 def _validate_project_schema_v6(conn: sqlite3.Connection) -> None:
     _validate_project_schema_v6_step(conn)
-    if _read_schema_version(conn) != PROJECT_DB_SCHEMA_VERSION:
+    if _read_schema_version(conn) != 6:
+        raise SchemaMigrationError("project schema version is invalid")
+
+
+def _create_gap018_tables(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS gap018_records ("
+        "project_id TEXT NOT NULL, book_id TEXT NOT NULL, "
+        "record_kind TEXT NOT NULL, record_id TEXT NOT NULL, "
+        "payload_hash TEXT NOT NULL, payload_json TEXT NOT NULL, "
+        "PRIMARY KEY (project_id, book_id, record_kind, record_id))"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS gap018_source_head ("
+        "project_id TEXT NOT NULL, book_id TEXT NOT NULL, "
+        "source_master_id TEXT NOT NULL, version INTEGER NOT NULL, "
+        "head_hash TEXT NOT NULL, PRIMARY KEY (project_id, book_id))"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS gap018_manuscript_head ("
+        "project_id TEXT NOT NULL, book_id TEXT NOT NULL, "
+        "manuscript_id TEXT NOT NULL, version INTEGER NOT NULL, "
+        "manifest_hash TEXT NOT NULL, PRIMARY KEY (project_id, book_id))"
+    )
+
+
+def _apply_project_schema_v6_to_v7(conn: sqlite3.Connection) -> None:
+    _validate_project_schema_v6(conn)
+    _create_gap018_tables(conn)
+    conn.execute("UPDATE project_identity SET schema_version = 7 WHERE id = 1")
+
+
+def _validate_project_schema_v7_step(conn: sqlite3.Connection) -> None:
+    _validate_project_schema_v6_step(
+        conn, expected_version=7, extra_tables=tuple(_GAP018_TABLE_CONTRACTS),
+    )
+    for table, (columns, fragments) in _GAP018_TABLE_CONTRACTS.items():
+        _validate_table_contract(conn, table=table, columns=columns, sql_fragments=fragments)
+    identity = conn.execute("SELECT project_id,book_id FROM project_identity WHERE id=1").fetchone()
+    for row in conn.execute(
+        "SELECT project_id,book_id,record_kind,record_id,payload_hash,payload_json FROM gap018_records"
+    ).fetchall():
+        try:
+            payload = json.loads(str(row["payload_json"]))
+        except json.JSONDecodeError as exc:
+            raise SchemaMigrationError("GAP-018 record JSON is invalid") from exc
+        if ((row["project_id"], row["book_id"]) != (identity["project_id"], identity["book_id"])
+                or hashlib.sha256(str(row["payload_json"]).encode("utf-8")).hexdigest()
+                != row["payload_hash"]
+                or not isinstance(payload, dict)
+                or payload.get("project_id") != identity["project_id"]
+                or payload.get("book_id") != identity["book_id"]
+                or payload.get("schema_version") != 1
+                or payload.get("record_kind") != row["record_kind"]
+                or payload.get("record_id") != row["record_id"]
+                or row["record_kind"] not in _GAP018_RECORD_KINDS
+                or not isinstance(payload.get("value"), dict)):
+            raise SchemaMigrationError("GAP-018 record scope or hash is invalid")
+    for row in conn.execute(
+        "SELECT project_id,book_id,source_master_id,version,head_hash FROM gap018_source_head"
+    ).fetchall():
+        if ((row["project_id"], row["book_id"]) != (identity["project_id"], identity["book_id"])
+                or not row["source_master_id"] or type(row["version"]) is not int
+                or row["version"] < 1 or len(str(row["head_hash"])) != 64):
+            raise SchemaMigrationError("GAP-018 current Source head is invalid")
+        source = conn.execute(
+            "SELECT payload_json FROM gap018_records WHERE project_id=? AND book_id=? "
+            "AND record_kind='SOURCE' AND record_id=?",
+            (row["project_id"], row["book_id"], row["source_master_id"]),
+        ).fetchone()
+        source_value = (None if source is None else
+                        json.loads(str(source["payload_json"])).get("value", {}))
+        if (not isinstance(source_value, dict)
+                or source_value.get("source_master_id") != row["source_master_id"]
+                or source_value.get("version") != row["version"]
+                or source_value.get("artifact_hash") != row["head_hash"]
+                or source_value.get("status") != "SOURCE_COMMITTED"
+                or source_value.get("approved_by_user") is not True):
+            raise SchemaMigrationError("GAP-018 current Source has no matching committed record")
+    for row in conn.execute(
+        "SELECT project_id,book_id,manuscript_id,version,manifest_hash FROM gap018_manuscript_head"
+    ).fetchall():
+        if ((row["project_id"], row["book_id"]) != (identity["project_id"], identity["book_id"])
+                or not row["manuscript_id"] or type(row["version"]) is not int
+                or row["version"] < 1 or len(str(row["manifest_hash"])) != 64):
+            raise SchemaMigrationError("GAP-018 current Manuscript head is invalid")
+        manuscript = conn.execute(
+            "SELECT payload_json FROM gap018_records WHERE project_id=? AND book_id=? "
+            "AND record_kind='MANUSCRIPT' AND record_id=?",
+            (row["project_id"], row["book_id"], row["manuscript_id"]),
+        ).fetchone()
+        value = (None if manuscript is None else
+                 json.loads(str(manuscript["payload_json"])).get("value", {}))
+        if (not isinstance(value, dict)
+                or value.get("manuscript_id") != row["manuscript_id"]
+                or value.get("version") != row["version"]
+                or value.get("manifest_hash") != row["manifest_hash"]
+                or value.get("status") != "SEALED"):
+            raise SchemaMigrationError("GAP-018 current Manuscript has no matching sealed record")
+
+
+def _validate_project_schema_v7(conn: sqlite3.Connection) -> None:
+    _validate_project_schema_v7_step(conn)
+    if _read_schema_version(conn) != 7:
         raise SchemaMigrationError("project schema version is invalid")
 
 
@@ -3423,6 +3556,13 @@ PROJECT_DB_MIGRATIONS = (
         apply=_apply_project_schema_v5_to_v6,
         validate=_validate_project_schema_v6_step,
         validate_reached=_validate_project_schema_v6,
+    ),
+    SchemaMigration(
+        source_version=6,
+        target_version=7,
+        apply=_apply_project_schema_v6_to_v7,
+        validate=_validate_project_schema_v7_step,
+        validate_reached=_validate_project_schema_v7,
     ),
 )
 
@@ -4036,7 +4176,7 @@ class ProjectRepository:
             conn = self._memory_ledger_read_connection()
             try:
                 conn.execute("BEGIN")
-                _validate_project_schema_v6(conn)
+                _validate_project_schema_v7(conn)
                 identity = conn.execute("SELECT project_id, book_id FROM project_identity WHERE id=1").fetchone()
                 if identity is None or (identity["project_id"], identity["book_id"]) != (
                     self.context.project_id, self.context.book_id,
@@ -4103,7 +4243,7 @@ class ProjectRepository:
                 error_type=ProjectStorageError,
             )
             if not new_store:
-                _validate_project_schema_v6(conn)
+                _validate_project_schema_v7(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS project_identity (
@@ -4149,9 +4289,10 @@ class ProjectRepository:
             _create_adaptive_style_tables(conn)
             self._ensure_identity(conn)
             _create_project_memory_ledger_tables(conn)
+            _create_gap018_tables(conn)
             if new_store:
                 self._activate_empty_memory_ledger(conn)
-            _validate_project_schema_v6(conn)
+            _validate_project_schema_v7(conn)
 
     def _ensure_identity(self, conn: sqlite3.Connection) -> None:
         row = conn.execute(
@@ -5185,6 +5326,11 @@ class ProjectRepository:
         value = self.get_metadata("cross_store_operation.v1:" + operation_id)
         return None if value is None else dict(json.loads(value))
 
+    def get_cross_store_operation_readonly(self, operation_id: str) -> dict[str, Any] | None:
+        operation_id = _normalize_identifier(operation_id, "operation_id")
+        value = self.get_metadata_readonly("cross_store_operation.v1:" + operation_id)
+        return None if value is None else dict(json.loads(value))
+
     def list_cross_store_operations(self) -> tuple[dict[str, Any], ...]:
         self.initialize()
         with self.connect() as conn:
@@ -5292,6 +5438,179 @@ class ProjectRepository:
                 },
             )
         return decision
+
+    @contextmanager
+    def gap018_transaction(self):
+        """Short project-local transaction for request receipts and Source CAS."""
+        self.initialize()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._require_memory_ledger_active(conn)
+            yield conn
+
+    def get_gap018_record(self, kind: str, record_id: str, *, connection=None) -> dict[str, Any] | None:
+        if kind not in _GAP018_RECORD_KINDS:
+            raise ProjectStorageError("GAP-018 record kind is invalid")
+        record_id = _normalize_identifier(record_id, "GAP-018 record ID")
+        if connection is None:
+            with self.connect(read_only=True) as conn:
+                return self.get_gap018_record(kind, record_id, connection=conn)
+        row = connection.execute(
+            "SELECT payload_json FROM gap018_records WHERE project_id=? AND book_id=? "
+            "AND record_kind=? AND record_id=?",
+            (self.context.project_id, self.context.book_id, kind, record_id),
+        ).fetchone()
+        return None if row is None else dict(json.loads(str(row["payload_json"]))["value"])
+
+    def gap018_candidate_rejected(self, candidate_id: str, *, connection=None) -> bool:
+        if connection is None:
+            with self.connect(read_only=True) as conn:
+                return self.gap018_candidate_rejected(candidate_id, connection=conn)
+        rows = connection.execute(
+            "SELECT payload_json FROM gap018_records WHERE project_id=? AND book_id=? "
+            "AND record_kind='CANDIDATE_STATE'",
+            (self.context.project_id, self.context.book_id),
+        ).fetchall()
+        return any(
+            (value := json.loads(str(row["payload_json"]))["value"]).get("candidate_id") == candidate_id
+            and value.get("status") == "REJECTED_BY_AUTHOR"
+            for row in rows
+        )
+
+    def put_gap018_record(self, kind: str, record_id: str, value: Mapping[str, Any], *, connection) -> None:
+        if kind not in _GAP018_RECORD_KINDS:
+            raise ProjectStorageError("GAP-018 record kind is invalid")
+        record_id = _normalize_identifier(record_id, "GAP-018 record ID")
+        if not isinstance(value, Mapping):
+            raise ProjectStorageError("GAP-018 record must be a mapping")
+        envelope = {
+            "schema_version": 1,
+            "project_id": self.context.project_id,
+            "book_id": self.context.book_id,
+            "record_kind": kind,
+            "record_id": record_id,
+            "value": dict(value),
+        }
+        raw = json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                         allow_nan=False)
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        existing = connection.execute(
+            "SELECT payload_hash FROM gap018_records WHERE project_id=? AND book_id=? "
+            "AND record_kind=? AND record_id=?",
+            (self.context.project_id, self.context.book_id, kind, record_id),
+        ).fetchone()
+        if existing is not None:
+            if existing["payload_hash"] != digest:
+                raise ProjectStorageError("GAP-018 record ID conflict")
+            return
+        connection.execute(
+            "INSERT INTO gap018_records(project_id,book_id,record_kind,record_id,payload_hash,payload_json) "
+            "VALUES(?,?,?,?,?,?)",
+            (self.context.project_id, self.context.book_id, kind, record_id, digest, raw),
+        )
+
+    def update_gap018_promotion(
+        self, operation_id: str, expected: Mapping[str, Any], value: Mapping[str, Any], *, connection,
+    ) -> None:
+        """CAS the mutable technical state; approval and other records remain immutable."""
+        operation_id = _normalize_identifier(operation_id, "GAP-018 operation ID")
+        row = connection.execute(
+            "SELECT payload_hash,payload_json FROM gap018_records WHERE project_id=? AND book_id=? "
+            "AND record_kind='PROMOTION' AND record_id=?",
+            (self.context.project_id, self.context.book_id, operation_id),
+        ).fetchone()
+        if row is None or json.loads(str(row["payload_json"])).get("value") != dict(expected):
+            raise ProjectStorageError("GAP-018 promotion state changed")
+        envelope = {
+            "schema_version": 1, "project_id": self.context.project_id,
+            "book_id": self.context.book_id, "record_kind": "PROMOTION",
+            "record_id": operation_id, "value": dict(value),
+        }
+        raw = json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                         allow_nan=False)
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        changed = connection.execute(
+            "UPDATE gap018_records SET payload_hash=?,payload_json=? WHERE project_id=? "
+            "AND book_id=? AND record_kind='PROMOTION' AND record_id=? AND payload_hash=?",
+            (digest, raw, self.context.project_id, self.context.book_id, operation_id,
+             row["payload_hash"]),
+        ).rowcount
+        if changed != 1:
+            raise ProjectStorageError("GAP-018 promotion state CAS failed")
+
+    def get_gap018_source_head(self, *, connection=None) -> tuple[str | None, int | None, str | None]:
+        if connection is None:
+            with self.connect(read_only=True) as conn:
+                return self.get_gap018_source_head(connection=conn)
+        row = connection.execute(
+            "SELECT source_master_id,version,head_hash FROM gap018_source_head "
+            "WHERE project_id=? AND book_id=?",
+            (self.context.project_id, self.context.book_id),
+        ).fetchone()
+        return (None, None, None) if row is None else (
+            str(row["source_master_id"]), int(row["version"]), str(row["head_hash"]),
+        )
+
+    def cas_gap018_source_head(
+        self, expected: tuple[str | None, int | None, str | None],
+        new: tuple[str, int, str], *, connection,
+    ) -> bool:
+        """Call only inside gap018_transaction after the Source F-004 commit."""
+        if self.get_gap018_source_head(connection=connection) != expected:
+            return False
+        source = self.get_gap018_record("SOURCE", new[0], connection=connection)
+        if source is None or source.get("artifact_hash") != new[2] or source.get("version") != new[1]:
+            raise ProjectStorageError("Source head requires a matching durable Source record")
+        if expected == (None, None, None):
+            connection.execute(
+                "INSERT INTO gap018_source_head(project_id,book_id,source_master_id,version,head_hash) "
+                "VALUES(?,?,?,?,?)",
+                (self.context.project_id, self.context.book_id, *new),
+            )
+        else:
+            connection.execute(
+                "UPDATE gap018_source_head SET source_master_id=?,version=?,head_hash=? "
+                "WHERE project_id=? AND book_id=?",
+                (*new, self.context.project_id, self.context.book_id),
+            )
+        return True
+
+    def get_gap018_manuscript_head(self, *, connection=None) -> tuple[str | None, int | None, str | None]:
+        if connection is None:
+            with self.connect(read_only=True) as conn:
+                return self.get_gap018_manuscript_head(connection=conn)
+        row = connection.execute(
+            "SELECT manuscript_id,version,manifest_hash FROM gap018_manuscript_head "
+            "WHERE project_id=? AND book_id=?",
+            (self.context.project_id, self.context.book_id),
+        ).fetchone()
+        return (None, None, None) if row is None else (
+            str(row["manuscript_id"]), int(row["version"]), str(row["manifest_hash"]),
+        )
+
+    def cas_gap018_manuscript_head(
+        self, expected: tuple[str | None, int | None, str | None],
+        new: tuple[str, int, str], *, connection,
+    ) -> bool:
+        if self.get_gap018_manuscript_head(connection=connection) != expected:
+            return False
+        record = self.get_gap018_record("MANUSCRIPT", new[0], connection=connection)
+        if (record is None or record.get("manifest_hash") != new[2]
+                or record.get("version") != new[1] or record.get("status") != "SEALED"):
+            raise ProjectStorageError("Manuscript head requires a durable sealed record")
+        if expected == (None, None, None):
+            connection.execute(
+                "INSERT INTO gap018_manuscript_head(project_id,book_id,manuscript_id,version,manifest_hash) "
+                "VALUES(?,?,?,?,?)",
+                (self.context.project_id, self.context.book_id, *new),
+            )
+        else:
+            connection.execute(
+                "UPDATE gap018_manuscript_head SET manuscript_id=?,version=?,manifest_hash=? "
+                "WHERE project_id=? AND book_id=?",
+                (*new, self.context.project_id, self.context.book_id),
+            )
+        return True
 
     def get_metadata_readonly(self, key: str) -> str | None:
         with self.connect(read_only=True) as conn:

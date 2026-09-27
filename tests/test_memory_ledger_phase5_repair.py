@@ -643,6 +643,8 @@ def test_public_append_untouched_event_reopens_and_retries_idempotently(
 
 def _drop_to_project_v5(repository: ProjectRepository) -> None:
     with repository.connect() as connection:
+        for table in ("gap018_manuscript_head", "gap018_source_head", "gap018_records"):
+            connection.execute(f"DROP TABLE {table}")
         for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'memory_event%'"
         ).fetchall():
@@ -1731,7 +1733,7 @@ def test_b3_c6_real_sqlite_internal_table_remains_accepted(
 def test_b3_c7_schema_versions_require_exact_integer_storage(
     isolated_agentpro_storage, scope: str, target: str, stored_kind: str,
 ) -> None:
-    expected_version = 6 if scope == "PROJECT" else 4
+    expected_version = 7 if scope == "PROJECT" else 4
     stored: object = (
         expected_version + 0.5
         if stored_kind == "fractional"
@@ -1760,7 +1762,7 @@ def test_b3_c7_sqlite_integer_affinity_remains_compatible(
         isolated_agentpro_storage, scope, scope.lower() + "-c7-affinity",
     )
     repository.initialize()
-    expected_version = 6 if scope == "PROJECT" else 4
+    expected_version = 7 if scope == "PROJECT" else 4
     _metadata, identity, _literal = _base_schema_names(scope)
     table = "schema_version" if target == "schema_version" else identity
     column = "version" if target == "schema_version" else "schema_version"

@@ -188,6 +188,12 @@ def _project_event(
 
 
 def _drop_ledger(conn: sqlite3.Connection, *, metadata_table: str, identity_table: str, version: int) -> None:
+    # The fixture rewinds a newly initialized project to its historical P5
+    # shape. GAP-018 tables belong to P7 and cannot remain in that P5 fixture.
+    if identity_table == "project_identity":
+        conn.execute("DROP TABLE IF EXISTS gap018_source_head")
+        conn.execute("DROP TABLE IF EXISTS gap018_manuscript_head")
+        conn.execute("DROP TABLE IF EXISTS gap018_records")
     for trigger in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'memory_event%'"
     ).fetchall():
@@ -369,7 +375,7 @@ def test_project_v5_migration_creates_verified_backup_and_bootstraps(isolated_ag
     migrated = repo.migrate_schema(
         backup_path=backup, maintenance_confirmed=True, release_head="TEST-HEAD",
     )
-    assert migrated.current_version == PROJECT_DB_SCHEMA_VERSION == 6
+    assert migrated.current_version == PROJECT_DB_SCHEMA_VERSION == 7
     assert backup.exists()
     with pytest.raises(MemoryLedgerNotActive):
         repo.get_memory_event("MEV-" + "0" * 64)

@@ -860,6 +860,8 @@ def test_context_hash_is_deterministic_for_same_state_and_input(repo) -> None:
 
 def test_project_schema_v3_migrates_to_context_package_storage(repo) -> None:
     with repo.connect() as connection:
+        for table in ("gap018_manuscript_head", "gap018_source_head", "gap018_records"):
+            connection.execute(f"DROP TABLE {table}")
         connection.execute("DROP TABLE context_packages")
         connection.execute("DROP TABLE memory_event_entities")
         connection.execute("DROP TABLE memory_events")

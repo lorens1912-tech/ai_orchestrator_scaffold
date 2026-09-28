@@ -107,6 +107,12 @@ def _required_text(value: Any, field_name: str) -> str:
     return value
 
 
+def _content_text(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ContextBuilderError(f"{field_name} is required")
+    return value
+
+
 def _optional_text(value: Any, field_name: str) -> str | None:
     if value is None:
         return None
@@ -506,7 +512,7 @@ class ContextCandidate:
         representations = {}
         for key, value in self.representations.items():
             representation = _coerce_enum(RepresentationType, key, "representation_type")
-            representations[representation] = _required_text(value, "representation content")
+            representations[representation] = _content_text(value, "representation content")
         object.__setattr__(self, "representations", MappingProxyType(representations))
         for name in RANKING_DIMENSIONS:
             object.__setattr__(self, name, _optional_unit_score(getattr(self, name), name))
@@ -606,8 +612,9 @@ class ContextItem(_Serializable):
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "entity_id", _domain_id(self.entity_id, "entity_id"))
-        for name in ("entity_type", "reason", "content_hash", "content"):
+        for name in ("entity_type", "reason", "content_hash"):
             object.__setattr__(self, name, _required_text(getattr(self, name), name))
+        object.__setattr__(self, "content", _content_text(self.content, "content"))
         object.__setattr__(self, "source_ref", _optional_text(self.source_ref, "source_ref"))
         object.__setattr__(self, "layer", _coerce_enum(ContextLayer, self.layer, "layer"))
         object.__setattr__(self, "representation_type", _coerce_enum(

@@ -38,6 +38,10 @@ _LEDGER_GAP018_OPERATIONS = frozenset({
     "AUTHOR_APPROVAL_V1",
     "SOURCE_MASTER_V1",
 })
+_LEDGER_GAP019_OPERATIONS = frozenset({
+    "TRANSLATION_BIBLE_V1", "TRANSLATION_UNIT_V1", "TRANSLATION_VERSION_V1",
+    "TRANSLATION_QA_V1", "TRANSLATION_CANDIDATE_V1", "TARGET_MASTER_V1",
+})
 
 
 class CrossStoreRecoveryError(RuntimeError):
@@ -683,6 +687,7 @@ class CrossStoreRecoveryService:
         return (
             plan.operation_type == _LEDGER_CHAPTER_OPERATION
             or plan.operation_type in _LEDGER_GAP018_OPERATIONS
+            or plan.operation_type in _LEDGER_GAP019_OPERATIONS
             or plan.series_snapshot is not None
         )
 

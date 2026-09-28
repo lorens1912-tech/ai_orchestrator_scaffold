@@ -191,6 +191,8 @@ def _drop_ledger(conn: sqlite3.Connection, *, metadata_table: str, identity_tabl
     # The fixture rewinds a newly initialized project to its historical P5
     # shape. GAP-018 tables belong to P7 and cannot remain in that P5 fixture.
     if identity_table == "project_identity":
+        for table in ("translation_request_receipts", "translation_heads", "translation_records"):
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.execute("DROP TABLE IF EXISTS gap018_source_head")
         conn.execute("DROP TABLE IF EXISTS gap018_manuscript_head")
         conn.execute("DROP TABLE IF EXISTS gap018_records")
@@ -375,7 +377,7 @@ def test_project_v5_migration_creates_verified_backup_and_bootstraps(isolated_ag
     migrated = repo.migrate_schema(
         backup_path=backup, maintenance_confirmed=True, release_head="TEST-HEAD",
     )
-    assert migrated.current_version == PROJECT_DB_SCHEMA_VERSION == 7
+    assert migrated.current_version == PROJECT_DB_SCHEMA_VERSION == 8
     assert backup.exists()
     with pytest.raises(MemoryLedgerNotActive):
         repo.get_memory_event("MEV-" + "0" * 64)

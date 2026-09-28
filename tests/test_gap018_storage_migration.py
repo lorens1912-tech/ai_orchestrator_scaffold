@@ -22,7 +22,8 @@ def _legacy_p6_repository(storage_root):
         "status": "SYNTHETIC_LEGACY_RECORD",
     }))
     with sqlite3.connect(repository.db_path) as connection:
-        for table in ("gap018_records", "gap018_source_head", "gap018_manuscript_head"):
+        for table in ("gap018_records", "gap018_source_head", "gap018_manuscript_head",
+                      "translation_records", "translation_heads", "translation_request_receipts"):
             connection.execute(f"DROP TABLE IF EXISTS {table}")
         connection.execute("UPDATE schema_version SET version=6 WHERE id=1")
         connection.execute("UPDATE project_identity SET schema_version=6 WHERE id=1")
@@ -42,9 +43,9 @@ def test_controlled_p6_to_p7_preserves_existing_identity_metadata_and_ledger(iso
     assert repo.inspect_schema().migration_needed
     with pytest.raises(ProjectStorageError):
         repo.initialize()
-    upgraded = repo.migrate_schema()
+    upgraded = repo.migrate_schema(target_version=7)
     assert upgraded.current_version == 7
-    assert not upgraded.migration_needed
+    assert repo.migrate_schema().current_version == 8
     assert series.db_path.read_bytes() == series_bytes_before
     reopened = ProjectRepository(StorageResolver(isolated_agentpro_storage).resolve_project(
         repo.context.project_id, book_id=repo.context.book_id,
@@ -52,7 +53,7 @@ def test_controlled_p6_to_p7_preserves_existing_identity_metadata_and_ledger(iso
     assert reopened.get_project_identity() == {
         "project_id": repo.context.project_id,
         "book_id": repo.context.book_id,
-        "schema_version": 7,
+        "schema_version": 8,
     }
     assert json.loads(reopened.get_metadata_readonly("model_invocation.v1:legacy-proof"))[
         "status"
@@ -66,17 +67,17 @@ def test_controlled_p6_to_p7_preserves_existing_identity_metadata_and_ledger(iso
         assert connection.execute("SELECT COUNT(*) FROM gap018_records").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM gap018_source_head").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM gap018_manuscript_head").fetchone()[0] == 0
-    assert reopened.inspect_schema().current_version == 7
+    assert reopened.inspect_schema().current_version == 8
     assert not reopened.inspect_schema().migration_needed
     assert series.db_path.read_bytes() == series_bytes_before
 
 
-def test_new_project_has_p7_without_migration(isolated_agentpro_storage):
+def test_new_project_has_p8_without_migration(isolated_agentpro_storage):
     repo = ProjectRepository(StorageResolver(isolated_agentpro_storage).resolve_project(
         "PROJ-GAP018-NEW", book_id="BOOK-GAP018-NEW",
     ))
     repo.initialize()
-    assert repo.get_schema_version() == 7
+    assert repo.get_schema_version() == 8
     with repo.connect(read_only=True) as connection:
         assert connection.execute("SELECT COUNT(*) FROM gap018_source_head").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM gap018_manuscript_head").fetchone()[0] == 0

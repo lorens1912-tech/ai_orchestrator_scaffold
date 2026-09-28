@@ -1154,7 +1154,15 @@ def execute_p20(*args, **kwargs) -> List[str]:
         elif mode_id not in TOOLS:
             result: Dict[str, Any] = {"ok": False, "error": f"UNKNOWN_MODE_TOOL: {mode_id}", "tool": mode_id}
         else:
-            if mode_id == "WRITE":
+            if mode_id == "TRANSLATE":
+                from app.p20_core.translation_contract import TranslationContractError
+
+                if execution_context is None:
+                    raise TranslationContractError("TRANSLATION_PROJECT_CONTEXT_REQUIRED", 422)
+                # The generic /agent/step route has no operator authentication.
+                # GAP-019 execution is owned by the authenticated operator API.
+                raise TranslationContractError("TRANSLATION_OPERATOR_ENDPOINT_REQUIRED", 403)
+            elif mode_id == "WRITE":
                 model_call = None
                 if (
                     step_execution_context is not None

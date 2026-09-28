@@ -206,7 +206,7 @@ def test_valid_seal_is_deterministic_and_reopens(case):
     assert seal_manuscript(repo, selected) == sealed
     reopened = ProjectRepository(StorageResolver(root).resolve_project(repo.context.project_id, book_id=repo.context.book_id))
     assert load_manuscript(reopened, sealed.manuscript_id) == sealed
-    assert reopened.get_schema_version() == 7
+    assert reopened.get_schema_version() == 8
 
 
 def test_explicit_order_changes_identity_without_filesystem_order(case):

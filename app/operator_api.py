@@ -739,3 +739,297 @@ def gap018_recover_source(project_id: str, book_id: str, operation_id: str,
     if result.get("status") == "SOURCE_CONFLICT":
         raise HTTPException(409, result)
     return result
+
+
+# GAP-019 HTTP adapters. Domain transitions and model execution remain in P20.
+def _gap019_operation(principal, operation, *, read_only=False):
+    from app.p20_core.translation_contract import TranslationContractError
+
+    try:
+        return _with_operator(principal, operation, read_only=read_only)
+    except TranslationContractError as exc:
+        raise HTTPException(exc.status, exc.code) from None
+    except (ValueError, TypeError, KeyError, OSError):
+        raise HTTPException(409, "TRANSLATION_INTEGRITY_CONFLICT") from None
+
+
+class TranslationHeadBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    record_id: str | None
+    version: int | None
+    head_hash: str | None
+
+    def triple(self):
+        return [self.record_id, self.version, self.head_hash]
+
+
+class TranslationBibleBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    request_id: str
+    source_master_id: str
+    source_master_hash: str
+    expected_head: TranslationHeadBody
+    decision_entries: list[dict] = Field(default_factory=list)
+
+
+@router.post("/projects/{project_id}/books/{book_id}/translation-bibles/{locale}/versions")
+def gap019_create_bible(project_id: str, book_id: str, locale: str,
+                        body: TranslationBibleBody, principal=Depends(authenticated_operator)):
+    from app.p20_core.translation import create_translation_bible
+
+    def operation(actor, registry):
+        payload = body.model_dump()
+        payload["expected_head"] = body.expected_head.triple()
+        return create_translation_bible(_gap018_project(registry, project_id, book_id),
+                                        locale, payload, actor)
+    return _gap019_operation(principal, operation)
+
+
+@router.get("/projects/{project_id}/books/{book_id}/translation-bibles/{locale}/current")
+def gap019_current_bible(project_id: str, book_id: str, locale: str,
+                         principal=Depends(authenticated_operator)):
+    from app.p20_core.translation import current_translation_record
+    return _gap019_operation(principal, lambda _actor, registry: current_translation_record(
+        _gap018_project(registry, project_id, book_id), locale, "BIBLE"), read_only=True)
+
+
+@router.get("/projects/{project_id}/books/{book_id}/translation-bibles/{locale}/versions/{bible_id}")
+def gap019_read_bible(project_id: str, book_id: str, locale: str, bible_id: str,
+                      principal=Depends(authenticated_operator)):
+    from app.p20_core.translation import load_translation_record
+    return _gap019_operation(principal, lambda _actor, registry: load_translation_record(
+        _gap018_project(registry, project_id, book_id), locale, "BIBLE", bible_id), read_only=True)
+
+
+class TranslationStartBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    request_id: str
+    source_master_id: str
+    source_master_hash: str
+    bible_id: str
+    bible_hash: str
+    policy_version: str
+    policy_hash: str
+    expected_head: TranslationHeadBody
+
+
+@router.post("/projects/{project_id}/books/{book_id}/translations/{locale}/runs")
+def gap019_start_translation(project_id: str, book_id: str, locale: str,
+                             body: TranslationStartBody, principal=Depends(authenticated_operator)):
+    from app.p20_core.translation import start_translation
+
+    def operation(actor, registry):
+        payload = body.model_dump()
+        payload["expected_head"] = body.expected_head.triple()
+        return start_translation(_gap018_project(registry, project_id, book_id),
+                                 locale, payload, actor)
+    return _gap019_operation(principal, operation)
+
+
+class TranslationModelBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    model: str | None = None
+
+
+def _translation_model_decision(model: str | None):
+    from app.model_policy import resolve_model
+    decision = resolve_model(model)
+    if not decision.allowlist_ok and os.getenv("MODEL_POLICY_MODE", "PERMISSIVE").upper() == "STRICT":
+        raise HTTPException(422, "TRANSLATION_MODEL_POLICY_DENIED")
+    return decision
+
+
+@router.post("/projects/{project_id}/books/{book_id}/translations/{locale}/runs/{run_id}/execute")
+def gap019_execute_translation(project_id: str, book_id: str, locale: str, run_id: str,
+                               body: TranslationModelBody, principal=Depends(authenticated_operator)):
+    from app.p20_core.translation_execution import execute_translation_run
+    # A provider call never holds the system operator transaction.
+    repo = _gap019_operation(principal, lambda _actor, registry:
+        _gap018_project(registry, project_id, book_id))
+    decision = _translation_model_decision(body.model)
+    try:
+        return execute_translation_run(repo, locale, run_id,
+            requested_model=decision.requested_model, effective_model=decision.effective_model,
+            routing={**decision.provenance,
+                     "request_sources": {"body": body.model_dump(exclude_unset=True)}})
+    except Exception as exc:
+        from app.p20_core.translation_contract import TranslationContractError
+        if isinstance(exc, TranslationContractError):
+            raise HTTPException(exc.status, exc.code) from None
+        raise HTTPException(503, "TRANSLATION_EXECUTION_FAILED") from None
+
+
+@router.get("/projects/{project_id}/books/{book_id}/translations/{locale}/runs/{run_id}")
+def gap019_read_run(project_id: str, book_id: str, locale: str, run_id: str,
+                   principal=Depends(authenticated_operator)):
+    from app.p20_core.translation import load_translation_record
+    return _gap019_operation(principal, lambda _actor, registry: load_translation_record(
+        _gap018_project(registry, project_id, book_id), locale, "RUN", run_id), read_only=True)
+
+
+@router.get("/projects/{project_id}/books/{book_id}/translations/{locale}/current")
+def gap019_current_translation(project_id: str, book_id: str, locale: str,
+                               principal=Depends(authenticated_operator)):
+    from app.p20_core.translation import current_translation_record
+    return _gap019_operation(principal, lambda _actor, registry: current_translation_record(
+        _gap018_project(registry, project_id, book_id), locale, "VERSION"), read_only=True)
+
+
+@router.get("/projects/{project_id}/books/{book_id}/translations/{locale}/versions/{version_id}")
+def gap019_read_translation_version(project_id: str, book_id: str, locale: str,
+                                    version_id: str, principal=Depends(authenticated_operator)):
+    from app.p20_core.translation import load_translation_record, translation_staleness
+    def operation(_actor, registry):
+        repo = _gap018_project(registry, project_id, book_id)
+        record = load_translation_record(repo, locale, "VERSION", version_id)
+        return {**record, "effective_status": translation_staleness(repo, record)}
+    return _gap019_operation(principal, operation, read_only=True)
+
+
+class TranslationQABody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    request_id: str
+    model: str | None = None
+
+
+@router.post("/projects/{project_id}/books/{book_id}/translations/{locale}/versions/{version_id}/qa")
+def gap019_execute_qa(project_id: str, book_id: str, locale: str, version_id: str,
+                      body: TranslationQABody, principal=Depends(authenticated_operator)):
+    from app.p20_core.translation_execution import execute_translation_qa
+    repo = _gap019_operation(principal, lambda _actor, registry:
+        _gap018_project(registry, project_id, book_id))
+    decision = _translation_model_decision(body.model)
+    try:
+        report = execute_translation_qa(repo, locale, version_id, body.request_id,
+            requested_model=decision.requested_model, effective_model=decision.effective_model,
+            routing={**decision.provenance,
+                     "request_sources": {"body": body.model_dump(exclude_unset=True)}})
+        return report.to_dict()
+    except Exception as exc:
+        from app.p20_core.translation_contract import TranslationContractError
+        if isinstance(exc, TranslationContractError):
+            raise HTTPException(exc.status, exc.code) from None
+        raise HTTPException(503, "TRANSLATION_QA_EXECUTION_FAILED") from None
+
+
+@router.get("/projects/{project_id}/books/{book_id}/translations/{locale}/qa/{qa_id}")
+def gap019_read_qa(project_id: str, book_id: str, locale: str, qa_id: str,
+                  principal=Depends(authenticated_operator)):
+    from app.p20_core.translation import load_translation_record
+    return _gap019_operation(principal, lambda _actor, registry: load_translation_record(
+        _gap018_project(registry, project_id, book_id), locale, "QA", qa_id), read_only=True)
+
+
+class TranslationRevisionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    request_id: str
+    qa_id: str
+    qa_hash: str
+    expected_head: TranslationHeadBody
+    replacements: list[dict]
+
+
+@router.post("/projects/{project_id}/books/{book_id}/translations/{locale}/versions/{version_id}/revisions")
+def gap019_revise(project_id: str, book_id: str, locale: str, version_id: str,
+                 body: TranslationRevisionBody, principal=Depends(authenticated_operator)):
+    from app.p20_core.translation import revise_translation_version
+    def operation(actor, registry):
+        payload = body.model_dump()
+        payload["parent_version_id"] = version_id
+        payload["expected_head"] = body.expected_head.triple()
+        return revise_translation_version(_gap018_project(registry, project_id, book_id),
+                                          locale, payload, actor)
+    return _gap019_operation(principal, operation)
+
+
+class TranslationCandidateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    request_id: str
+    qa_id: str
+    qa_hash: str
+    expected_head: TranslationHeadBody
+
+
+@router.post("/projects/{project_id}/books/{book_id}/translations/{locale}/candidates")
+def gap019_candidate(project_id: str, book_id: str, locale: str,
+                     body: TranslationCandidateBody, principal=Depends(authenticated_operator)):
+    from app.p20_core.translation import create_translation_candidate
+    def operation(_actor, registry):
+        payload = body.model_dump()
+        payload["expected_head"] = body.expected_head.triple()
+        return create_translation_candidate(_gap018_project(registry, project_id, book_id),
+                                            locale, payload)
+    return _gap019_operation(principal, operation)
+
+
+@router.post("/projects/{project_id}/books/{book_id}/translations/{locale}/candidates/{candidate_id}/review")
+def gap019_review_candidate(project_id: str, book_id: str, locale: str,
+                           candidate_id: str, principal=Depends(authenticated_operator)):
+    from app.p20_core.translation import issue_target_review
+    return _gap019_operation(principal, lambda actor, registry: issue_target_review(
+        _gap018_project(registry, project_id, book_id), locale, candidate_id, actor,
+        ttl_seconds=challenge_ttl_seconds()))
+
+
+class TranslationDecisionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    request_id: str
+    challenge_id: str
+    decision: Literal["APPROVE", "REJECT"]
+    candidate_hash: str
+    expected_head: TranslationHeadBody
+
+
+@router.post("/projects/{project_id}/books/{book_id}/translations/{locale}/candidates/{candidate_id}/decision")
+def gap019_decide_candidate(project_id: str, book_id: str, locale: str,
+                           candidate_id: str, body: TranslationDecisionBody,
+                           principal=Depends(authenticated_operator)):
+    from app.p20_core.translation import decide_target_candidate
+    def operation(actor, registry):
+        payload = body.model_dump()
+        payload["expected_head"] = body.expected_head.triple()
+        return decide_target_candidate(_gap018_project(registry, project_id, book_id),
+                                       locale, candidate_id, payload, actor)
+    return _gap019_operation(principal, operation)
+
+
+@router.get("/projects/{project_id}/books/{book_id}/translations/{locale}/masters/current")
+def gap019_current_master(project_id: str, book_id: str, locale: str,
+                         principal=Depends(authenticated_operator)):
+    from app.p20_core.translation import current_translation_record
+    return _gap019_operation(principal, lambda _actor, registry: current_translation_record(
+        _gap018_project(registry, project_id, book_id), locale, "MASTER"), read_only=True)
+
+
+@router.get("/projects/{project_id}/books/{book_id}/translations/{locale}/masters/{master_id}")
+def gap019_read_master(project_id: str, book_id: str, locale: str, master_id: str,
+                      principal=Depends(authenticated_operator)):
+    from app.p20_core.translation import load_translation_record, translation_staleness
+    def operation(_actor, registry):
+        repo = _gap018_project(registry, project_id, book_id)
+        record = load_translation_record(repo, locale, "MASTER", master_id)
+        return {**record, "effective_status": translation_staleness(repo, record)}
+    return _gap019_operation(principal, operation, read_only=True)
+
+
+class TranslationRecoverBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    operation_kind: str
+    request_id: str
+
+
+@router.post("/projects/{project_id}/books/{book_id}/translations/{locale}/operations/recover")
+def gap019_recover(project_id: str, book_id: str, locale: str,
+                   body: TranslationRecoverBody, principal=Depends(authenticated_operator)):
+    from app.p20_core.translation import recover_translation
+    return _gap019_operation(principal, lambda _actor, registry: recover_translation(
+        _gap018_project(registry, project_id, book_id), locale,
+        body.operation_kind, body.request_id))
+
+
+@router.post("/projects/{project_id}/books/{book_id}/translations/{locale}/invocations/{operation_id}/recover")
+def gap019_recover_invocation(project_id: str, book_id: str, locale: str,
+                             operation_id: str, principal=Depends(authenticated_operator)):
+    from app.p20_core.translation import recover_translation_invocation
+    return _gap019_operation(principal, lambda actor, registry: recover_translation_invocation(
+        _gap018_project(registry, project_id, book_id), locale, operation_id, actor))

@@ -14,6 +14,7 @@ from app.p20_core.context_builder import (
     ContextBuilder,
     ContextBuilderError,
     ContextCandidate,
+    ContextItem,
     ContextLayer,
     ContextOverflowError,
     ContextPolicy,
@@ -45,6 +46,32 @@ from app.p20_core.series_memory import (
 PROJECT_ID = "PROJ-context"
 BOOK_ID = "BOOK-context"
 SERIES_ID = "SERIES-context"
+
+
+def test_exact_text_content_preserves_boundary_whitespace():
+    content = " neutral source span \n"
+    candidate = ContextCandidate(
+        project_id=PROJECT_ID, entity_type="SOURCE_SPAN", entity_id=BOOK_ID,
+        layer=ContextLayer.TASK, reason="exact source", source_ref="source:0:22",
+        source_version=1, mandatory=True,
+        representations={RepresentationType.FULL: content},
+    )
+    assert candidate.representations[RepresentationType.FULL] == content
+    item = ContextItem(
+        entity_type="SOURCE_SPAN", entity_id=BOOK_ID, layer=ContextLayer.TASK,
+        mandatory=True, reason="exact source", score=None, score_breakdown=None,
+        representation_type=RepresentationType.FULL, token_count=3, source_version=1,
+        content_hash=hashlib.sha256(content.encode()).hexdigest(), content=content,
+        source_ref="source:0:22",
+    )
+    assert item.content == content
+    with pytest.raises(ContextBuilderError, match="representation content is required"):
+        ContextCandidate(
+            project_id=PROJECT_ID, entity_type="SOURCE_SPAN", entity_id=BOOK_ID,
+            layer=ContextLayer.TASK, reason="exact source", source_ref="source:0:2",
+            source_version=1, mandatory=True,
+            representations={RepresentationType.FULL: " \n"},
+        )
 
 
 class ExactWordCounter:
@@ -860,7 +887,8 @@ def test_context_hash_is_deterministic_for_same_state_and_input(repo) -> None:
 
 def test_project_schema_v3_migrates_to_context_package_storage(repo) -> None:
     with repo.connect() as connection:
-        for table in ("gap018_manuscript_head", "gap018_source_head", "gap018_records"):
+        for table in ("translation_request_receipts", "translation_heads", "translation_records",
+                      "gap018_manuscript_head", "gap018_source_head", "gap018_records"):
             connection.execute(f"DROP TABLE {table}")
         connection.execute("DROP TABLE context_packages")
         connection.execute("DROP TABLE memory_event_entities")

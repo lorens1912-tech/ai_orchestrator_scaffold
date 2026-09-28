@@ -62,7 +62,7 @@ from app.p20_core.memory_ledger import (
 )
 
 
-PROJECT_DB_SCHEMA_VERSION = 7
+PROJECT_DB_SCHEMA_VERSION = 8
 PROJECT_DB_FILENAME = "project.db"
 SERIES_DB_SCHEMA_VERSION = 4
 SERIES_DB_FILENAME = "series.db"
@@ -1744,7 +1744,8 @@ def _memory_ledger_bootstrap_preflight(
     from app.p20_core.domain_records import DomainId, DomainNamespace
 
     if scope_type == "PROJECT":
-        _validate_project_schema_v7(conn)
+        (_validate_project_schema_v8(conn) if _read_schema_version(conn) == 8
+         else _validate_project_schema_v7(conn))
         preflight_metadata_table = "project_metadata"
     elif scope_type == "SERIES":
         _validate_series_schema_v4(conn)
@@ -2948,6 +2949,37 @@ _GAP018_RECORD_KINDS = frozenset({
     "MANUSCRIPT_REQUEST_RESULT", "QA_RUN_RESULT",
 })
 
+_GAP019_RECORD_KINDS = frozenset({
+    "BIBLE", "RUN", "UNIT", "VERSION", "QA", "CANDIDATE", "APPROVAL", "MASTER",
+    "STATUS", "REVIEW", "REVIEW_USE",
+})
+_GAP019_HEAD_KINDS = frozenset({"BIBLE", "VERSION", "CANDIDATE", "MASTER"})
+_GAP019_LOCALES = frozenset({"en-US", "en-GB"})
+
+_GAP019_TABLE_CONTRACTS = {
+    "translation_records": (
+        (("project_id", "TEXT", 1, 1), ("book_id", "TEXT", 1, 2),
+         ("target_locale", "TEXT", 1, 3), ("record_kind", "TEXT", 1, 4),
+         ("record_id", "TEXT", 1, 5), ("payload_hash", "TEXT", 1, 0),
+         ("payload_json", "TEXT", 1, 0)),
+        ("PRIMARY KEY (project_id, book_id, target_locale, record_kind, record_id)",),
+    ),
+    "translation_heads": (
+        (("project_id", "TEXT", 1, 1), ("book_id", "TEXT", 1, 2),
+         ("target_locale", "TEXT", 1, 3), ("head_kind", "TEXT", 1, 4),
+         ("record_id", "TEXT", 1, 0), ("version", "INTEGER", 1, 0),
+         ("head_hash", "TEXT", 1, 0)),
+        ("PRIMARY KEY (project_id, book_id, target_locale, head_kind)",),
+    ),
+    "translation_request_receipts": (
+        (("project_id", "TEXT", 1, 1), ("book_id", "TEXT", 1, 2),
+         ("target_locale", "TEXT", 1, 3), ("operation_kind", "TEXT", 1, 4),
+         ("request_id", "TEXT", 1, 5), ("request_hash", "TEXT", 1, 0),
+         ("payload_hash", "TEXT", 1, 0), ("payload_json", "TEXT", 1, 0)),
+        ("PRIMARY KEY (project_id, book_id, target_locale, operation_kind, request_id)",),
+    ),
+}
+
 _GAP018_TABLE_CONTRACTS = {
     "gap018_records": (
         (("project_id", "TEXT", 1, 1), ("book_id", "TEXT", 1, 2),
@@ -3450,9 +3482,13 @@ def _apply_project_schema_v6_to_v7(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE project_identity SET schema_version = 7 WHERE id = 1")
 
 
-def _validate_project_schema_v7_step(conn: sqlite3.Connection) -> None:
+def _validate_project_schema_v7_step(
+    conn: sqlite3.Connection, *, expected_version: int = 7,
+    extra_tables: tuple[str, ...] = (),
+) -> None:
     _validate_project_schema_v6_step(
-        conn, expected_version=7, extra_tables=tuple(_GAP018_TABLE_CONTRACTS),
+        conn, expected_version=expected_version,
+        extra_tables=tuple(_GAP018_TABLE_CONTRACTS) + extra_tables,
     )
     for table, (columns, fragments) in _GAP018_TABLE_CONTRACTS.items():
         _validate_table_contract(conn, table=table, columns=columns, sql_fragments=fragments)
@@ -3525,6 +3561,116 @@ def _validate_project_schema_v7(conn: sqlite3.Connection) -> None:
         raise SchemaMigrationError("project schema version is invalid")
 
 
+def _create_gap019_tables(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS translation_records ("
+        "project_id TEXT NOT NULL, book_id TEXT NOT NULL, target_locale TEXT NOT NULL, "
+        "record_kind TEXT NOT NULL, record_id TEXT NOT NULL, "
+        "payload_hash TEXT NOT NULL, payload_json TEXT NOT NULL, "
+        "PRIMARY KEY (project_id, book_id, target_locale, record_kind, record_id))"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS translation_heads ("
+        "project_id TEXT NOT NULL, book_id TEXT NOT NULL, target_locale TEXT NOT NULL, "
+        "head_kind TEXT NOT NULL, record_id TEXT NOT NULL, version INTEGER NOT NULL, "
+        "head_hash TEXT NOT NULL, "
+        "PRIMARY KEY (project_id, book_id, target_locale, head_kind))"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS translation_request_receipts ("
+        "project_id TEXT NOT NULL, book_id TEXT NOT NULL, target_locale TEXT NOT NULL, "
+        "operation_kind TEXT NOT NULL, request_id TEXT NOT NULL, "
+        "request_hash TEXT NOT NULL, payload_hash TEXT NOT NULL, payload_json TEXT NOT NULL, "
+        "PRIMARY KEY (project_id, book_id, target_locale, operation_kind, request_id))"
+    )
+
+
+def _apply_project_schema_v7_to_v8(conn: sqlite3.Connection) -> None:
+    _validate_project_schema_v7(conn)
+    integrity = conn.execute("PRAGMA integrity_check").fetchone()
+    if integrity is None or str(integrity[0]).lower() != "ok":
+        raise SchemaMigrationError("project schema 7 integrity check failed")
+    _create_gap019_tables(conn)
+    conn.execute("UPDATE project_identity SET schema_version = 8 WHERE id = 1")
+
+
+def _validate_project_schema_v8_step(conn: sqlite3.Connection) -> None:
+    _validate_project_schema_v7_step(
+        conn, expected_version=8, extra_tables=tuple(_GAP019_TABLE_CONTRACTS),
+    )
+    for table, (columns, fragments) in _GAP019_TABLE_CONTRACTS.items():
+        _validate_table_contract(conn, table=table, columns=columns, sql_fragments=fragments)
+    identity = conn.execute("SELECT project_id,book_id FROM project_identity WHERE id=1").fetchone()
+    owner = (identity["project_id"], identity["book_id"])
+    for row in conn.execute(
+        "SELECT * FROM translation_records"
+    ).fetchall():
+        try:
+            raw = str(row["payload_json"])
+            envelope = json.loads(raw)
+            value = envelope["value"]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise SchemaMigrationError("translation record payload is invalid") from exc
+        if ((row["project_id"], row["book_id"]) != owner
+                or row["target_locale"] not in _GAP019_LOCALES
+                or row["record_kind"] not in _GAP019_RECORD_KINDS
+                or not isinstance(value, dict)
+                or (envelope.get("project_id"), envelope.get("book_id")) != owner
+                or envelope.get("target_locale") != row["target_locale"]
+                or envelope.get("record_kind") != row["record_kind"]
+                or envelope.get("record_id") != row["record_id"]
+                or envelope.get("schema_version") != 1
+                or value.get("schema_version") != 1
+                or (value.get("project_id"), value.get("book_id"), value.get("target_locale"))
+                != (row["project_id"], row["book_id"], row["target_locale"])
+                or value.get("record_hash") != hashlib.sha256(json.dumps(
+                    {key: item for key, item in value.items() if key != "record_hash"},
+                    sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                    allow_nan=False,
+                ).encode("utf-8")).hexdigest()
+                or hashlib.sha256(raw.encode("utf-8")).hexdigest() != row["payload_hash"]):
+            raise SchemaMigrationError("translation record scope or hash is invalid")
+    for row in conn.execute("SELECT * FROM translation_heads").fetchall():
+        if ((row["project_id"], row["book_id"]) != owner
+                or row["target_locale"] not in _GAP019_LOCALES
+                or row["head_kind"] not in _GAP019_HEAD_KINDS
+                or type(row["version"]) is not int or row["version"] < 1
+                or len(str(row["head_hash"])) != 64):
+            raise SchemaMigrationError("translation head is invalid")
+        target = conn.execute(
+            "SELECT payload_json FROM translation_records WHERE project_id=? AND book_id=? "
+            "AND target_locale=? AND record_kind=? AND record_id=?",
+            (row["project_id"], row["book_id"], row["target_locale"],
+             row["head_kind"], row["record_id"]),
+        ).fetchone()
+        value = None if target is None else json.loads(str(target["payload_json"]))["value"]
+        if (not isinstance(value, dict) or value.get("version") != row["version"]
+                or value.get("record_hash") != row["head_hash"]):
+            raise SchemaMigrationError("translation head has no matching record")
+    for row in conn.execute("SELECT * FROM translation_request_receipts").fetchall():
+        try:
+            raw = str(row["payload_json"])
+            value = json.loads(raw)
+        except ValueError as exc:
+            raise SchemaMigrationError("translation receipt JSON is invalid") from exc
+        if ((row["project_id"], row["book_id"]) != owner
+                or row["target_locale"] not in _GAP019_LOCALES
+                or not isinstance(value, dict)
+                or (value.get("project_id"), value.get("book_id")) != owner
+                or value.get("target_locale") != row["target_locale"]
+                or value.get("operation_kind") != row["operation_kind"]
+                or value.get("request_id") != row["request_id"]
+                or value.get("request_hash") != row["request_hash"]
+                or hashlib.sha256(raw.encode("utf-8")).hexdigest() != row["payload_hash"]):
+            raise SchemaMigrationError("translation receipt scope or hash is invalid")
+
+
+def _validate_project_schema_v8(conn: sqlite3.Connection) -> None:
+    _validate_project_schema_v8_step(conn)
+    if _read_schema_version(conn) != 8:
+        raise SchemaMigrationError("project schema version is invalid")
+
+
 PROJECT_DB_MIGRATIONS = (
     SchemaMigration(
         source_version=1,
@@ -3563,6 +3709,13 @@ PROJECT_DB_MIGRATIONS = (
         apply=_apply_project_schema_v6_to_v7,
         validate=_validate_project_schema_v7_step,
         validate_reached=_validate_project_schema_v7,
+    ),
+    SchemaMigration(
+        source_version=7,
+        target_version=8,
+        apply=_apply_project_schema_v7_to_v8,
+        validate=_validate_project_schema_v8_step,
+        validate_reached=_validate_project_schema_v8,
     ),
 )
 
@@ -4176,7 +4329,7 @@ class ProjectRepository:
             conn = self._memory_ledger_read_connection()
             try:
                 conn.execute("BEGIN")
-                _validate_project_schema_v7(conn)
+                _validate_project_schema_v8(conn)
                 identity = conn.execute("SELECT project_id, book_id FROM project_identity WHERE id=1").fetchone()
                 if identity is None or (identity["project_id"], identity["book_id"]) != (
                     self.context.project_id, self.context.book_id,
@@ -4243,7 +4396,7 @@ class ProjectRepository:
                 error_type=ProjectStorageError,
             )
             if not new_store:
-                _validate_project_schema_v7(conn)
+                _validate_project_schema_v8(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS project_identity (
@@ -4290,9 +4443,10 @@ class ProjectRepository:
             self._ensure_identity(conn)
             _create_project_memory_ledger_tables(conn)
             _create_gap018_tables(conn)
+            _create_gap019_tables(conn)
             if new_store:
                 self._activate_empty_memory_ledger(conn)
-            _validate_project_schema_v7(conn)
+            _validate_project_schema_v8(conn)
 
     def _ensure_identity(self, conn: sqlite3.Connection) -> None:
         row = conn.execute(
@@ -4715,7 +4869,7 @@ class ProjectRepository:
             if (item.get("project_id") != self.scope.scope_id
                     or item.get("book_id") != self.context.book_id):
                 raise ProjectStorageError("model invocation scope mismatch")
-            if run_id is None or item["run_id"] == run_id:
+            if run_id is None or item.get("run_id") == run_id:
                 result.append(item)
         return result
 
@@ -5447,6 +5601,154 @@ class ProjectRepository:
             conn.execute("BEGIN IMMEDIATE")
             self._require_memory_ledger_active(conn)
             yield conn
+
+    @contextmanager
+    def gap019_transaction(self):
+        """Project-local serialization for translation receipts, records and heads."""
+        self.initialize()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._require_memory_ledger_active(conn)
+            yield conn
+
+    def get_gap019_record(self, locale: str, kind: str, record_id: str, *, connection=None) -> dict[str, Any] | None:
+        if locale not in _GAP019_LOCALES or kind not in _GAP019_RECORD_KINDS:
+            raise ProjectStorageError("translation locale or record kind is invalid")
+        record_id = _normalize_identifier(record_id, "translation record ID")
+        if connection is None:
+            with self.connect(read_only=True) as conn:
+                return self.get_gap019_record(locale, kind, record_id, connection=conn)
+        row = connection.execute(
+            "SELECT payload_json FROM translation_records WHERE project_id=? AND book_id=? "
+            "AND target_locale=? AND record_kind=? AND record_id=?",
+            (self.context.project_id, self.context.book_id, locale, kind, record_id),
+        ).fetchone()
+        return None if row is None else dict(json.loads(str(row["payload_json"]))["value"])
+
+    def put_gap019_record(self, locale: str, kind: str, record_id: str,
+                          value: Mapping[str, Any], *, connection) -> None:
+        if locale not in _GAP019_LOCALES or kind not in _GAP019_RECORD_KINDS:
+            raise ProjectStorageError("translation locale or record kind is invalid")
+        record_id = _normalize_identifier(record_id, "translation record ID")
+        if (not isinstance(value, Mapping)
+                or (value.get("project_id"), value.get("book_id"), value.get("target_locale"))
+                != (self.context.project_id, self.context.book_id, locale)
+                or value.get("schema_version") != 1
+                or not isinstance(value.get("record_hash"), str)
+                or value.get("record_hash") != hashlib.sha256(json.dumps(
+                    {key: item for key, item in value.items() if key != "record_hash"},
+                    sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                    allow_nan=False,
+                ).encode("utf-8")).hexdigest()):
+            raise ProjectStorageError("translation record binding or hash is invalid")
+        envelope = {"schema_version": 1, "project_id": self.context.project_id,
+                    "book_id": self.context.book_id, "target_locale": locale,
+                    "record_kind": kind, "record_id": record_id, "value": dict(value)}
+        raw = json.dumps(envelope, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=True, allow_nan=False)
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        prior = connection.execute(
+            "SELECT payload_hash FROM translation_records WHERE project_id=? AND book_id=? "
+            "AND target_locale=? AND record_kind=? AND record_id=?",
+            (self.context.project_id, self.context.book_id, locale, kind, record_id),
+        ).fetchone()
+        if prior is not None:
+            if prior["payload_hash"] != digest:
+                raise ProjectStorageError("immutable translation record conflict")
+            return
+        connection.execute(
+            "INSERT INTO translation_records VALUES(?,?,?,?,?,?,?)",
+            (self.context.project_id, self.context.book_id, locale, kind, record_id,
+             digest, raw),
+        )
+
+    def get_gap019_head(self, locale: str, kind: str, *, connection=None) -> tuple[str | None, int | None, str | None]:
+        if locale not in _GAP019_LOCALES or kind not in _GAP019_HEAD_KINDS:
+            raise ProjectStorageError("translation locale or head kind is invalid")
+        if connection is None:
+            with self.connect(read_only=True) as conn:
+                return self.get_gap019_head(locale, kind, connection=conn)
+        row = connection.execute(
+            "SELECT record_id,version,head_hash FROM translation_heads WHERE project_id=? "
+            "AND book_id=? AND target_locale=? AND head_kind=?",
+            (self.context.project_id, self.context.book_id, locale, kind),
+        ).fetchone()
+        return (None, None, None) if row is None else (
+            str(row["record_id"]), int(row["version"]), str(row["head_hash"]),
+        )
+
+    def cas_gap019_head(self, locale: str, kind: str,
+                        expected: tuple[str | None, int | None, str | None],
+                        new: tuple[str, int, str], *, connection) -> bool:
+        if self.get_gap019_head(locale, kind, connection=connection) != expected:
+            return False
+        value = self.get_gap019_record(locale, kind, new[0], connection=connection)
+        if value is None or (value.get("version"), value.get("record_hash")) != (new[1], new[2]):
+            raise ProjectStorageError("translation head requires matching durable record")
+        if expected == (None, None, None):
+            connection.execute(
+                "INSERT INTO translation_heads VALUES(?,?,?,?,?,?,?)",
+                (self.context.project_id, self.context.book_id, locale, kind, *new),
+            )
+        else:
+            connection.execute(
+                "UPDATE translation_heads SET record_id=?,version=?,head_hash=? "
+                "WHERE project_id=? AND book_id=? AND target_locale=? AND head_kind=?",
+                (*new, self.context.project_id, self.context.book_id, locale, kind),
+            )
+        return True
+
+    def get_gap019_request(self, locale: str, operation_kind: str, request_id: str,
+                           *, connection=None) -> dict[str, Any] | None:
+        if locale not in _GAP019_LOCALES:
+            raise ProjectStorageError("translation locale is invalid")
+        request_id = _normalize_identifier(request_id, "translation request ID")
+        if connection is None:
+            with self.connect(read_only=True) as conn:
+                return self.get_gap019_request(locale, operation_kind, request_id, connection=conn)
+        row = connection.execute(
+            "SELECT payload_json FROM translation_request_receipts WHERE project_id=? "
+            "AND book_id=? AND target_locale=? AND operation_kind=? AND request_id=?",
+            (self.context.project_id, self.context.book_id, locale, operation_kind, request_id),
+        ).fetchone()
+        return None if row is None else dict(json.loads(str(row["payload_json"])))
+
+    def put_gap019_request(self, locale: str, operation_kind: str, request_id: str,
+                           request_hash: str, value: Mapping[str, Any], *, connection) -> dict[str, Any]:
+        if locale not in _GAP019_LOCALES or not operation_kind or not request_id or len(request_hash) != 64:
+            raise ProjectStorageError("translation request key is invalid")
+        prior = self.get_gap019_request(locale, operation_kind, request_id, connection=connection)
+        if prior is not None:
+            if prior["request_hash"] != request_hash:
+                raise ProjectStorageError("translation request ID conflict")
+            return prior
+        receipt = {**dict(value), "project_id": self.context.project_id, "book_id": self.context.book_id,
+                   "target_locale": locale, "operation_kind": operation_kind,
+                   "request_id": request_id, "request_hash": request_hash}
+        raw = json.dumps(receipt, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=True, allow_nan=False)
+        connection.execute(
+            "INSERT INTO translation_request_receipts VALUES(?,?,?,?,?,?,?,?)",
+            (self.context.project_id, self.context.book_id, locale, operation_kind,
+             request_id, request_hash, hashlib.sha256(raw.encode("utf-8")).hexdigest(), raw),
+        )
+        return receipt
+
+    def update_gap019_request(self, locale: str, operation_kind: str, request_id: str,
+                              expected: Mapping[str, Any], new: Mapping[str, Any], *, connection) -> None:
+        current = self.get_gap019_request(locale, operation_kind, request_id, connection=connection)
+        if current != dict(expected) or any(new.get(key) != current.get(key) for key in (
+            "project_id", "book_id", "target_locale", "operation_kind", "request_id", "request_hash",
+        )):
+            raise ProjectStorageError("translation request receipt CAS conflict")
+        raw = json.dumps(dict(new), sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=True, allow_nan=False)
+        connection.execute(
+            "UPDATE translation_request_receipts SET payload_hash=?,payload_json=? WHERE "
+            "project_id=? AND book_id=? AND target_locale=? AND operation_kind=? AND request_id=?",
+            (hashlib.sha256(raw.encode("utf-8")).hexdigest(), raw,
+             self.context.project_id, self.context.book_id, locale, operation_kind, request_id),
+        )
 
     def get_gap018_record(self, kind: str, record_id: str, *, connection=None) -> dict[str, Any] | None:
         if kind not in _GAP018_RECORD_KINDS:

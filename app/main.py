@@ -12,6 +12,7 @@ from app.p20_core.evaluation import (
     EvaluationError,
     EvaluationNeedsIntervention,
 )
+from app.p20_core.translation_contract import TranslationContractError
 from app.config_registry import load_presets
 from app.canon_check import canon_check
 from app.canon_store import load_canon
@@ -26,6 +27,8 @@ app.include_router(operator_router)
 
 
 def _agent_input_error_status(exc: ValueError) -> int | None:
+    if isinstance(exc, TranslationContractError):
+        return exc.status
     if isinstance(exc, AdaptiveStyleError):
         return 422
     detail = str(exc)

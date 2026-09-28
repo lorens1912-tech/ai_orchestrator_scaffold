@@ -339,7 +339,8 @@ def test_project_isolation_and_other_stores_unchanged(repo):
 def old_schema(repo):
     repo.initialize()
     with repo.connect() as conn:
-        for table in ("gap018_manuscript_head", "gap018_source_head", "gap018_records"):
+        for table in ("translation_request_receipts", "translation_heads", "translation_records",
+                      "gap018_manuscript_head", "gap018_source_head", "gap018_records"):
             conn.execute(f"DROP TABLE {table}")
         conn.execute("DROP TABLE edges")
         conn.execute("DROP TABLE memory_event_entities")

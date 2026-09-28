@@ -194,7 +194,7 @@ def inspect() -> dict[str, object]:
 
     migration_root = _case("test_controlled_p6_to_p7_preserves")
     migrated = _repo(migration_root, "PROJ-GAP018-MIGRATION", "BOOK-GAP018-MIGRATION")
-    assert migrated.get_schema_version() == 7
+    assert migrated.get_schema_version() == 8
     with _connect(migrated.db_path) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         ledger_count = connection.execute("SELECT COUNT(*) FROM memory_events").fetchone()[0]

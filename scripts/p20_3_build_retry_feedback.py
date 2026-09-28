@@ -1,3 +1,5 @@
+"""Offline JSON tool; its output is not a production P20 retry policy."""
+
 from __future__ import annotations
 
 import json
